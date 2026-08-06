@@ -7,6 +7,10 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Normalized Python package names so Dependabot can update pinned versions reliably.
+
 ## [0.1.0] - 2026-08-06
 
 ### Added

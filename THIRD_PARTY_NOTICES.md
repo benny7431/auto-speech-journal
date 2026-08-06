@@ -19,7 +19,7 @@ GitHub release 的 wheel 與 source distribution **不內含** Python 相依套�
 | sherpa-onnx | 1.13.4 | Apache-2.0 | Streaming ASR and VAD runtime; [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) |
 | faster-whisper | 1.2.1 | MIT | Final transcription integration; [faster-whisper](https://github.com/SYSTRAN/faster-whisper) |
 | ctranslate2 | 4.8.1 | MIT | Whisper inference runtime; [CTranslate2](https://github.com/OpenNMT/CTranslate2) |
-| OpenCC | 1.4.0 | Apache-2.0 | Traditional Chinese normalization; [OpenCC](https://github.com/BYVoid/OpenCC) |
+| OpenCC | 1.4.1 | Apache-2.0 | Traditional Chinese normalization; [OpenCC](https://github.com/BYVoid/OpenCC) |
 | soundfile | 0.13.1 | BSD-3-Clause; bundled libsndfile has its own LGPL terms | FLAC I/O; [python-soundfile](https://github.com/bastibe/python-soundfile) |
 | tzdata | `>=2025.2,<2027` | Apache-2.0; IANA data has separate terms | Windows timezone data; [python-tzdata](https://github.com/python/tzdata) |
 

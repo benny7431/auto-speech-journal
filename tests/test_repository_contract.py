@@ -34,6 +34,22 @@ def test_third_party_notices_cover_direct_dependencies_and_models() -> None:
         assert model.key.lower() in notices
 
 
+def test_dependency_names_are_normalized_for_dependabot() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    dependencies = list(project["project"]["dependencies"])
+    for extra_dependencies in project["project"]["optional-dependencies"].values():
+        dependencies.extend(extra_dependencies)
+
+    non_normalized = []
+    for requirement in dependencies:
+        match = re.match(r"[A-Za-z0-9_.-]+", requirement)
+        assert match is not None
+        if match.group(0) != _requirement_name(requirement):
+            non_normalized.append(match.group(0))
+
+    assert non_normalized == []
+
+
 def test_repository_declares_line_ending_contract() -> None:
     attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
     for pattern in ("*.py text eol=lf", "*.qml text eol=lf", "*.md text eol=lf"):
