@@ -77,3 +77,10 @@ def test_public_repository_documents_and_templates_exist() -> None:
 def test_project_enforces_public_release_coverage_threshold() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert project["tool"]["coverage"]["report"]["fail_under"] == 75
+
+
+def test_release_workflow_excludes_uv_dist_gitignore() -> None:
+    workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    assert '$_.Extension -eq ".whl" -or $_.Name.EndsWith(".tar.gz")' in workflow
+    assert '"default.gitignore"' in workflow
+    assert "Expected one wheel and one source distribution" in workflow
