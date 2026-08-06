@@ -1,0 +1,367 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://auto-speech-journal.invalid/schemas/scene-manifest.schema.json",
+  "title": "Sound Journal Offline Scene Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "asset_set",
+    "asset_count",
+    "dimensions",
+    "generation_workflow",
+    "prompt_catalog",
+    "assets"
+  ],
+  "properties": {
+    "schema_version": {
+      "enum": [1, 2]
+    },
+    "asset_set": {
+      "const": "monthly-recorder-scenes"
+    },
+    "asset_count": {
+      "enum": [96, 192]
+    },
+    "dimensions": {
+      "oneOf": [
+        { "$ref": "#/$defs/legacyDimensions" },
+        { "$ref": "#/$defs/variantDimensions" }
+      ]
+    },
+    "generation_workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_gate",
+        "base_state",
+        "derived_states",
+        "runtime_generation"
+      ],
+      "properties": {
+        "candidate_gate": {
+          "type": "string",
+          "minLength": 1
+        },
+        "base_state": {
+          "const": "listening"
+        },
+        "derived_states": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "starting",
+              "capturing",
+              "finalizing",
+              "paused",
+              "degraded",
+              "error",
+              "stopped"
+            ]
+          }
+        },
+        "runtime_generation": {
+          "const": false
+        }
+      }
+    },
+    "prompt_catalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "global_style",
+        "global_constraints",
+        "months",
+        "states"
+      ],
+      "properties": {
+        "global_style": {
+          "type": "string",
+          "minLength": 20
+        },
+        "global_constraints": {
+          "type": "string",
+          "minLength": 20
+        },
+        "months": {
+          "type": "array",
+          "minItems": 12,
+          "maxItems": 12,
+          "items": {
+            "$ref": "#/$defs/monthPrompt"
+          }
+        },
+        "states": {
+          "type": "array",
+          "minItems": 8,
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/statePrompt"
+          }
+        }
+      }
+    },
+    "assets": {
+      "type": "array",
+      "minItems": 96,
+      "maxItems": 192,
+      "items": {
+        "oneOf": [
+          { "$ref": "#/$defs/legacyAsset" },
+          { "$ref": "#/$defs/variantAsset" }
+        ]
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "schema_version": { "const": 1 } },
+        "required": ["schema_version"]
+      },
+      "then": {
+        "properties": {
+          "asset_count": { "const": 96 },
+          "dimensions": { "$ref": "#/$defs/legacyDimensions" },
+          "assets": {
+            "minItems": 96,
+            "maxItems": 96,
+            "items": { "$ref": "#/$defs/legacyAsset" }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "schema_version": { "const": 2 } },
+        "required": ["schema_version"]
+      },
+      "then": {
+        "properties": {
+          "asset_count": { "const": 192 },
+          "dimensions": { "$ref": "#/$defs/variantDimensions" },
+          "assets": {
+            "minItems": 192,
+            "maxItems": 192,
+            "items": { "$ref": "#/$defs/variantAsset" }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "legacyDimensions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height", "aspect_ratio", "format"],
+      "properties": {
+        "width": { "const": 1024 },
+        "height": { "const": 1536 },
+        "aspect_ratio": { "const": "2:3" },
+        "format": { "const": "webp" }
+      }
+    },
+    "variantDimensions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["compact", "workspace"],
+      "properties": {
+        "compact": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["width", "height", "aspect_ratio", "format"],
+          "properties": {
+            "width": { "const": 1024 },
+            "height": { "const": 768 },
+            "aspect_ratio": { "const": "4:3" },
+            "format": { "const": "webp" }
+          }
+        },
+        "workspace": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["width", "height", "aspect_ratio", "format"],
+          "properties": {
+            "width": { "const": 1536 },
+            "height": { "const": 1024 },
+            "aspect_ratio": { "const": "3:2" },
+            "format": { "const": "webp" }
+          }
+        }
+      }
+    },
+    "monthPrompt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["month", "theme_zh", "theme_en", "scene", "palette"],
+      "properties": {
+        "month": { "pattern": "^(0[1-9]|1[0-2])$" },
+        "theme_zh": { "type": "string", "minLength": 1 },
+        "theme_en": { "type": "string", "minLength": 3 },
+        "scene": { "type": "string", "minLength": 20 },
+        "palette": { "type": "string", "minLength": 10 }
+      }
+    },
+    "statePrompt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "label_zh", "priority", "generation", "treatment"],
+      "properties": {
+        "key": { "$ref": "#/$defs/state" },
+        "label_zh": { "type": "string", "minLength": 1 },
+        "priority": { "type": "integer", "minimum": 1, "maximum": 7 },
+        "generation": { "enum": ["base", "edit-from-listening"] },
+        "treatment": { "type": "string", "minLength": 20 }
+      }
+    },
+    "state": {
+      "enum": [
+        "starting",
+        "listening",
+        "capturing",
+        "finalizing",
+        "paused",
+        "degraded",
+        "error",
+        "stopped"
+      ]
+    },
+    "legacyAsset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "month",
+        "state",
+        "filename",
+        "status",
+        "planned_prompt",
+        "final_prompt",
+        "width",
+        "height",
+        "sha256"
+      ],
+      "properties": {
+        "month": { "pattern": "^(0[1-9]|1[0-2])$" },
+        "state": { "$ref": "#/$defs/state" },
+        "filename": {
+          "pattern": "^(0[1-9]|1[0-2])-(starting|listening|capturing|finalizing|paused|degraded|error|stopped)\\.webp$"
+        },
+        "status": { "enum": ["pending", "ready"] },
+        "planned_prompt": { "type": "string", "minLength": 100 },
+        "final_prompt": { "type": ["string", "null"] },
+        "width": { "type": ["integer", "null"] },
+        "height": { "type": ["integer", "null"] },
+        "sha256": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "pending" } } },
+          "then": { "$ref": "#/$defs/unreadyFields" }
+        },
+        {
+          "if": { "properties": { "status": { "const": "ready" } } },
+          "then": {
+            "properties": {
+              "final_prompt": { "type": "string", "minLength": 100 },
+              "width": { "const": 1024 },
+              "height": { "const": 1536 },
+              "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+            }
+          }
+        }
+      ]
+    },
+    "variantAsset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "month",
+        "state",
+        "variant",
+        "derived_from",
+        "filename",
+        "status",
+        "planned_prompt",
+        "final_prompt",
+        "width",
+        "height",
+        "sha256"
+      ],
+      "properties": {
+        "month": { "pattern": "^(0[1-9]|1[0-2])$" },
+        "state": { "$ref": "#/$defs/state" },
+        "variant": { "enum": ["compact", "workspace"] },
+        "derived_from": {
+          "type": ["string", "null"],
+          "pattern": "^(0[1-9]|1[0-2])-(starting|listening|capturing|finalizing|paused|degraded|error|stopped)-workspace\\.webp$"
+        },
+        "filename": {
+          "pattern": "^(0[1-9]|1[0-2])-(starting|listening|capturing|finalizing|paused|degraded|error|stopped)-(compact|workspace)\\.webp$"
+        },
+        "status": { "enum": ["planned", "ready"] },
+        "planned_prompt": { "type": "string", "minLength": 100 },
+        "final_prompt": { "type": ["string", "null"] },
+        "width": { "type": ["integer", "null"] },
+        "height": { "type": ["integer", "null"] },
+        "sha256": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "planned" } } },
+          "then": { "$ref": "#/$defs/unreadyFields" }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": { "const": "ready" },
+              "variant": { "const": "compact" }
+            },
+            "required": ["status", "variant"]
+          },
+          "then": {
+            "properties": {
+              "final_prompt": { "type": "string", "minLength": 100 },
+              "width": { "const": 1024 },
+              "height": { "const": 768 },
+              "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": { "const": "ready" },
+              "variant": { "const": "workspace" }
+            },
+            "required": ["status", "variant"]
+          },
+          "then": {
+            "properties": {
+              "final_prompt": { "type": "string", "minLength": 100 },
+              "width": { "const": 1536 },
+              "height": { "const": 1024 },
+              "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+            }
+          }
+        }
+      ]
+    },
+    "unreadyFields": {
+      "properties": {
+        "final_prompt": { "type": "null" },
+        "width": { "type": "null" },
+        "height": { "type": "null" },
+        "sha256": { "type": "null" }
+      }
+    }
+  }
+}

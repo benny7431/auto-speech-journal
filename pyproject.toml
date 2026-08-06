@@ -1,0 +1,78 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "auto-speech-journal"
+version = "0.1.0"
+description = "Local-first Windows microphone journal with streaming preview and durable transcription."
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = [
+  "PySide6==6.11.1",
+  "sounddevice==0.5.5",
+  "soxr==1.1.0",
+  "numpy==2.4.6",
+  "sherpa-onnx==1.13.4",
+  "faster-whisper==1.2.1",
+  "ctranslate2==4.8.1",
+  "OpenCC==1.4.0",
+  "soundfile==0.13.1",
+  "tzdata>=2025.2,<2027",
+]
+
+[project.optional-dependencies]
+cuda = [
+  "nvidia-cudnn-cu12==9.24.0.43; platform_system == 'Windows'",
+  "nvidia-cublas-cu12==12.9.2.10; platform_system == 'Windows'",
+  "nvidia-cuda-nvrtc-cu12==12.9.86; platform_system == 'Windows'",
+]
+model-build = [
+  "huggingface-hub==1.23.0",
+  "safetensors==0.8.0",
+  "torch==2.6.0+cpu",
+  "transformers==5.13.1",
+]
+dev = [
+  "pytest==8.4.2",
+  "pytest-cov==7.0.0",
+  "pytest-qt==4.5.0",
+  "ruff==0.12.12",
+]
+
+[project.scripts]
+auto-speech-journal = "auto_speech_journal.cli:main"
+
+[tool.hatch.build]
+exclude = [
+  "/artifacts/**",
+  "/字體/**",
+  "/聲明/**",
+  "/src/auto_speech_journal/assets/fonts/**",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/auto_speech_journal"]
+include = ["src/auto_speech_journal/assets/**"]
+exclude = ["src/auto_speech_journal/assets/fonts/**"]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", extra = "model-build" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

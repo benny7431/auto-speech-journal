@@ -1,0 +1,13 @@
+{
+  "asset": "journal-ink-icon.png",
+  "generator": "built-in ImageGen",
+  "width": 256,
+  "height": 256,
+  "sha256": "03e0180ae535cf509682da56f22530eec99d0bb03b81e24f0b3d41e206e9ce48",
+  "background_removal": {
+    "method": "flat chroma key",
+    "key": "#ff00ff",
+    "alpha": true
+  },
+  "final_prompt": "Create one quiet hand-painted ink-and-paper emblem for a Traditional Chinese voice journal application: a single simplified ivory journal page with a softly folded upper corner, one bold organic dark-umber brush mark, and one small muted sage-green ink seal dot. Restrained Chinese ink wash and watercolor on fibrous cotton paper, minimal, premium, warm, imperfect handmade edges, strong simple silhouette, centered square icon with generous padding. No text, Chinese characters, people, microphone, headphones, waveform, ripple, water-wave lines, radiating arcs, sound bars, shadow, glossy 3D, border, or watermark. Generate on a perfectly flat solid #ff00ff chroma-key background and do not use #ff00ff in the icon."
+}

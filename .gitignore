@@ -1,0 +1,27 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+build/
+dist/
+coverage.xml
+.coverage
+htmlcov/
+artifacts/
+*.log
+*.tmp
+
+# Personal typography and legal records are local to this workstation.
+/字體/
+/聲明/
+/src/auto_speech_journal/assets/fonts/
+
+# Runtime data is installed outside the repository, but keep accidental copies out.
+models/
+spool/
+state.db*
+config.json
+settings-history.jsonl
