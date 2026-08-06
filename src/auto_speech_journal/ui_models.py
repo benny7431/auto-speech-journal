@@ -1258,13 +1258,13 @@ class JournalViewModel(QObject):
             return False
         callback = self._model_provision_callback
         if callback is None:
-            self.actionFailed.emit("此安裝環境未提供模型續傳／修復服務")
+            self.actionFailed.emit("此安裝環境未提供模型下載服務")
             return False
         return self._start_model_setup_operation(
             "repair",
             callback,
-            state="provisioning",
-            message="正在準備續傳與修復語音模型…",
+            state="downloading",
+            message="正在準備從 Hugging Face 下載語音模型…",
             receives_progress=True,
         )
 
@@ -1299,7 +1299,7 @@ class JournalViewModel(QObject):
                 result = {
                     "state": "error",
                     "ready": False,
-                    "message": f"模型{('修復' if operation == 'repair' else '檢查')}失敗：{error}",
+                    "message": f"模型{('下載' if operation == 'repair' else '檢查')}失敗：{error}",
                 }
             with suppress(RuntimeError):
                 self._modelSetupCompleted.emit(generation, result)
@@ -1317,7 +1317,7 @@ class JournalViewModel(QObject):
             return
         normalized = _normalized_model_setup_result(
             result,
-            default_state="provisioning",
+            default_state="downloading",
         )
         self._model_setup_state = str(normalized["state"])
         self._model_setup_message = str(normalized["message"])
@@ -1344,9 +1344,9 @@ class JournalViewModel(QObject):
         self.modelSetupChanged.emit()
         if bool(normalized["ready"]):
             if operation == "repair":
-                self.actionSucceeded.emit("語音模型續傳與修復完成")
+                self.actionSucceeded.emit("語音模型下載完成")
         elif operation == "repair":
-            self.actionFailed.emit(self._model_setup_message or "語音模型修復未完成")
+            self.actionFailed.emit(self._model_setup_message or "語音模型下載未完成，請重試")
 
     @Slot(str, bool, bool, result=bool)
     def advanceOnboarding(
@@ -1443,7 +1443,7 @@ class JournalViewModel(QObject):
             self._report_error("請先確認日記資料夾可寫入")
             return False
         if not self.onboardingModelsReady:
-            self._report_error("語音模型尚未就緒，請先續傳／修復後再開始錄音")
+            self._report_error("語音模型尚未就緒，請先重試下載後再開始錄音")
             return False
         selection = self._selection_for_key(self._selected_microphone_key)
         if selection is None:

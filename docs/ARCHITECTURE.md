@@ -1,90 +1,64 @@
 # Architecture
 
-Auto Speech Journal 是 Windows-only、本機優先的桌面應用程式。SQLite 保存權威狀態，
-每小時 Markdown 是可重建輸出；錄音、預覽與最終辨識都不依賴遠端 API。
-
-## End-to-end data flow
+Auto Speech Journal 是 local-first Windows 應用程式。SQLite 是權威狀態；Markdown
+日記是可重建輸出。
 
 ```mermaid
 flowchart LR
-    A["Windows WASAPI input"] --> B["16 kHz mono stream"]
-    B --> C["Sherpa-ONNX preview"]
-    B --> D["Silero VAD / segmentation"]
-    C --> E["Live partial text"]
-    D --> F["Durable FLAC spool"]
-    F --> G[("SQLite captured state")]
-    G --> H["Faster-Whisper finalizer"]
-    H --> I[("SQLite final/corrected state")]
-    I --> J["Atomic hourly Markdown"]
-    J --> K["FLAC cleanup"]
+    A["WASAPI microphone"] --> B["Sherpa-ONNX VAD and preview"]
+    B --> C["Durable FLAC spool"]
+    C --> D["SQLite state"]
+    C --> E["CTranslate2 Whisper finalizer"]
+    E --> D
+    D --> F["Atomic Markdown export"]
 ```
 
-The ordering is intentional:
+## Runtime modules
 
-1. The recorder resamples WASAPI input to 16 kHz mono and sends chunks to preview/VAD logic.
-2. A completed speech segment is written to FLAC before a `CapturedSegment` event is published.
-3. The main controller inserts the captured record into SQLite before submitting it to the
-   finalizer queue.
-4. Final text is committed to SQLite, then the affected hourly Markdown file is atomically rebuilt.
-5. Spool audio is deleted only after durable state and output cleanup have succeeded.
+| Module | Responsibility |
+|---|---|
+| `audio.py` | Windows audio capture and device selection |
+| `preview_engine.py` | Sherpa-ONNX streaming preview and VAD |
+| `finalizer_engine.py` | CTranslate2 Whisper final transcription |
+| `workers.py` | Capture, preview, finalization, and recovery coordination |
+| `storage.py` | SQLite transactions and durable state |
+| `exporter.py` | Rebuildable, atomic Markdown output |
+| `setup_wizard.py` | First-run consent, journal folder, startup, and microphone setup |
+| `model_download.py` | Pinned Hugging Face runtime-model provisioning |
 
-This means a full queue or failed model cannot discard audio that has already crossed the durable
-FLAC boundary.
+## Consent and persistence
 
-## Runtime components
+First run is a wizard. It tests the journal folder and microphone, but recording starts only after
+the user presses「開始錄音」. Choosing「稍後設定」keeps recording and login startup disabled.
+Settings changes are transactional: a failed test restores the previously working values.
 
-| Component | Responsibility |
-| --- | --- |
-| `cli.py` | Commands, logging setup, singleton guard and runtime composition |
-| `audio.py` | WASAPI discovery/capture, resampling, segmentation and FLAC spool |
-| `workers.py` | Recorder, preview and finalizer process lifecycle and bounded queues |
-| `preview_engine.py` | Low-latency Sherpa-ONNX streaming recognition and OpenCC normalization |
-| `finalizer_engine.py` | CTranslate2/Faster-Whisper final transcription with CUDA/CPU profiles |
-| `controller.py` | State transitions, durable ordering, retry policy and user actions |
-| `storage.py` | SQLite schema, WAL transactions, recovery and correction locks |
-| `exporter.py` | Atomic Markdown rebuild, deletion and post-export FLAC cleanup |
-| `vocabulary.py` | Learned correction terms without weakening user-locked transcripts |
-| `ui.py` / `ui_models.py` | PySide6/QML bridge and immutable timeline read models |
+SQLite remains the authority across crashes and upgrades. Audio is written to the spool before
+finalization, and Markdown can be regenerated from database state.
 
-The Qt event loop and controller run in the main process. `JournalWorkers` owns isolated recorder,
-preview and finalizer processes connected by bounded multiprocessing queues. Native/heavy imports
-are delayed until the corresponding command or worker starts, keeping offline tests importable.
+## Model boundary
 
-## State and recovery
+`src/auto_speech_journal/runtime-models-v1.json` is packaged with the application. Every runtime
+file records its Hugging Face repository, full commit revision, path, size, SHA-256, license, and
+source. The manifest permits only directly executable ONNX and CTranslate2 artifacts.
 
-SQLite runs with WAL, foreign keys and secure deletion enabled. Segment state progresses through
-captured/finalizing/final-ready/exported/audio-deleted states, with retry and failed states retaining
-enough provenance to resume.
+The App downloads those files through `huggingface_hub` during first-run setup, using the Hugging
+Face cache and retry behavior. User machines do not install Torch or Transformers and do not
+convert models. A model failure leaves the application and persistent state intact so setup can
+resume later.
 
-At startup the application:
+Model provisioning is separate from optional CUDA support. The normal Setup installs a CPU-safe
+application and never downloads models or NVIDIA runtime components. Advanced CUDA installation
+remains available through `install.ps1`.
 
-1. Reconciles SQLite rows and the spool directory.
-2. Recovers durable FLAC files that did not complete controller delivery before a crash.
-3. Repairs pathological final transcripts using retained preview text where safe.
-4. Rebuilds dirty hourly Markdown files.
-5. Requeues pending finalization work after workers become ready.
+## Installation boundary
 
-Artificial timeouts never authorize deletion of uncommitted speech. On shutdown the recorder can
-hold the application open while captured audio is still waiting for durable storage.
+Inno Setup installs the PyInstaller onedir payload directly to:
 
-## Corrections and deletion
+```text
+%LOCALAPPDATA%\Programs\AutoSpeechJournal\app
+```
 
-An explicit correction writes `corrected_text`, sets `user_locked`, rebuilds Markdown and may update
-learned vocabulary. A late model result cannot replace user-locked text. Vocabulary deletion changes
-future hints only; it does not unlock past corrections.
-
-Deleting an hour coordinates SQLite deletion, Markdown removal/rebuild and remaining spool cleanup.
-The uninstaller deliberately does not call this path and therefore preserves user data.
-
-## Network and packaging boundaries
-
-Recording and transcription have no cloud API dependency. Network access is limited to dependency
-installation, explicit model download/repair, optional CUDA provisioning, and the opt-in release
-metadata check. `packaging/manifests/runtime-models-v1.json` is the supply-chain authority for each
-Hugging Face repository, full commit revision, file path, size, SHA-256, license and source.
-`model_download.py` separately defines the application runtime contract and rejects a manifest whose
-model identities, formats or required file inventory do not match the engines.
-
-The wheel contains Python, QML and 192 offline scene assets. It excludes models, recordings,
-databases, logs, settings, local fonts and machine-local generation paths. See
-[THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) and [PRIVACY.md](../PRIVACY.md).
+This release has no stable launcher, `current.json`, versioned application directories, or custom
+rollback service. Runtime data stays separately under `%LOCALAPPDATA%\AutoSpeechJournal`, and
+external journal directories are never owned by the installer. Uninstall therefore removes the
+application and its shortcuts/startup registration while preserving runtime data and journals.

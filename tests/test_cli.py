@@ -1,49 +1,49 @@
 from __future__ import annotations
 
-import json
+import argparse
 
 import pytest
 
 from auto_speech_journal import __version__, cli
 from auto_speech_journal.config import AppConfig
-from auto_speech_journal.gpu_runtime import GpuDetection, GpuInstallResult
 from auto_speech_journal.paths import AppPaths
-from auto_speech_journal.provisioning import ProvisionEvent, ProvisionResult
 
 
-def test_parser_exposes_model_download_and_microphone_skip() -> None:
+def _command_names(parser: argparse.ArgumentParser) -> set[str]:
+    subparsers = next(
+        action
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    return set(subparsers.choices)
+
+
+def test_parser_exposes_only_supported_commands() -> None:
     parser = cli.build_parser()
 
-    download = parser.parse_args(["download-models"])
-    self_test = parser.parse_args(["self-test", "--no-microphone-check"])
-    setup = parser.parse_args(["setup", "--system-default"])
-    probe = parser.parse_args(["installer-probe", "--isolated"])
-    provision = parser.parse_args(
-        [
-            "provision",
-            "--manifest",
-            "runtime-models-v1.json",
-            "--progress-json",
-            "progress.json",
-        ]
-    )
-    shutdown = parser.parse_args(["request-shutdown", "--timeout", "12"])
-    startup = parser.parse_args(["startup", "status"])
-    repair = parser.parse_args(["repair", "gpu", "--force-gpu"])
-
-    assert download.command == "download-models"
-    assert self_test.no_microphone_check is True
-    assert setup.system_default is True
-    assert probe.isolated is True
-    assert provision.manifest.name == "runtime-models-v1.json"
-    assert provision.progress_json.name == "progress.json"
-    assert shutdown.timeout == 12
-    assert startup.startup_action == "status"
-    assert repair.repair_target == "gpu"
-    assert repair.force_gpu is True
+    assert _command_names(parser) == {
+        "setup",
+        "download-models",
+        "run",
+        "self-test",
+        "startup",
+    }
+    assert parser.parse_args(["download-models"]).command == "download-models"
+    assert parser.parse_args(["setup", "--system-default"]).system_default is True
+    assert parser.parse_args(["self-test", "--no-microphone-check"]).no_microphone_check
+    assert parser.parse_args(["startup", "status"]).startup_action == "status"
 
 
-def test_version_option_uses_package_version(capsys) -> None:
+@pytest.mark.parametrize(
+    "command",
+    ["installer-probe", "provision", "request-shutdown", "repair"],
+)
+def test_parser_rejects_removed_installer_commands(command: str) -> None:
+    with pytest.raises(SystemExit, match="2"):
+        cli.build_parser().parse_args([command])
+
+
+def test_version_option_uses_package_version(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit, match="0"):
         cli.build_parser().parse_args(["--version"])
 
@@ -76,20 +76,6 @@ def test_download_models_does_not_modify_existing_config(tmp_path, monkeypatch) 
     assert paths.config_file.read_bytes() == original
 
 
-def test_isolated_installer_probe_never_resolves_app_paths(monkeypatch, capsys) -> None:
-    def fail_defaults(_cls):
-        raise AssertionError("AppPaths.defaults must not run for isolated probe")
-
-    monkeypatch.setattr(cli.AppPaths, "defaults", classmethod(fail_defaults))
-
-    result = cli.main(["installer-probe", "--isolated"])
-    payload = json.loads(capsys.readouterr().out)
-
-    assert result == 0
-    assert payload["isolated"] is True
-    assert payload["ready"] is True
-
-
 def test_invalid_version_disables_update_service_without_raising(tmp_path, caplog) -> None:
     def invalid_factory(_path, _version):
         raise ValueError("nonsemantic version")
@@ -102,79 +88,6 @@ def test_invalid_version_disables_update_service_without_raising(tmp_path, caplo
 
     assert service is None
     assert "Update checks disabled" in caplog.text
-
-
-def test_repair_models_reports_console_progress_without_progress_file(
-    tmp_path,
-    monkeypatch,
-    capsys,
-) -> None:
-    from auto_speech_journal import runtime_models
-
-    manifest = tmp_path / "runtime-models-v1.json"
-    manifest.write_text("{}\n", encoding="utf-8")
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
-
-    class FakeManifest:
-        release = "runtime-models-v1"
-
-    def provision(_manifest, _models_dir, *, progress):
-        progress(ProvisionEvent("preflight", "runtime-models-v1", None, 0, 10))
-        progress(ProvisionEvent("complete", "runtime-models-v1", None, 10, 10))
-        return ProvisionResult("runtime-models-v1", ("models",), (), 12)
-
-    monkeypatch.setattr(runtime_models, "load_runtime_model_manifest", lambda _path: FakeManifest())
-    monkeypatch.setattr(runtime_models, "provision_runtime_models", provision)
-
-    result = cli.run_repair_command(
-        paths,
-        target="models",
-        manifest_path=manifest,
-        progress_path=None,
-        force_gpu=False,
-    )
-    output = capsys.readouterr().out
-
-    assert result == 0
-    assert "[preflight]" in output
-    assert "[complete]" in output
-
-
-def test_console_progress_is_percent_and_eta_throttled(capsys) -> None:
-    reporter = cli._CliProgressReporter()
-    event = ProvisionEvent("downloading", "runtime-models-v1", "preview", 10, 100, 9)
-
-    reporter(event)
-    reporter(event)
-    output = capsys.readouterr().out
-
-    assert output.count("[downloading]") == 1
-    assert "10%" in output
-    assert "ETA 9s" in output
-
-
-def test_gpu_probe_failure_is_nonfatal_cpu_fallback(tmp_path, monkeypatch, capsys) -> None:
-    from auto_speech_journal import gpu_runtime
-
-    detection = GpuDetection(True, True, "999.0", ("GPU",), "compatible")
-
-    def fallback(*_args, **_kwargs):
-        return GpuInstallResult("cpu", True, detection, None, "CPU fallback: probe failed")
-
-    monkeypatch.setattr(gpu_runtime, "install_gpu_runtime", fallback)
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
-
-    result = cli.run_repair_command(
-        paths,
-        target="gpu",
-        manifest_path=None,
-        progress_path=None,
-        force_gpu=False,
-    )
-    payload = json.loads(capsys.readouterr().out.splitlines()[-1])
-
-    assert result == 0
-    assert payload["active_device"] == "cpu"
 
 
 def test_worker_paths_follow_current_config_records_root(tmp_path) -> None:

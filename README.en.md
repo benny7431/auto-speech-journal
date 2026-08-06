@@ -42,8 +42,8 @@ preview, produces a more accurate final transcript with Whisper, and organizes t
 Markdown file per hour in the Asia/Taipei timezone.
 
 Recognition, storage, and the interface all run locally. The application connects to Hugging Face
-only during installation, first-run model completion, or explicit model repair; routine recording
-does not send audio or transcripts to a cloud service.
+only during first-run setup or an explicit model download; routine recording does not send audio
+or transcripts to a cloud service.
 
 > [!IMPORTANT]
 > Version `0.2.0` is a pre-release. It supports Windows WASAPI, Chinese
@@ -74,7 +74,7 @@ does not send audio or transcripts to a cloud service.
 | Managed correction vocabulary | Corrected segments remain locked; learned terms can be reviewed, removed, cleared, or disabled without losing corrections |
 | Portable output | Journals are ordinary Markdown files and do not require a proprietary reader |
 | Switchable microphone | Pin a WASAPI endpoint or follow the Windows default without restarting the app |
-| Optional sign-in startup | The first-run wizard creates a per-user task pointing to the stable launcher only after explicit consent |
+| Optional sign-in startup | The first-run wizard creates a per-user task pointing to the installed App only after explicit consent |
 | Offline visuals | Monthly scenes, status scenes, and particle effects ship with the application and do not call generative image services at runtime |
 
 ## Quick start
@@ -83,8 +83,8 @@ does not send audio or transcripts to a cloud service.
 
 - Windows 10/11 x64
 - A working WASAPI microphone and Windows microphone permission when recording
-- A connection to Hugging Face for the first model download; Setup reports the calculated space required
-- An NVIDIA GPU is optional; failed detection or CUDA probing falls back to CPU
+- A connection to Hugging Face when the App performs its first model download
+- The official Setup follows the CPU-safe path; advanced NVIDIA CUDA installation uses `install.ps1`
 
 ### 2. Download and install
 
@@ -93,15 +93,14 @@ The official `v0.2.0` release may publish an unsigned
 only from [GitHub Releases](https://github.com/benny7431/auto-speech-journal/releases), not from an
 internal PR artifact. Because the files currently have no Authenticode signature, Windows may show
 an **Unknown publisher** dialog or a Microsoft Defender SmartScreen prompt. Verify the published
-SHA-256 and GitHub artifact attestation before running Setup. You do not need to disable Windows
-Defender. The final Setup does not require Python, `uv`, Git, PowerShell, administrator access, or
+SHA-256 before running Setup. You do not need to disable Windows Defender. The final Setup does
+not require Python, `uv`, Git, PowerShell, administrator access, or
 a separately installed certificate.
 
-Setup downloads ready-to-run models directly from pinned Hugging Face commit revisions, with visible
-progress, ETA, cancellation, and resume.
-It auto-detects NVIDIA support, allows an override, and always retains CPU fallback. The stable
-launcher is installed at `%LOCALAPPDATA%\Programs\AutoSpeechJournal\AutoSpeechJournal.exe`;
-versioned payloads live under `versions\<version>`. The default journal location is:
+Setup installs only the CPU-safe App and does not download models or GPU components. The
+application is installed directly under `%LOCALAPPDATA%\Programs\AutoSpeechJournal\app`. On first
+launch, the App downloads ready-to-run ONNX/CTranslate2 models from pinned Hugging Face commits.
+The default journal location is:
 
 ```text
 %USERPROFILE%\Documents\語音紀錄\YYYY-MM-DD\YYYY-MM-DD_HH.md
@@ -120,21 +119,18 @@ Also choose a journal folder, optional sign-in startup (off by default), and opt
 notifications (off by default). Recording starts only after **Start recording** is pressed. The
 selection is written to
 `%LOCALAPPDATA%\AutoSpeechJournal\config.json` and survives reinstallations.
-The wizard also verifies speech models in the background. If Setup was interrupted, use
-**Resume/repair models** there. **Start recording** remains disabled until models are ready, while
+The wizard downloads and verifies the speech models. If the network is interrupted, retry from
+first-run setup or later run `AutoSpeechJournal.CLI.exe download-models`. The Hugging Face cache
+reuses completed files. **Start recording** remains disabled until models are ready, while
 **Configure later** is always available and never opens the microphone.
 
 <details>
 <summary><strong>What does the installer do?</strong></summary>
 
-1. Stage the self-contained CPU application in `versions\<version>`.
-2. Run the actual frozen Qt/QML readiness probe before switching versions.
-3. Atomically replace `current.json`; failure leaves the previous version active.
-4. Use `runtime-models-v1.json` to download ONNX/CTranslate2 files from 40-character Hugging Face
-   commit revisions, with `.part` staging, Range fallback, retries, size/SHA-256 checks, and atomic replacement.
-5. Optionally download only pinned NVIDIA runtime wheels and run a real CUDA probe.
-6. Keep the usable CPU app when model/GPU provisioning fails; Start-menu Repair resumes it.
-7. Reuse legacy state and migrate the old sign-in task only after verifying its exact action.
+1. Install the PyInstaller onedir CPU-safe App directly into the fixed `app` directory.
+2. Create the Start-menu shortcut and Windows Apps uninstall entry.
+3. Download neither models nor NVIDIA runtime; the first-run App owns model provisioning.
+4. Do not open the microphone, create sign-in startup, or delete runtime data or external journals.
 
 </details>
 
@@ -198,9 +194,9 @@ flowchart LR
 ## Data, privacy, and file locations
 
 Routine operation does not upload audio or transcripts. Pinned models are downloaded directly from
-Hugging Face only during installation, first-run completion, or `repair models`. Once present,
-recording, VAD, preview, final recognition, Traditional Chinese conversion, and export all work
-offline. The versioned inventory is `packaging/manifests/runtime-models-v1.json`:
+Hugging Face only during first-run setup or `download-models`. Once present, recording, VAD,
+preview, final recognition, Traditional Chinese conversion, and export all work offline. The
+manifest packaged with the App is `src/auto_speech_journal/runtime-models-v1.json`:
 
 - Paraformer: `csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en` at
   `8e40c43232a1c5c66c82111efc5820d3accca11b`, using three ready-to-run INT8 ONNX/token files.
@@ -209,17 +205,17 @@ offline. The versioned inventory is `packaging/manifests/runtime-models-v1.json`
 - VAD: `R4kSo1997/sherpa-onnx-silero-vad-v5` at
   `4a6e5a75370a3ca741c950f8feda0dbed11c18ac`, using the Sherpa Silero VAD ONNX file.
 
-The current manifest contains 9 files totaling `1,859,512,338` bytes (about 1.73 GiB). Setup shows
-overall progress and ETA, supports cancellation while retaining `.part`, and computes disk space
-from remaining bytes, rollback state, and 20% headroom instead of a vague fixed estimate.
+The current manifest contains 9 files totaling `1,859,512,338` bytes (about 1.73 GiB). The App uses
+the `huggingface_hub` cache and retry behavior. A repeated run reuses completed files and verifies
+the pinned revision, size, and SHA-256 before use.
 
-Setup and repair never install Torch, Transformers, or Safetensors and never convert models on the
-user's computer. The optional NVIDIA CUDA runtime remains a separate, pinned PyPI-wheel flow.
+Setup and model download never install Torch, Transformers, or Safetensors and never convert
+models on the user's computer. NVIDIA CUDA remains a separate advanced `install.ps1` path and is
+not mixed into Setup or model provisioning.
 
 | Data | Default location |
 | --- | --- |
-| Stable launcher | `%LOCALAPPDATA%\Programs\AutoSpeechJournal\AutoSpeechJournal.exe` |
-| Versioned application | `%LOCALAPPDATA%\Programs\AutoSpeechJournal\versions\<version>` |
+| Installed App | `%LOCALAPPDATA%\Programs\AutoSpeechJournal\app` |
 | Configuration | `%LOCALAPPDATA%\AutoSpeechJournal\config.json` |
 | SQLite state | `%LOCALAPPDATA%\AutoSpeechJournal\state.db` |
 | Recognition models | `%LOCALAPPDATA%\AutoSpeechJournal\models` |
@@ -239,11 +235,9 @@ First stop the app through **System status → Exit application**, then run the 
 PowerShell:
 
 ```powershell
-$Cli = "$env:LOCALAPPDATA\Programs\AutoSpeechJournal\AutoSpeechJournal.CLI.exe"
-& $Cli repair models
-& $Cli repair gpu
-& $Cli repair runtime
-& $Cli installer-probe --isolated
+$Cli = "$env:LOCALAPPDATA\Programs\AutoSpeechJournal\app\AutoSpeechJournal.CLI.exe"
+& $Cli self-test --no-model-check --no-microphone-check
+& $Cli download-models
 & $Cli startup status
 ```
 
@@ -255,10 +249,10 @@ On a fresh install, or after choosing **Configure later**, select a fixed device
 Windows default** on the first-run screen or Settings page. The installer itself never selects a
 microphone or starts recording for you.
 
-**Models are missing after cancelling their download**
+**Models are missing after an interrupted first-run download**
 
-Reconnect, then choose **Repair models** from the Start menu. `.part` files resume; journals,
-configuration, and pending segments remain in place.
+Reconnect and retry in first-run setup, or run `AutoSpeechJournal.CLI.exe download-models`. The
+Hugging Face cache reuses completed files; journals, configuration, and pending segments remain.
 
 **The app reports a degraded state**
 
@@ -284,9 +278,9 @@ the uninstaller removes only the program, shortcuts, and its owned sign-in task.
 - Models and spool audio
 - Logs and local fonts
 
-A later installation can therefore reuse the configuration and resume incomplete segments.
-Unchecked options can additionally remove models/cache or, after a second confirmation, local
-state. External Markdown journal folders are never deleted automatically.
+A later installation can therefore reuse the configuration and resume incomplete segments. If the
+application is no longer needed, back up first and remove retained runtime data manually. The
+uninstaller never deletes external Markdown journal folders.
 
 ## Documentation, policies, and participation
 
@@ -340,9 +334,9 @@ src/auto_speech_journal/
 └── qml/, assets/              # Interface and offline visual assets
 
 tests/                         # Pytest regression tests
-packaging/                     # PyInstaller, launchers, Inno, model/CUDA manifests
+packaging/                     # PyInstaller, Inno Setup, and minimal release validation
 tools/                         # Recovery, assets, performance, and packaging QA
-install.ps1, uninstall.ps1     # Legacy development/recovery path only
+install.ps1, uninstall.ps1     # Advanced source/CUDA installation and recovery
 ```
 
 </details>

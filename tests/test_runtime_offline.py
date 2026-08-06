@@ -11,6 +11,7 @@ NETWORK_MODULES = frozenset(
     {
         "aiohttp",
         "httpx",
+        "hf_xet",
         "huggingface_hub",
         "requests",
         "socket",
@@ -74,9 +75,7 @@ def test_network_capable_imports_are_confined_to_explicit_download_services() ->
     }
 
     assert imports == {
-        "gpu_runtime.py": {"urllib.parse"},
-        "provisioning.py": {"urllib.error", "urllib.parse", "urllib.request"},
-        "runtime_models.py": {"urllib.parse"},
+        "model_download.py": {"huggingface_hub"},
         "update_check.py": {
             "urllib.error",
             "urllib.parse",
@@ -98,6 +97,9 @@ def test_runtime_uses_only_offline_model_path_resolution() -> None:
     assert _relative_imports(PACKAGE_ROOT / "workers.py", "provisioning") == set()
     assert _relative_imports(PACKAGE_ROOT / "workers.py", "update_check") == set()
     assert _relative_imports(PACKAGE_ROOT / "workers.py", "gpu_runtime") == set()
+    assert not (PACKAGE_ROOT / "provisioning.py").exists()
+    assert not (PACKAGE_ROOT / "gpu_runtime.py").exists()
+    assert not (PACKAGE_ROOT / "shutdown_ipc.py").exists()
     assert inspect.signature(run_setup).parameters["download_models"].default is False
 
 

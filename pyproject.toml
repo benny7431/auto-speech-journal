@@ -40,6 +40,7 @@ dependencies = [
   "numpy==2.4.6",
   "sherpa-onnx==1.13.4",
   "faster-whisper==1.2.1",
+  "huggingface-hub==1.23.0",
   "ctranslate2==4.8.1",
   "opencc==1.4.1",
   "soundfile==0.13.1",
@@ -82,7 +83,10 @@ exclude = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/auto_speech_journal"]
-include = ["src/auto_speech_journal/assets/**"]
+include = [
+  "src/auto_speech_journal/assets/**",
+  "src/auto_speech_journal/runtime-models-v1.json",
+]
 exclude = ["src/auto_speech_journal/assets/fonts/**"]
 
 [tool.pytest.ini_options]

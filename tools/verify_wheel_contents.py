@@ -41,6 +41,7 @@ VARIANT_EXPECTED_SCENES = {
     for variant in ("compact", "workspace")
 }
 REQUIRED_SUFFIXES = {
+    "auto_speech_journal/runtime-models-v1.json",
     "auto_speech_journal/qml/AmbientSoundRiver.qml",
     "auto_speech_journal/qml/JournalEntryDelegate.qml",
     "auto_speech_journal/qml/JournalWindow.qml",
@@ -295,7 +296,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     print(
         f"Wheel verification passed: {wheel} "
-        "(scene manifest, sound-river QML, particle sprites, brand assets; "
+        "(runtime model manifest, scene QML, particle sprites, brand assets; "
         "license notices present; runtime data and local fonts excluded)"
     )
     return 0

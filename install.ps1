@@ -79,18 +79,12 @@ function Wait-AppStopped(
 ) {
     $Deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     do {
-        $CurrentTask = Get-ScheduledTask `
-            -TaskPath $TaskPath `
-            -TaskName $TaskName `
-            -ErrorAction SilentlyContinue
-        $TaskRunning = $null -ne $CurrentTask -and $CurrentTask.State -eq "Running"
         $CurrentProcessIds = @(Get-AppProcessIds)
         $KnownProcessRunning = @(
             $KnownProcessIds |
                 Where-Object { $null -ne (Get-Process -Id $_ -ErrorAction SilentlyContinue) }
         ).Count -gt 0
         if (
-            -not $TaskRunning -and
             -not (Test-AppMutex) -and
             $CurrentProcessIds.Count -eq 0 -and
             -not $KnownProcessRunning
@@ -116,8 +110,7 @@ foreach ($Required in @(
     "pyproject.toml",
     "uv.lock",
     "README.md",
-    "src",
-    "packaging\manifests\runtime-models-v1.json"
+    "src"
 )) {
     if (-not (Test-Path -LiteralPath (Join-Path $SourceRoot $Required))) {
         throw "安裝來源缺少 $Required"
@@ -144,6 +137,24 @@ $ExistingTask = Get-ScheduledTask `
     -TaskPath $TaskPath `
     -TaskName $TaskName `
     -ErrorAction SilentlyContinue
+$ExpectedLegacyExecutable = Join-Path $AppRoot ".venv\Scripts\pythonw.exe"
+if ($null -ne $ExistingTask) {
+    $Actions = @($ExistingTask.Actions)
+    $OwnedLegacyTask = $Actions.Count -eq 1 -and
+        [IO.Path]::GetFullPath([string]$Actions[0].Execute).Equals(
+            [IO.Path]::GetFullPath($ExpectedLegacyExecutable),
+            [StringComparison]::OrdinalIgnoreCase
+        ) -and
+        ([string]$Actions[0].Arguments).Trim() -eq "-X utf8 -m auto_speech_journal run" -and
+        [IO.Path]::GetFullPath([string]$Actions[0].WorkingDirectory).Equals(
+            $AppRoot,
+            [StringComparison]::OrdinalIgnoreCase
+        )
+    if (-not $OwnedLegacyTask) {
+        Write-Warning "保留同名但不符合舊版 Auto Speech Journal action 的工作排程。"
+        $ExistingTask = $null
+    }
+}
 $ExistingTaskXml = $null
 $ExistingTaskWasRunning = $null -ne $ExistingTask -and $ExistingTask.State -eq "Running"
 if ($null -ne $ExistingTask) {
@@ -160,11 +171,6 @@ try {
     Copy-Item -LiteralPath (Join-Path $SourceRoot "uv.lock") -Destination $StageRoot
     Copy-Item -LiteralPath (Join-Path $SourceRoot "README.md") -Destination $StageRoot
     Copy-Item -LiteralPath (Join-Path $SourceRoot "src") -Destination $StageRoot -Recurse
-    $ManifestStage = Join-Path $StageRoot "manifests"
-    New-Item -ItemType Directory -Path $ManifestStage | Out-Null
-    Copy-Item `
-        -LiteralPath (Join-Path $SourceRoot "packaging\manifests\runtime-models-v1.json") `
-        -Destination $ManifestStage
     $LegacyPackagedFonts = Join-Path $StageRoot "src\auto_speech_journal\assets\fonts"
     Assert-UnderRuntime $LegacyPackagedFonts
     if (Test-Path -LiteralPath $LegacyPackagedFonts) {
@@ -185,8 +191,9 @@ $PreviousAppMoved = $false
 $NewAppPlaced = $false
 $StateBackupCreated = $false
 $HadPreviousInstall = Test-Path -LiteralPath $AppRoot
-$TaskRegistered = $false
+$LegacyTaskRemoved = $false
 $ModelsReady = -not $InstallModels
+$Application = $null
 try {
     $ExistingAppProcessIds = @(Get-AppProcessIds)
     if ($null -ne $ExistingTask) {
@@ -240,17 +247,13 @@ try {
     }
 
     if ($InstallModels) {
-        $ModelManifestPath = Join-Path $AppRoot "manifests\runtime-models-v1.json"
-        $ModelProgressPath = Join-Path $RuntimeRoot "provision-progress.json"
-        & $Python -X utf8 -m auto_speech_journal repair models `
-            --manifest $ModelManifestPath `
-            --progress-json $ModelProgressPath
+        & $Python -X utf8 -m auto_speech_journal download-models
         if ($LASTEXITCODE -eq 0) {
             $ModelsReady = $true
         }
         else {
             Write-Warning (
-                "模型尚未下載完成；程式安裝已保留。重新執行 repair models 即可從 .part 續傳。" +
+                "模型尚未下載完成；程式安裝已保留。重新執行 download-models 即可使用 Hugging Face cache 繼續。" +
                 " exit code $LASTEXITCODE"
             )
         }
@@ -271,37 +274,13 @@ try {
         throw "安裝後自我檢查失敗，exit code $LASTEXITCODE"
     }
 
-    $UserId = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-    $Action = New-ScheduledTaskAction `
-        -Execute $Pythonw `
-        -Argument "-X utf8 -m auto_speech_journal run" `
-        -WorkingDirectory $AppRoot
-    $Trigger = New-ScheduledTaskTrigger -AtLogOn -User $UserId
-    $Trigger.Delay = "PT20S"
-    $Principal = New-ScheduledTaskPrincipal `
-        -UserId $UserId `
-        -LogonType Interactive `
-        -RunLevel Limited
-    $Settings = New-ScheduledTaskSettingsSet `
-        -AllowStartIfOnBatteries `
-        -DontStopIfGoingOnBatteries `
-        -StartWhenAvailable `
-        -RestartCount 999 `
-        -RestartInterval (New-TimeSpan -Minutes 1) `
-        -ExecutionTimeLimit ([TimeSpan]::Zero) `
-        -MultipleInstances IgnoreNew
-    $Task = New-ScheduledTask `
-        -Action $Action `
-        -Trigger $Trigger `
-        -Principal $Principal `
-        -Settings $Settings `
-        -Description "本機常駐語音轉錄；登入 20 秒後啟動。"
-    Register-ScheduledTask `
-        -TaskPath $TaskPath `
-        -TaskName $TaskName `
-        -InputObject $Task `
-        -Force | Out-Null
-    $TaskRegistered = $true
+    if ($null -ne $ExistingTask) {
+        Unregister-ScheduledTask `
+            -TaskPath $TaskPath `
+            -TaskName $TaskName `
+            -Confirm:$false
+        $LegacyTaskRemoved = $true
+    }
 
     if (-not $NoStart) {
         $LogFile = Join-Path $RuntimeRoot "logs\journal.log"
@@ -310,30 +289,26 @@ try {
             $OldLog = Get-Item -LiteralPath $LogFile
             $LogSignatureBefore = "$($OldLog.Length):$($OldLog.LastWriteTimeUtc.Ticks)"
         }
-        Start-ScheduledTask -TaskPath $TaskPath -TaskName $TaskName
+        $Application = Start-Process `
+            -FilePath $Pythonw `
+            -ArgumentList @("-X", "utf8", "-m", "auto_speech_journal", "run") `
+            -WorkingDirectory $AppRoot `
+            -WindowStyle Hidden `
+            -PassThru
         Start-Sleep -Seconds 3
-        $StartedTask = Get-ScheduledTask `
-            -TaskPath $TaskPath `
-            -TaskName $TaskName `
-            -ErrorAction Stop
-        if ($StartedTask.State -ne "Running") {
-            $TaskInfo = Get-ScheduledTaskInfo `
-                -TaskPath $TaskPath `
-                -TaskName $TaskName `
-                -ErrorAction SilentlyContinue
-            $LastResult = if ($null -ne $TaskInfo) { $TaskInfo.LastTaskResult } else { "unknown" }
-            throw "排程啟動後未持續執行（state=$($StartedTask.State), result=$LastResult）"
+        if ($Application.HasExited) {
+            throw "應用程式啟動後立即結束（exit code $($Application.ExitCode)）"
         }
         if (-not (Test-Path -LiteralPath $LogFile)) {
-            throw "排程已啟動，但未建立 runtime 日誌：$LogFile"
+            throw "應用程式已啟動，但未建立 runtime 日誌：$LogFile"
         }
         if (-not (Test-AppMutex)) {
-            throw "排程顯示執行中，但應用程式 mutex 尚未建立。"
+            throw "應用程式程序仍在執行，但 mutex 尚未建立。"
         }
         $NewLog = Get-Item -LiteralPath $LogFile
         $LogSignatureAfter = "$($NewLog.Length):$($NewLog.LastWriteTimeUtc.Ticks)"
         if ($null -ne $LogSignatureBefore -and $LogSignatureAfter -eq $LogSignatureBefore) {
-            throw "排程啟動後 runtime 日誌沒有更新：$LogFile"
+            throw "應用程式啟動後 runtime 日誌沒有更新：$LogFile"
         }
     }
     $Installed = $true
@@ -341,22 +316,12 @@ try {
 finally {
     if (-not $Installed) {
         $RollbackAppProcessIds = @(Get-AppProcessIds)
-        if ($TaskRegistered) {
-            Stop-ScheduledTask `
-                -TaskPath $TaskPath `
-                -TaskName $TaskName `
-                -ErrorAction SilentlyContinue
+        if ($null -ne $Application -and -not $Application.HasExited) {
+            Stop-Process -Id $Application.Id -ErrorAction SilentlyContinue
         }
-        if (($TaskRegistered -or $NewAppPlaced -or $StateBackupCreated) -and
+        if (($NewAppPlaced -or $StateBackupCreated) -and
             -not (Wait-AppStopped -KnownProcessIds $RollbackAppProcessIds)) {
             throw "回復安裝前狀態前無法停止程式；為避免損壞資料，已保留備份。"
-        }
-        if ($TaskRegistered) {
-            Unregister-ScheduledTask `
-                -TaskPath $TaskPath `
-                -TaskName $TaskName `
-                -Confirm:$false `
-                -ErrorAction SilentlyContinue
         }
         if ($NewAppPlaced -and (Test-Path -LiteralPath $AppRoot)) {
             Remove-Item -LiteralPath $AppRoot -Recurse -Force
@@ -378,7 +343,7 @@ finally {
         }
         if ($null -ne $ExistingTaskXml) {
             try {
-                if ($TaskRegistered) {
+                if ($LegacyTaskRemoved) {
                     Register-ScheduledTask `
                         -TaskPath $TaskPath `
                         -TaskName $TaskName `
@@ -392,13 +357,6 @@ finally {
             catch {
                 Write-Warning "舊工作排程恢復失敗：$($_.Exception.Message)"
             }
-        }
-        elseif ($TaskRegistered) {
-            Unregister-ScheduledTask `
-                -TaskPath $TaskPath `
-                -TaskName $TaskName `
-                -Confirm:$false `
-                -ErrorAction SilentlyContinue
         }
         if (Test-Path -LiteralPath $StateBackupRoot) {
             Remove-Item -LiteralPath $StateBackupRoot -Recurse -Force
@@ -417,5 +375,5 @@ if (Test-Path -LiteralPath $StateBackupRoot) {
 }
 
 Write-Host "安裝完成：$AppRoot"
-Write-Host "排程工作：$TaskName（登入後延遲 20 秒）"
+Write-Host "登入自啟：未建立；正式 Setup 的首次設定才管理登入自啟。"
 Write-Host "診斷：& '$AppRoot\.venv\Scripts\python.exe' -X utf8 -m auto_speech_journal self-test"

@@ -1,9 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""Build the GUI and maintenance CLI into one versioned onedir payload."""
+"""Build the GUI and CLI into one CPU-first onedir payload."""
 
 import os
-import runpy
-import tomllib
 from pathlib import Path
 
 from PyInstaller.utils.hooks import (
@@ -13,43 +11,46 @@ from PyInstaller.utils.hooks import (
     copy_metadata,
 )
 
-
 ROOT = Path(SPECPATH).parents[1]
 SOURCE_ROOT = ROOT / "src"
 HOOK_ROOT = Path(SPECPATH) / "hooks"
-runtime_inventory = runpy.run_path(
-    str(ROOT / "packaging" / "windows" / "runtime_inventory.py")
-)
-DEFAULT_VERSION_FILE = os.environ.get("ASJ_VERSION_FILE")
-GUI_VERSION_FILE = os.environ.get("ASJ_GUI_VERSION_FILE") or DEFAULT_VERSION_FILE
-CLI_VERSION_FILE = os.environ.get("ASJ_CLI_VERSION_FILE") or DEFAULT_VERSION_FILE
+GUI_VERSION_FILE = os.environ.get("ASJ_GUI_VERSION_FILE")
+CLI_VERSION_FILE = os.environ.get("ASJ_CLI_VERSION_FILE")
 if not GUI_VERSION_FILE or not CLI_VERSION_FILE:
     raise RuntimeError("PyInstaller version-resource paths were not provided")
 ICON_FILE = os.environ.get("ASJ_ICON_FILE") or None
 
 
 def package_payload(name):
-    """Collect runtime payloads that are loaded dynamically by native bindings."""
     return collect_all(name)
 
 
 datas = collect_data_files(
     "auto_speech_journal",
-    includes=["qml/**", "assets/**"],
+    includes=["qml/**", "assets/**", "runtime-models-v1.json"],
     excludes=["assets/fonts/**", "models/**"],
 )
 binaries = []
 hiddenimports = []
 
-# Preserve metadata and license files for the complete locked runtime graph.
-lock_payload = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
-runtime_distributions, _direct_runtime, _forbidden_runtime = runtime_inventory[
-    "locked_runtime_inventory"
-](lock_payload)
-for distribution in ("auto-speech-journal", *sorted(runtime_distributions)):
+for distribution in (
+    "auto-speech-journal",
+    "ctranslate2",
+    "faster-whisper",
+    "huggingface-hub",
+    "onnxruntime",
+    "opencc",
+    "sherpa-onnx",
+):
     datas += copy_metadata(distribution)
 
-for package in ("sherpa_onnx", "ctranslate2", "opencc"):
+for package in (
+    "sherpa_onnx",
+    "ctranslate2",
+    "opencc",
+    "huggingface_hub",
+    "hf_xet",
+):
     package_datas, package_binaries, package_hiddenimports = package_payload(package)
     datas += package_datas
     binaries += package_binaries
@@ -77,6 +78,8 @@ hiddenimports += [
     "PySide6.QtQuick",
     "PySide6.QtQuickControls2",
     "PySide6.QtWidgets",
+    "huggingface_hub",
+    "hf_xet",
     "numpy",
     "onnxruntime",
     "soundfile",
@@ -128,19 +131,6 @@ cli_analysis = Analysis(
 )
 
 MERGE((gui_analysis, "gui", "gui"), (cli_analysis, "cli", "cli"))
-
-analysis_entries = [
-    entry[0]
-    for analysis in (gui_analysis, cli_analysis)
-    for toc in (analysis.pure, analysis.binaries, analysis.datas)
-    for entry in toc
-]
-runtime_inventory["write_frozen_inventory"](
-    analysis_entries,
-    Path(os.environ["ASJ_FROZEN_INVENTORY_FILE"]),
-    project_name="auto-speech-journal",
-    project_version=os.environ["ASJ_PROJECT_VERSION"],
-)
 
 gui_pyz = PYZ(gui_analysis.pure)
 cli_pyz = PYZ(cli_analysis.pure)

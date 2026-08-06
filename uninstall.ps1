@@ -62,18 +62,12 @@ function Wait-AppStopped(
 ) {
     $Deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     do {
-        $CurrentTask = Get-ScheduledTask `
-            -TaskPath $TaskPath `
-            -TaskName $TaskName `
-            -ErrorAction SilentlyContinue
-        $TaskRunning = $null -ne $CurrentTask -and $CurrentTask.State -eq "Running"
         $CurrentProcessIds = @(Get-AppProcessIds)
         $KnownProcessRunning = @(
             $KnownProcessIds |
                 Where-Object { $null -ne (Get-Process -Id $_ -ErrorAction SilentlyContinue) }
         ).Count -gt 0
         if (
-            -not $TaskRunning -and
             -not (Test-AppMutex) -and
             $CurrentProcessIds.Count -eq 0 -and
             -not $KnownProcessRunning
@@ -89,6 +83,24 @@ $Task = Get-ScheduledTask `
     -TaskPath $TaskPath `
     -TaskName $TaskName `
     -ErrorAction SilentlyContinue
+if ($null -ne $Task) {
+    $Actions = @($Task.Actions)
+    $ExpectedLegacyExecutable = Join-Path $AppRoot ".venv\Scripts\pythonw.exe"
+    $OwnedLegacyTask = $Actions.Count -eq 1 -and
+        [IO.Path]::GetFullPath([string]$Actions[0].Execute).Equals(
+            [IO.Path]::GetFullPath($ExpectedLegacyExecutable),
+            [StringComparison]::OrdinalIgnoreCase
+        ) -and
+        ([string]$Actions[0].Arguments).Trim() -eq "-X utf8 -m auto_speech_journal run" -and
+        [IO.Path]::GetFullPath([string]$Actions[0].WorkingDirectory).Equals(
+            $AppRoot,
+            [StringComparison]::OrdinalIgnoreCase
+        )
+    if (-not $OwnedLegacyTask) {
+        Write-Warning "保留同名但不符合舊版 Auto Speech Journal action 的工作排程。"
+        $Task = $null
+    }
+}
 $ExistingAppProcessIds = @(Get-AppProcessIds)
 if ($null -ne $Task) {
     Stop-ScheduledTask `

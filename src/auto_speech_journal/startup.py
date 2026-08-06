@@ -12,6 +12,8 @@ from pathlib import Path
 
 TASK_NAME = r"\AutoSpeechJournal\Auto Speech Journal"
 OWNERSHIP_MARKER = "AutoSpeechJournal-owned:v1"
+LEGACY_TASK_NAME = r"\Auto Speech Journal"
+LEGACY_TASK_ARGUMENTS = "-X utf8 -m auto_speech_journal run"
 TASK_XML_NAMESPACE = "http://schemas.microsoft.com/windows/2004/02/mit/task"
 
 
@@ -35,7 +37,13 @@ CommandRunner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
 def default_launcher_path() -> Path:
     local_app_data = os.environ.get("LOCALAPPDATA")
     root = Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
-    return root / "Programs" / "AutoSpeechJournal" / "AutoSpeechJournal.exe"
+    return root / "Programs" / "AutoSpeechJournal" / "app" / "AutoSpeechJournal.exe"
+
+
+def default_legacy_launcher_path() -> Path:
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    root = Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
+    return root / "AutoSpeechJournal" / "app" / ".venv" / "Scripts" / "pythonw.exe"
 
 
 def _default_runner(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
@@ -139,19 +147,59 @@ def _parse_task(xml_text: str, launcher: Path) -> tuple[bool, bool, str]:
     return enabled, owned, detail
 
 
+def _is_owned_legacy_task(xml_text: str, launcher: Path) -> bool:
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return False
+    namespace = {"t": TASK_XML_NAMESPACE}
+    command = root.findtext("t:Actions/t:Exec/t:Command", namespaces=namespace)
+    arguments = root.findtext("t:Actions/t:Exec/t:Arguments", namespaces=namespace)
+    if command is None or arguments is None:
+        return False
+    command_matches = Path(command.strip().strip('"')).resolve(
+        strict=False
+    ) == launcher.resolve(strict=False)
+    return command_matches and " ".join(arguments.split()) == LEGACY_TASK_ARGUMENTS
+
+
 class StartupTaskManager:
     def __init__(
         self,
         launcher: Path | None = None,
         *,
         task_name: str = TASK_NAME,
+        legacy_task_name: str = LEGACY_TASK_NAME,
+        legacy_launcher: Path | None = None,
         runner: CommandRunner = _default_runner,
         os_name: str = os.name,
     ) -> None:
         self.launcher = (launcher or default_launcher_path()).resolve(strict=False)
         self.task_name = task_name
+        self.legacy_task_name = legacy_task_name
+        self.legacy_launcher = (legacy_launcher or default_legacy_launcher_path()).resolve(
+            strict=False
+        )
         self._runner = runner
         self._os_name = os_name
+
+    def _remove_owned_legacy_task(self) -> None:
+        if self._os_name != "nt":
+            return
+        result = self._runner(
+            ("schtasks.exe", "/Query", "/TN", self.legacy_task_name, "/XML")
+        )
+        if result.returncode != 0 or not _is_owned_legacy_task(
+            result.stdout,
+            self.legacy_launcher,
+        ):
+            return
+        removed = self._runner(
+            ("schtasks.exe", "/Delete", "/TN", self.legacy_task_name, "/F")
+        )
+        if removed.returncode != 0:
+            detail = (removed.stderr or removed.stdout or "legacy task delete failed").strip()
+            raise StartupTaskError(detail)
 
     def status(self) -> StartupStatus:
         if self._os_name != "nt":
@@ -197,12 +245,13 @@ class StartupTaskManager:
         before = self.status()
         if not before.available:
             return before
+        self._remove_owned_legacy_task()
         if before.enabled:
             return before
         if before.owned is False and "not registered" not in before.detail:
             raise StartupTaskError(before.detail)
         if not self.launcher.is_file():
-            raise StartupTaskError(f"stable launcher is missing: {self.launcher}")
+            raise StartupTaskError(f"application executable is missing: {self.launcher}")
         sid = _read_user_sid(self._runner)
         with tempfile.TemporaryDirectory(prefix="asj-startup-") as temporary:
             xml_path = Path(temporary) / "task.xml"
@@ -240,9 +289,10 @@ class StartupTaskManager:
         before = self.status()
         if not before.available:
             return before
+        self._remove_owned_legacy_task()
         if not before.owned:
             if before.detail == "startup task is not registered":
-                return before
+                return self.status()
             raise StartupTaskError(before.detail)
         result = self._runner(("schtasks.exe", "/Delete", "/TN", self.task_name, "/F"))
         if result.returncode != 0:
@@ -255,10 +305,13 @@ class StartupTaskManager:
 
 
 __all__ = [
+    "LEGACY_TASK_ARGUMENTS",
+    "LEGACY_TASK_NAME",
     "OWNERSHIP_MARKER",
     "TASK_NAME",
     "StartupStatus",
     "StartupTaskError",
     "StartupTaskManager",
+    "default_legacy_launcher_path",
     "default_launcher_path",
 ]
