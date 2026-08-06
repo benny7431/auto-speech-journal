@@ -450,6 +450,9 @@ def test_authenticode_receipt_accepts_unsigned_executable(tmp_path: Path) -> Non
     escaped_script = str(ROOT / "tools/verify_windows_installer.ps1").replace("'", "''")
     escaped_executable = str(executable).replace("'", "''")
     command = (
+        "$securityModule=Join-Path $PSHOME "
+        "'Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1';"
+        "Import-Module $securityModule -Force -ErrorAction Stop;"
         f"$ast=[Management.Automation.Language.Parser]::ParseFile('{escaped_script}',"
         "[ref]$null,[ref]$null);"
         f"foreach($name in @({','.join(repr(name) for name in function_names)})){{"
