@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -21,7 +22,7 @@ def test_third_party_notices_cover_direct_dependencies_and_models() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     notices = (ROOT / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8").lower()
     dependencies = list(project["project"]["dependencies"])
-    for extra in ("cuda", "model-build"):
+    for extra in ("cuda",):
         dependencies.extend(project["project"]["optional-dependencies"][extra])
 
     missing = [
@@ -31,7 +32,84 @@ def test_third_party_notices_cover_direct_dependencies_and_models() -> None:
     ]
     assert missing == []
     for model in (PREVIEW_SPEC, VAD_SPEC, FINAL_SPEC):
-        assert model.key.lower() in notices
+        assert model.install_path.lower() in notices
+
+
+def test_client_environment_has_no_model_conversion_dependencies() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert "model-build" not in project["project"]["optional-dependencies"]
+    requirements = list(project["project"]["dependencies"])
+    for extra in project["project"]["optional-dependencies"].values():
+        requirements.extend(extra)
+
+    names = {_requirement_name(requirement) for requirement in requirements}
+    assert names.isdisjoint({"torch", "transformers", "safetensors"})
+
+    lock = (ROOT / "uv.lock").read_text(encoding="utf-8")
+    assert not any(
+        re.search(rf'^name = "{re.escape(name)}"$', lock, flags=re.MULTILINE)
+        for name in ("torch", "transformers", "safetensors")
+    )
+
+    downloader = (
+        ROOT / "src" / "auto_speech_journal" / "model_download.py"
+    ).read_text(encoding="utf-8")
+    for conversion_api in ("snapshot_download", "ct2-transformers-converter", "safetensors"):
+        assert conversion_api not in downloader
+
+
+def test_public_docs_describe_hugging_face_only_runtime_model_supply() -> None:
+    privacy = (ROOT / "PRIVACY.md").read_text(encoding="utf-8")
+    architecture = (ROOT / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
+
+    assert "GitHub Releases 與 Hugging Face" not in privacy
+    assert "Python、PyTorch 或 NVIDIA" not in privacy
+    assert "固定完整" in privacy
+    assert "commit" in privacy
+    assert "runtime-models-v1.json" in architecture
+    assert "supply-chain authority" in architecture
+    assert "pinned in `model_download.py`" not in architecture
+    assert "預設關閉" in privacy
+    assert "不會下載或安裝更新" in privacy
+
+
+def test_tracked_sources_do_not_restore_github_models_release_dependencies() -> None:
+    result = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    )
+    tracked = [Path(value) for value in result.stdout.decode().split("\0") if value]
+    forbidden = (
+        "gh release " + "download models-v1",
+        "gh release " + "create models-v1",
+        "/releases/" + "tags/models-v1",
+        "/releases/" + "download/models-v1",
+        "models-v1" + ".sha256",
+        "packaging/manifests/" + "models-v1.json",
+    )
+    offenders: list[str] = []
+    for relative in tracked:
+        if relative.parts and relative.parts[0] == "tests":
+            continue
+        path = ROOT / relative
+        if not path.is_file() or path.suffix.lower() not in {
+            ".json",
+            ".md",
+            ".ps1",
+            ".py",
+            ".qml",
+            ".toml",
+            ".yml",
+            ".yaml",
+        }:
+            continue
+        text = path.read_text(encoding="utf-8-sig", errors="replace").casefold()
+        if any(pattern.casefold() in text for pattern in forbidden):
+            offenders.append(relative.as_posix())
+
+    assert offenders == []
 
 
 def test_dependency_names_are_normalized_for_dependabot() -> None:

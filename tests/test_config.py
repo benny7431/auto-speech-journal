@@ -76,6 +76,55 @@ def test_load_config_adds_missing_vocabulary_learning_default_to_existing_v4(
     assert persisted["vocabulary_learning_enabled"] is True
 
 
+def test_load_config_migrates_legacy_v4_model_pins_without_losing_user_state(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "config.json"
+    records_root = tmp_path / "existing-journal"
+    original = AppConfig(
+        records_root=str(records_root),
+        microphone=MicrophoneSelection(
+            MicrophoneMode.FIXED,
+            DeviceFingerprint(
+                name="Existing USB microphone",
+                host_api="Windows WASAPI",
+                endpoint_id="wasapi:existing",
+            ),
+        ),
+        onboarding_completed=True,
+        startup_enabled=True,
+        update_check_enabled=True,
+        vocabulary_learning_enabled=False,
+        ui_font_family="Existing User Font",
+        ui_font_size=22,
+    )
+    raw = original.to_dict()
+    raw["model"] = {
+        "preview_model": "sherpa-onnx-streaming-paraformer-bilingual-zh-en-int8",
+        "preview_revision": "github-release:asr-models:asset-155855418",
+        "final_model": "openai/whisper-large-v3-turbo",
+        "final_revision": "41f01f3fe87f28c78e2fbf8b568835947dd65ed9",
+        "final_compute_type": "int8_float16",
+        "cpu_compute_type": "int8",
+    }
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    migrated = load_config(path)
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+
+    assert migrated.model == ModelConfig()
+    assert persisted["model"] == migrated.to_dict()["model"]
+    assert migrated.records_root == str(records_root.resolve())
+    assert migrated.microphone == original.microphone
+    assert migrated.onboarding_completed is True
+    assert migrated.startup_enabled is True
+    assert migrated.update_check_enabled is True
+    assert migrated.vocabulary_learning_enabled is False
+    assert migrated.ui_font_family == "Existing User Font"
+    assert migrated.ui_font_size == 22
+    assert not path.with_suffix(".json.tmp").exists()
+
+
 def test_load_config_preserves_explicit_appearance_settings(tmp_path: Path) -> None:
     path = tmp_path / "config.json"
     raw = AppConfig(records_root=str(tmp_path / "records")).to_dict()

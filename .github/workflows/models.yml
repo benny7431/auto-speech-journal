@@ -1,449 +1,138 @@
-name: Build immutable models-v1
+name: Validate pinned Hugging Face runtime models
 
 on:
   workflow_dispatch:
+    inputs:
+      run_reference_gate:
+        description: Download all pinned models and run the reviewed reference transcript gate
+        required: true
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - "packaging/manifests/runtime-models-v1.json"
+      - "packaging/models/**"
+      - "src/auto_speech_journal/model_download.py"
+      - "src/auto_speech_journal/runtime_models.py"
+      - "tests/test_runtime_models.py"
+      - ".github/workflows/models.yml"
+  push:
+    branches: [main]
+    paths:
+      - "packaging/manifests/runtime-models-v1.json"
+      - "packaging/models/**"
+      - "src/auto_speech_journal/model_download.py"
+      - "src/auto_speech_journal/runtime_models.py"
+      - "tests/test_runtime_models.py"
+      - ".github/workflows/models.yml"
 
 permissions:
   contents: read
 
 concurrency:
-  group: models-v1
-  cancel-in-progress: false
+  group: runtime-models-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build:
-    name: Build and verify models-v1
+  manifest-contract:
+    name: Pinned Hugging Face manifest contract
     runs-on: windows-latest
-    timeout-minutes: 180
-    permissions:
-      contents: read
     env:
-      PYTHONUTF8: "1"
       PYTHONPATH: ${{ github.workspace }}\src
-
     steps:
-      - name: Check out reviewed main source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          fetch-depth: 0
           persist-credentials: false
 
-      - name: Require the current main commit
-        shell: pwsh
-        run: |
-          if ($env:GITHUB_REF -ne 'refs/heads/main') {
-            throw "Immutable model assets may only be built from main"
-          }
-          $head = git rev-parse HEAD
-          if ($LASTEXITCODE -ne 0) { throw "Cannot resolve checked-out commit" }
-          $main = git rev-parse origin/main
-          if ($LASTEXITCODE -ne 0) { throw "Cannot resolve origin/main" }
-          if ($head.Trim() -ne $env:GITHUB_SHA -or $main.Trim() -ne $env:GITHUB_SHA) {
-            throw "Model build must run from the current reviewed main commit"
-          }
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          enable-cache: true
 
-      - name: Refuse to replace the immutable release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $tags = gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" `
-            --jq '.[].tag_name'
-          if ($LASTEXITCODE -ne 0) { throw "Cannot query existing releases" }
-          if (@($tags) -contains 'models-v1') {
-            throw "models-v1 already exists and is immutable; create models-v2 instead"
-          }
-
-      - name: Require manual reference-audio and license sign-off
-        shell: pwsh
-        env:
-          REFERENCE_APPROVED_SHA: ${{ vars.MODELS_V1_REFERENCE_TRANSCRIPT_APPROVED_SHA }}
-          LICENSE_APPROVED_SHA: ${{ vars.MODELS_V1_LICENSE_REVIEW_APPROVED_SHA }}
-        run: |
-          if ($env:REFERENCE_APPROVED_SHA -ne $env:GITHUB_SHA) {
-            throw "models-v1 is blocked until the pinned reference-audio transcript is approved for this commit"
-          }
-          if ($env:LICENSE_APPROVED_SHA -ne $env:GITHUB_SHA) {
-            throw "models-v1 is blocked until upstream model licenses are approved for this commit"
-          }
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.11"
 
-      - name: Set up uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
-        with:
-          enable-cache: true
-          cache-dependency-glob: uv.lock
-
-      - name: Verify and install pinned model build environment
+      - name: Install locked test environment
         shell: pwsh
-        run: |
-          uv lock --check
-          if ($LASTEXITCODE -ne 0) { throw "uv.lock is stale" }
-          uv sync --frozen --no-editable --extra model-build
-          if ($LASTEXITCODE -ne 0) { throw "Pinned model build environment installation failed" }
+        run: uv sync --frozen --no-editable --extra dev
 
-      - name: Download, convert, and deeply probe pinned models
+      - name: Validate pinned repositories, revisions, files, sizes, hashes, and licenses
         shell: pwsh
-        run: |
-          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "model-runtime"
-          uv run --no-sync python -m auto_speech_journal download-models
-          if ($LASTEXITCODE -ne 0) { throw "Pinned model download failed" }
-          uv run --no-sync python -m auto_speech_journal self-test `
-            --deep-model-check --no-microphone-check --allow-cpu-finalizer
-          if ($LASTEXITCODE -ne 0) { throw "Deep model probe failed" }
+        run: >-
+          uv run --no-sync python packaging/models/validate_runtime_model_manifest.py
+          --manifest packaging/manifests/runtime-models-v1.json
 
-      - name: Collect pinned upstream license texts
+      - name: Run runtime model supply-chain tests
         shell: pwsh
-        run: |
-          $licenses = Join-Path $env:RUNNER_TEMP "model-licenses"
-          New-Item -ItemType Directory -Force -Path $licenses | Out-Null
-          Invoke-WebRequest -UseBasicParsing `
-            -Uri "https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/142807252687d81b40d6315f23470a1512a00de3/LICENSE" `
-            -OutFile (Join-Path $licenses "paraformer-LICENSE.txt")
-          Invoke-WebRequest -UseBasicParsing `
-            -Uri "https://raw.githubusercontent.com/snakers4/silero-vad/be95df9152c0d7618fa1edfeb296fc3dae32376f/LICENSE" `
-            -OutFile (Join-Path $licenses "silero-vad-LICENSE.txt")
-          Invoke-WebRequest -UseBasicParsing `
-            -Uri "https://huggingface.co/openai/whisper-large-v3-turbo/raw/41f01f3fe87f28c78e2fbf8b568835947dd65ed9/LICENSE" `
-            -OutFile (Join-Path $licenses "whisper-LICENSE.txt")
+        run: >-
+          uv run --no-sync pytest
+          tests/test_runtime_models.py
+          tests/test_model_release_gate.py
+          tests/test_provisioning.py
 
-      - name: Create deterministic sub-2-GiB model assets and manifest
-        shell: pwsh
-        run: |
-          $models = Join-Path $env:RUNNER_TEMP "model-runtime\AutoSpeechJournal\models"
-          $licenses = Join-Path $env:RUNNER_TEMP "model-licenses"
-          uv run --no-sync python packaging/models/build_model_bundle.py `
-            --models-dir $models `
-            --license-dir $licenses `
-            --output-dir artifacts/models-v1
-          if ($LASTEXITCODE -ne 0) { throw "Model bundle build failed" }
-          uv run --no-sync python packaging/models/validate_model_manifest.py `
-            --manifest artifacts/models-v1/models-v1.json
-          if ($LASTEXITCODE -ne 0) { throw "Model manifest validation failed" }
-
-      - name: Enforce final model assets and reference-transcript gate
-        shell: pwsh
-        run: |
-          uv run --no-sync python packaging/models/verify_model_release_assets.py `
-            --manifest artifacts/models-v1/models-v1.json `
-            --assets-dir artifacts/models-v1 `
-            --reference-spec packaging/models/reference-audio-gate.json `
-            --repository-root .
-          if ($LASTEXITCODE -ne 0) {
-            throw "Model release is blocked by asset or reference-transcript verification"
-          }
-
-      - name: Prepare model release metadata
-        shell: pwsh
-        run: |
-          $root = Join-Path $PWD "artifacts\models-v1"
-          $manifestPath = Join-Path $root "models-v1.json"
-          $manifestHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $manifestPath).Hash.ToLowerInvariant()
-          [IO.File]::WriteAllText(
-            (Join-Path $root "models-v1.sha256"),
-            "$manifestHash`n",
-            (New-Object Text.UTF8Encoding($false))
-          )
-
-          $notes = @(
-            "Pinned model bundle for Auto Speech Journal installers.",
-            "",
-            "Paraformer contains only its two INT8 ONNX graphs and tokens. Whisper was converted",
-            "from the pinned revision to CTranslate2 float16. The manifest records source revisions,",
-            "installed inventories, sizes, and SHA-256 digests."
-          )
-          [IO.File]::WriteAllLines(
-            (Join-Path $root "RELEASE-NOTES.md"),
-            $notes,
-            (New-Object Text.UTF8Encoding($false))
-          )
-          $summary = @(
-            "# models-v1 test summary",
-            "",
-            "- Commit: $env:GITHUB_SHA",
-            "- Workflow: https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID",
-            "- Pinned download and conversion: passed",
-            "- Deep CPU model probe: passed",
-            "- Deterministic archive, inventory, size, and SHA-256 gates: passed",
-            "- Reviewed reference-audio fixture and expected preview/final transcripts: verified",
-            "- Reference transcript approval hard gate: $env:GITHUB_SHA",
-            "- Manual upstream license review hard gate: $env:GITHUB_SHA"
-          )
-          [IO.File]::WriteAllLines(
-            (Join-Path $root "TEST-SUMMARY.md"),
-            $summary,
-            (New-Object Text.UTF8Encoding($false))
-          )
-
-          $hashTargets = Get-ChildItem -LiteralPath $root -File |
-            Where-Object { $_.Name -notin @('SHA256SUMS.txt', 'RELEASE-NOTES.md') } |
-            Sort-Object Name
-          $checksums = foreach ($file in $hashTargets) {
-            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash.ToLowerInvariant()
-            "$hash  $($file.Name)"
-          }
-          [IO.File]::WriteAllLines(
-            (Join-Path $root "SHA256SUMS.txt"),
-            $checksums,
-            (New-Object Text.UTF8Encoding($false))
-          )
-
-      - name: Verify exact model release bundle
-        shell: pwsh
-        run: |
-          $root = Join-Path $PWD "artifacts\models-v1"
-          $expected = @(
-            'models-v1-paraformer-int8.zip',
-            'models-v1-whisper-large-v3-turbo-float16.zip',
-            'models-v1-silero-vad.onnx',
-            'models-v1-licenses.zip',
-            'models-v1.json',
-            'models-v1.sha256',
-            'SHA256SUMS.txt',
-            'TEST-SUMMARY.md',
-            'RELEASE-NOTES.md'
-          ) | Sort-Object
-          $actual = @(Get-ChildItem -LiteralPath $root -File |
-            Select-Object -ExpandProperty Name | Sort-Object)
-          if ($actual.Count -ne $expected.Count -or (Compare-Object $expected $actual)) {
-            throw "Model release bundle has missing or unexpected files: $($actual -join ', ')"
-          }
-
-          $manifest = Get-Content -LiteralPath (Join-Path $root 'models-v1.json') `
-            -Raw -Encoding UTF8 | ConvertFrom-Json
-          foreach ($asset in @($manifest.assets)) {
-            $path = Join-Path $root $asset.name
-            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-              throw "Manifest asset is missing: $($asset.name)"
-            }
-            $file = Get-Item -LiteralPath $path
-            if ($file.Length -ne [int64]$asset.size) {
-              throw "Manifest size mismatch: $($asset.name)"
-            }
-            if ($file.Length -ge 2GB) {
-              throw "GitHub release asset is not below 2 GiB: $($asset.name)"
-            }
-            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
-            if ($hash -ne $asset.sha256) {
-              throw "Manifest SHA-256 mismatch: $($asset.name)"
-            }
-          }
-          foreach ($line in Get-Content -LiteralPath (Join-Path $root 'SHA256SUMS.txt')) {
-            if ($line -notmatch '^([0-9a-f]{64})  (.+)$') { throw "Malformed checksum line: $line" }
-            $path = Join-Path $root $Matches[2]
-            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
-            if ($hash -ne $Matches[1]) { throw "Checksum mismatch: $($Matches[2])" }
-          }
-
-      - name: Upload verified model build
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: models-v1-${{ github.sha }}
-          path: artifacts/models-v1/
-          if-no-files-found: error
-          retention-days: 30
-
-  publish:
-    name: Attest and publish models-v1
-    needs: build
+  reference-inference:
+    name: Full Preview, VAD, and CPU Whisper reference inference
+    if: github.event_name == 'workflow_dispatch' && inputs.run_reference_gate
     runs-on: windows-latest
-    timeout-minutes: 30
-    permissions:
-      contents: write
-      id-token: write
-      attestations: write
-
+    timeout-minutes: 90
+    env:
+      PYTHONPATH: ${{ github.workspace }}/src
+      REFERENCE_APPROVED_SHA: ${{ vars.RUNTIME_MODELS_REFERENCE_TRANSCRIPT_APPROVED_SHA }}
     steps:
-      - name: Check out the same reviewed main commit
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
           persist-credentials: false
 
-      - name: Download verified model build
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - name: Enforce reviewed reference gate approval for this commit
+        shell: pwsh
+        run: |
+          if ($env:REFERENCE_APPROVED_SHA -ne $env:GITHUB_SHA) {
+            throw "Reference transcript approval does not match this commit"
+          }
+          $gate = Get-Content packaging/models/reference-audio-gate.json -Raw -Encoding UTF8 |
+            ConvertFrom-Json
+          if ($gate.status -ne 'ready') {
+            throw "Reference audio gate is not ready"
+          }
+
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
-          name: models-v1-${{ github.sha }}
-          path: artifacts/models-v1
+          enable-cache: true
 
-      - name: Reverify source and immutable release absence
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if ($env:GITHUB_REF -ne 'refs/heads/main') { throw "Publish source is not main" }
-          $head = git rev-parse HEAD
-          if ($LASTEXITCODE -ne 0) { throw "Cannot resolve publish checkout" }
-          $main = git rev-parse origin/main
-          if ($LASTEXITCODE -ne 0) { throw "Cannot resolve origin/main" }
-          if ($head.Trim() -ne $env:GITHUB_SHA -or $main.Trim() -ne $env:GITHUB_SHA) {
-            throw "Publish source no longer matches the reviewed main commit"
-          }
-          $tags = gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" `
-            --jq '.[].tag_name'
-          if ($LASTEXITCODE -ne 0) { throw "Cannot query existing releases" }
-          if (@($tags) -contains 'models-v1') {
-            throw "models-v1 already exists and signed assets may not be replaced"
-          }
-
-      - name: Reverify exact files, manifest sizes, and checksums
-        shell: pwsh
-        run: |
-          $root = Join-Path $PWD "artifacts\models-v1"
-          $expected = @(
-            'models-v1-paraformer-int8.zip',
-            'models-v1-whisper-large-v3-turbo-float16.zip',
-            'models-v1-silero-vad.onnx',
-            'models-v1-licenses.zip',
-            'models-v1.json',
-            'models-v1.sha256',
-            'SHA256SUMS.txt',
-            'TEST-SUMMARY.md',
-            'RELEASE-NOTES.md'
-          ) | Sort-Object
-          $actual = @(Get-ChildItem -LiteralPath $root -File |
-            Select-Object -ExpandProperty Name | Sort-Object)
-          if ($actual.Count -ne $expected.Count -or (Compare-Object $expected $actual)) {
-            throw "Downloaded model build is incomplete or contains unexpected files"
-          }
-          $manifest = Get-Content -LiteralPath (Join-Path $root 'models-v1.json') `
-            -Raw -Encoding UTF8 | ConvertFrom-Json
-          foreach ($asset in @($manifest.assets)) {
-            $path = Join-Path $root $asset.name
-            $file = Get-Item -LiteralPath $path
-            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
-            if ($file.Length -ne [int64]$asset.size -or $file.Length -ge 2GB -or $hash -ne $asset.sha256) {
-              throw "Downloaded model asset does not match manifest: $($asset.name)"
-            }
-          }
-          foreach ($line in Get-Content -LiteralPath (Join-Path $root 'SHA256SUMS.txt')) {
-            if ($line -notmatch '^([0-9a-f]{64})  (.+)$') { throw "Malformed checksum line: $line" }
-            $hash = (Get-FileHash -Algorithm SHA256 `
-              -LiteralPath (Join-Path $root $Matches[2])).Hash.ToLowerInvariant()
-            if ($hash -ne $Matches[1]) { throw "Checksum mismatch: $($Matches[2])" }
-          }
-
-      - name: Attest every model asset and public metadata file
-        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
-          subject-path: |
-            artifacts/models-v1/models-v1-paraformer-int8.zip
-            artifacts/models-v1/models-v1-whisper-large-v3-turbo-float16.zip
-            artifacts/models-v1/models-v1-silero-vad.onnx
-            artifacts/models-v1/models-v1-licenses.zip
-            artifacts/models-v1/models-v1.json
-            artifacts/models-v1/models-v1.sha256
-            artifacts/models-v1/SHA256SUMS.txt
-            artifacts/models-v1/TEST-SUMMARY.md
-            artifacts/models-v1/RELEASE-NOTES.md
+          python-version: "3.11"
 
-      - name: Verify attestations are bound to main and this workflow
+      - name: Install locked runtime and test environment
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $files = @(
-            'models-v1-paraformer-int8.zip',
-            'models-v1-whisper-large-v3-turbo-float16.zip',
-            'models-v1-silero-vad.onnx',
-            'models-v1-licenses.zip',
-            'models-v1.json',
-            'models-v1.sha256',
-            'SHA256SUMS.txt',
-            'TEST-SUMMARY.md',
-            'RELEASE-NOTES.md'
-          )
-          foreach ($name in $files) {
-            gh attestation verify "artifacts/models-v1/$name" `
-              -R $env:GITHUB_REPOSITORY `
-              --source-ref refs/heads/main `
-              --signer-workflow "$env:GITHUB_REPOSITORY/.github/workflows/models.yml"
-            if ($LASTEXITCODE -ne 0) { throw "Attestation verification failed: $name" }
-          }
+        run: uv sync --frozen --no-editable --extra dev
 
-      - name: Create fully populated draft release
+      - name: Download ready-to-run artifacts directly from pinned Hugging Face commits
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create models-v1 `
-            --draft `
-            --target $env:GITHUB_SHA `
-            --title "Auto Speech Journal models-v1" `
-            --notes-file artifacts/models-v1/RELEASE-NOTES.md `
-            --latest=false `
-            artifacts/models-v1/models-v1-paraformer-int8.zip `
-            artifacts/models-v1/models-v1-whisper-large-v3-turbo-float16.zip `
-            artifacts/models-v1/models-v1-silero-vad.onnx `
-            artifacts/models-v1/models-v1-licenses.zip `
-            artifacts/models-v1/models-v1.json `
-            artifacts/models-v1/models-v1.sha256 `
-            artifacts/models-v1/SHA256SUMS.txt `
-            artifacts/models-v1/TEST-SUMMARY.md
-          if ($LASTEXITCODE -ne 0) { throw "Draft models-v1 release creation failed" }
+          $progress = Join-Path $env:RUNNER_TEMP 'runtime-model-progress.json'
+          uv run --no-sync python -m auto_speech_journal provision `
+            --manifest packaging/manifests/runtime-models-v1.json `
+            --progress-json $progress
+          if ($LASTEXITCODE -ne 0) { throw "Runtime model provisioning failed" }
 
-      - name: Download and verify every draft asset before publication
+      - name: Run reference transcription and CPU fallback gate
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          $names = @(
-            'models-v1-paraformer-int8.zip',
-            'models-v1-whisper-large-v3-turbo-float16.zip',
-            'models-v1-silero-vad.onnx',
-            'models-v1-licenses.zip',
-            'models-v1.json',
-            'models-v1.sha256',
-            'SHA256SUMS.txt',
-            'TEST-SUMMARY.md'
-          )
-          $json = gh release view models-v1 --json isDraft,tagName,targetCommitish,assets
-          if ($LASTEXITCODE -ne 0) { throw "Cannot inspect draft models-v1 release" }
-          $release = ConvertFrom-Json $json
-          $remoteNames = @($release.assets | ForEach-Object name | Sort-Object)
-          if (-not $release.isDraft -or $release.tagName -ne 'models-v1' -or
-              $release.targetCommitish -ne $env:GITHUB_SHA -or
-              (Compare-Object ($names | Sort-Object) $remoteNames)) {
-            throw "Draft models-v1 release is incomplete or unexpectedly public"
-          }
-          $download = Join-Path $env:RUNNER_TEMP 'models-v1-draft-verification'
-          New-Item -ItemType Directory -Force -Path $download | Out-Null
-          foreach ($name in $names) {
-            gh release download models-v1 --pattern $name --dir $download
-            if ($LASTEXITCODE -ne 0) { throw "Cannot download draft asset: $name" }
-            $localHash = (Get-FileHash -Algorithm SHA256 `
-              -LiteralPath (Join-Path 'artifacts/models-v1' $name)).Hash
-            $remoteHash = (Get-FileHash -Algorithm SHA256 `
-              -LiteralPath (Join-Path $download $name)).Hash
-            if ($localHash -ne $remoteHash) { throw "Draft asset hash mismatch: $name" }
-          }
-          $remoteTag = @(git ls-remote origin refs/tags/models-v1)
-          if ($LASTEXITCODE -ne 0) { throw "Cannot query draft models-v1 tag" }
-          if ($remoteTag.Count -ne 1 -or ($remoteTag[0] -split '\s+')[0] -ne $env:GITHUB_SHA) {
-            throw "Draft models-v1 tag does not point to the reviewed main commit"
-          }
+          $models = Join-Path $env:LOCALAPPDATA 'AutoSpeechJournal\models'
+          uv run --no-sync python packaging/models/verify_runtime_models.py `
+            --manifest packaging/manifests/runtime-models-v1.json `
+            --models-dir $models `
+            --reference-spec packaging/models/reference-audio-gate.json `
+            --repository-root . | Tee-Object -FilePath runtime-model-validation.json
+          if ($LASTEXITCODE -ne 0) { throw "Runtime model reference inference failed" }
 
-      - name: Publish immutable models-v1 release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release edit models-v1 --draft=false --latest=false
-          if ($LASTEXITCODE -ne 0) { throw "Publishing models-v1 failed" }
-          $json = gh release view models-v1 --json isDraft,tagName,targetCommitish
-          if ($LASTEXITCODE -ne 0) { throw "Cannot verify published models-v1 release" }
-          $release = ConvertFrom-Json $json
-          if ($release.isDraft -or $release.tagName -ne 'models-v1' -or
-              $release.targetCommitish -ne $env:GITHUB_SHA) {
-            throw "models-v1 did not publish in the expected immutable state"
-          }
-          $remoteTag = @(git ls-remote origin refs/tags/models-v1)
-          if ($LASTEXITCODE -ne 0) { throw "Cannot perform final models-v1 tag verification" }
-          if ($remoteTag.Count -ne 1 -or ($remoteTag[0] -split '\s+')[0] -ne $env:GITHUB_SHA) {
-            throw "models-v1 tag changed during publication"
-          }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: runtime-model-reference-${{ github.sha }}
+          path: |
+            runtime-model-validation.json
+            ${{ runner.temp }}/runtime-model-progress.json
+          if-no-files-found: warn
+          retention-days: 14

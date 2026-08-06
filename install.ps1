@@ -112,7 +112,13 @@ if ($null -eq $Uv) {
     throw "找不到 uv。請先安裝 uv，再重新執行 install.ps1。"
 }
 
-foreach ($Required in @("pyproject.toml", "uv.lock", "README.md", "src")) {
+foreach ($Required in @(
+    "pyproject.toml",
+    "uv.lock",
+    "README.md",
+    "src",
+    "packaging\manifests\runtime-models-v1.json"
+)) {
     if (-not (Test-Path -LiteralPath (Join-Path $SourceRoot $Required))) {
         throw "安裝來源缺少 $Required"
     }
@@ -154,6 +160,11 @@ try {
     Copy-Item -LiteralPath (Join-Path $SourceRoot "uv.lock") -Destination $StageRoot
     Copy-Item -LiteralPath (Join-Path $SourceRoot "README.md") -Destination $StageRoot
     Copy-Item -LiteralPath (Join-Path $SourceRoot "src") -Destination $StageRoot -Recurse
+    $ManifestStage = Join-Path $StageRoot "manifests"
+    New-Item -ItemType Directory -Path $ManifestStage | Out-Null
+    Copy-Item `
+        -LiteralPath (Join-Path $SourceRoot "packaging\manifests\runtime-models-v1.json") `
+        -Destination $ManifestStage
     $LegacyPackagedFonts = Join-Path $StageRoot "src\auto_speech_journal\assets\fonts"
     Assert-UnderRuntime $LegacyPackagedFonts
     if (Test-Path -LiteralPath $LegacyPackagedFonts) {
@@ -175,6 +186,7 @@ $NewAppPlaced = $false
 $StateBackupCreated = $false
 $HadPreviousInstall = Test-Path -LiteralPath $AppRoot
 $TaskRegistered = $false
+$ModelsReady = -not $InstallModels
 try {
     $ExistingAppProcessIds = @(Get-AppProcessIds)
     if ($null -ne $ExistingTask) {
@@ -207,9 +219,6 @@ try {
         if ($InstallCuda) {
             $SyncArguments += @("--extra", "cuda")
         }
-        if ($InstallModels) {
-            $SyncArguments += @("--extra", "model-build")
-        }
         & $Uv.Source @SyncArguments
         if ($LASTEXITCODE -ne 0) {
             throw "uv sync 失敗，exit code $LASTEXITCODE"
@@ -231,25 +240,19 @@ try {
     }
 
     if ($InstallModels) {
-        & $Python -X utf8 -m auto_speech_journal download-models
-        if ($LASTEXITCODE -ne 0) {
-            throw "模型下載失敗，exit code $LASTEXITCODE"
+        $ModelManifestPath = Join-Path $AppRoot "manifests\runtime-models-v1.json"
+        $ModelProgressPath = Join-Path $RuntimeRoot "provision-progress.json"
+        & $Python -X utf8 -m auto_speech_journal repair models `
+            --manifest $ModelManifestPath `
+            --progress-json $ModelProgressPath
+        if ($LASTEXITCODE -eq 0) {
+            $ModelsReady = $true
         }
-    }
-    if ($InstallModels) {
-        Push-Location $AppRoot
-        try {
-            $RuntimeSyncArguments = @("sync", "--no-editable", "--frozen")
-            if ($InstallCuda) {
-                $RuntimeSyncArguments += @("--extra", "cuda")
-            }
-            & $Uv.Source @RuntimeSyncArguments
-            if ($LASTEXITCODE -ne 0) {
-                throw "移除模型建置相依套件失敗，exit code $LASTEXITCODE"
-            }
-        }
-        finally {
-            Pop-Location
+        else {
+            Write-Warning (
+                "模型尚未下載完成；程式安裝已保留。重新執行 repair models 即可從 .part 續傳。" +
+                " exit code $LASTEXITCODE"
+            )
         }
     }
 
@@ -257,7 +260,7 @@ try {
         "-X", "utf8", "-m", "auto_speech_journal", "self-test",
         "--deep-model-check", "--no-microphone-check"
     )
-    if (-not $InstallModels) {
+    if (-not $ModelsReady) {
         $SelfTestArguments += "--no-model-check"
     }
     if (-not $InstallCuda) {

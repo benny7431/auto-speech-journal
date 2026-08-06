@@ -16,10 +16,9 @@ jobs:
   windows-package:
     name: Build and sign Windows release package
     runs-on: windows-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
     permissions:
       actions: read
-      attestations: read
       checks: read
       contents: read
     env:
@@ -221,63 +220,48 @@ jobs:
             throw "Expected one wheel and one source distribution for exactly $version"
           }
 
-      - name: Download and verify immutable models-v1 release metadata
+      - name: Validate, download, and exercise pinned Hugging Face runtime models
         shell: pwsh
         env:
-          GH_TOKEN: ${{ github.token }}
+          REFERENCE_APPROVED_SHA: ${{ vars.RUNTIME_MODELS_REFERENCE_TRANSCRIPT_APPROVED_SHA }}
         run: |
-          New-Item -ItemType Directory -Force -Path artifacts/release-input | Out-Null
-          $releaseJson = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/models-v1"
-          if ($LASTEXITCODE -ne 0) { throw "Cannot query immutable models-v1 release" }
-          $release = ConvertFrom-Json $releaseJson
-          if ($release.draft) { throw "models-v1 is still a draft" }
-          $expectedNames = @(
-            'models-v1-paraformer-int8.zip',
-            'models-v1-whisper-large-v3-turbo-float16.zip',
-            'models-v1-silero-vad.onnx',
-            'models-v1-licenses.zip',
-            'models-v1.json',
-            'models-v1.sha256',
-            'SHA256SUMS.txt',
-            'TEST-SUMMARY.md'
-          ) | Sort-Object
-          $remoteNames = @($release.assets | ForEach-Object name | Sort-Object)
-          if ($remoteNames.Count -ne $expectedNames.Count -or
-              (Compare-Object $expectedNames $remoteNames)) {
-            throw "models-v1 has missing or unexpected public assets"
+          $manifest = 'packaging/manifests/runtime-models-v1.json'
+          uv run --no-sync python packaging/models/validate_runtime_model_manifest.py `
+            --manifest $manifest
+          if ($LASTEXITCODE -ne 0) {
+            throw "Pinned Hugging Face runtime manifest validation failed"
           }
-          foreach ($name in @('models-v1.json', 'models-v1.sha256', 'SHA256SUMS.txt', 'TEST-SUMMARY.md')) {
-            gh release download models-v1 --pattern $name --dir artifacts/release-input
-            if ($LASTEXITCODE -ne 0) { throw "Cannot download models-v1 metadata: $name" }
+          if ($env:REFERENCE_APPROVED_SHA -ne $env:GITHUB_SHA) {
+            throw "Reference transcript approval does not match $env:GITHUB_SHA"
           }
-          foreach ($name in @('models-v1.json', 'models-v1.sha256', 'SHA256SUMS.txt', 'TEST-SUMMARY.md')) {
-            gh attestation verify "artifacts/release-input/$name" `
-              -R $env:GITHUB_REPOSITORY `
-              --source-ref refs/heads/main `
-              --signer-workflow "$env:GITHUB_REPOSITORY/.github/workflows/models.yml"
-            if ($LASTEXITCODE -ne 0) { throw "models-v1 attestation verification failed: $name" }
-          }
-
-          $sourcePin = (Get-Content packaging/manifests/models-v1.sha256 -Raw).Trim()
-          $releasePin = (Get-Content artifacts/release-input/models-v1.sha256 -Raw).Trim()
-          if ($sourcePin -ne $releasePin) {
-            throw "Tagged source does not pin the attested models-v1 manifest"
-          }
-          uv run --no-sync python packaging/models/validate_model_manifest.py `
-            --manifest artifacts/release-input/models-v1.json `
-            --expected-sha256-file packaging/manifests/models-v1.sha256
-          if ($LASTEXITCODE -ne 0) { throw "Pinned models-v1 manifest validation failed" }
-
-          $manifest = Get-Content artifacts/release-input/models-v1.json -Raw -Encoding UTF8 |
+          $gate = Get-Content packaging/models/reference-audio-gate.json -Raw -Encoding UTF8 |
             ConvertFrom-Json
-          foreach ($asset in @($manifest.assets)) {
-            $remote = @($release.assets | Where-Object name -eq $asset.name)
-            if ($remote.Count -ne 1 -or [int64]$remote[0].size -ne [int64]$asset.size) {
-              throw "models-v1 release size mismatch: $($asset.name)"
+          if ($gate.status -ne 'ready') {
+            throw "Runtime-model reference inference gate is blocked: $($gate.reason)"
+          }
+
+          $originalLocalAppData = $env:LOCALAPPDATA
+          try {
+            $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'asj-release-runtime'
+            $models = Join-Path $env:LOCALAPPDATA 'AutoSpeechJournal\models'
+            $progress = Join-Path $env:RUNNER_TEMP 'runtime-models-release-progress.json'
+            uv run --no-sync python -m auto_speech_journal provision `
+              --manifest $manifest `
+              --progress-json $progress
+            if ($LASTEXITCODE -ne 0) {
+              throw "Direct Hugging Face runtime-model provisioning failed"
             }
-            if ($remote[0].digest -ne "sha256:$($asset.sha256)") {
-              throw "models-v1 release digest mismatch: $($asset.name)"
+            uv run --no-sync python packaging/models/verify_runtime_models.py `
+              --manifest $manifest `
+              --models-dir $models `
+              --reference-spec packaging/models/reference-audio-gate.json `
+              --repository-root .
+            if ($LASTEXITCODE -ne 0) {
+              throw "Preview, VAD, Whisper, CPU fallback, or reference transcript gate failed"
             }
+          }
+          finally {
+            $env:LOCALAPPDATA = $originalLocalAppData
           }
 
       - name: Install pinned Inno Setup
@@ -293,7 +277,7 @@ jobs:
           & .\tools\build_windows_installer.ps1 `
             -Stage Application `
             -ReleaseBuild `
-            -ModelManifestPath artifacts\release-input\models-v1.json
+            -ModelManifestPath packaging\manifests\runtime-models-v1.json
           if (-not $?) { throw "Unsigned inner application build failed" }
 
       - name: Verify frozen runtime inventory and unsigned inner build
@@ -361,7 +345,7 @@ jobs:
             -ReleaseBuild `
             -AppPayloadPath artifacts\signed-program\payload `
             -LauncherPath artifacts\signed-program\launchers `
-            -ModelManifestPath artifacts\release-input\models-v1.json
+            -ModelManifestPath packaging\manifests\runtime-models-v1.json
           if (-not $?) { throw "Installer build around signed application failed" }
 
       - name: Upload unsigned Setup
@@ -472,9 +456,7 @@ jobs:
           }
           Copy-Item -LiteralPath artifacts/windows/application/AutoSpeechJournal.cdx.json `
             -Destination artifacts/release/
-          Copy-Item -LiteralPath artifacts/release-input/models-v1.json `
-            -Destination artifacts/release/
-          Copy-Item -LiteralPath artifacts/release-input/models-v1.sha256 `
+          Copy-Item -LiteralPath packaging/manifests/runtime-models-v1.json `
             -Destination artifacts/release/
           Copy-Item -LiteralPath artifacts/windows/WINDOWS-VERIFICATION.json `
             -Destination artifacts/release/
@@ -502,6 +484,7 @@ jobs:
             "- Commit: $env:GITHUB_SHA",
             "- Workflow: https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID",
             "- Ruff, coverage >= 75%, scene assets, wheel contents: passed",
+            "- Pinned Hugging Face model downloads plus Preview, VAD, Whisper, CPU fallback, and reference transcript: passed",
             "- Frozen QML installer probe and runtime/SBOM inventory: passed",
             "- Inner GUI, CLI, stable launchers, and Setup: Authenticode valid and timestamped",
             "- Hosted-runner install, isolated probe, and uninstall preservation smoke: passed",
@@ -535,8 +518,7 @@ jobs:
             "auto_speech_journal-$version-py3-none-any.whl",
             "auto_speech_journal-$version.tar.gz",
             'AutoSpeechJournal.cdx.json',
-            'models-v1.json',
-            'models-v1.sha256',
+            'runtime-models-v1.json',
             'WINDOWS-VERIFICATION.json',
             'SHA256SUMS.txt',
             'TEST-SUMMARY.md',
@@ -661,8 +643,7 @@ jobs:
             "auto_speech_journal-$version-py3-none-any.whl",
             "auto_speech_journal-$version.tar.gz",
             'AutoSpeechJournal.cdx.json',
-            'models-v1.json',
-            'models-v1.sha256',
+            'runtime-models-v1.json',
             'WINDOWS-VERIFICATION.json',
             'SHA256SUMS.txt',
             'TEST-SUMMARY.md',
@@ -737,8 +718,7 @@ jobs:
             "artifacts/release/auto_speech_journal-$version-py3-none-any.whl" `
             "artifacts/release/auto_speech_journal-$version.tar.gz" `
             artifacts/release/AutoSpeechJournal.cdx.json `
-            artifacts/release/models-v1.json `
-            artifacts/release/models-v1.sha256 `
+            artifacts/release/runtime-models-v1.json `
             artifacts/release/WINDOWS-VERIFICATION.json `
             artifacts/release/SHA256SUMS.txt `
             artifacts/release/TEST-SUMMARY.md
@@ -756,8 +736,7 @@ jobs:
             "auto_speech_journal-$version-py3-none-any.whl",
             "auto_speech_journal-$version.tar.gz",
             'AutoSpeechJournal.cdx.json',
-            'models-v1.json',
-            'models-v1.sha256',
+            'runtime-models-v1.json',
             'WINDOWS-VERIFICATION.json',
             'SHA256SUMS.txt',
             'TEST-SUMMARY.md'

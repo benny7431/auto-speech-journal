@@ -57,12 +57,34 @@ class MicrophoneSelection:
 
 @dataclass(slots=True)
 class ModelConfig:
-    preview_model: str = "sherpa-onnx-streaming-paraformer-bilingual-zh-en-int8"
-    preview_revision: str = "github-release:asr-models:asset-155855418"
-    final_model: str = "openai/whisper-large-v3-turbo"
-    final_revision: str = "41f01f3fe87f28c78e2fbf8b568835947dd65ed9"
+    preview_model: str = "csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en"
+    preview_revision: str = "8e40c43232a1c5c66c82111efc5820d3accca11b"
+    final_model: str = "mobiuslabsgmbh/faster-whisper-large-v3-turbo"
+    final_revision: str = "0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf"
     final_compute_type: str = "int8_float16"
     cpu_compute_type: str = "int8"
+
+
+_LEGACY_MODEL_CONFIG = {
+    "preview_model": "sherpa-onnx-streaming-paraformer-bilingual-zh-en-int8",
+    "preview_revision": "github-release:asr-models:asset-155855418",
+    "final_model": "openai/whisper-large-v3-turbo",
+    "final_revision": "41f01f3fe87f28c78e2fbf8b568835947dd65ed9",
+    "final_compute_type": "int8_float16",
+    "cpu_compute_type": "int8",
+}
+
+
+def _migrate_legacy_model_config(values: dict[str, Any]) -> bool:
+    raw = values.get("model")
+    if not isinstance(raw, dict) or not raw:
+        return False
+    if not set(raw).issubset(_LEGACY_MODEL_CONFIG) or any(
+        value != _LEGACY_MODEL_CONFIG[key] for key, value in raw.items()
+    ):
+        return False
+    values["model"] = asdict(ModelConfig())
+    return True
 
 
 @dataclass(slots=True)
@@ -184,6 +206,7 @@ def load_config(path: Path) -> AppConfig:
         raw = json.load(handle)
     if not isinstance(raw, dict):
         raise ValueError("config root must be an object")
+    model_migrated = _migrate_legacy_model_config(raw)
     schema_version = raw.get("schema_version", 1)
     if schema_version in {1, 2}:
         migrated = dict(raw)
@@ -232,7 +255,7 @@ def load_config(path: Path) -> AppConfig:
         save_config(path, config)
         return config
     config = AppConfig.from_dict(raw)
-    if any(
+    if model_migrated or any(
         field not in raw
         for field in (
             "ui_font_family",

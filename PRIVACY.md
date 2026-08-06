@@ -41,12 +41,17 @@ FLAC 可能保留以便復原。SQLite 是權威資料；Markdown 是可重建�
 
 一般 `run` 執行路徑不需要網路。下列明確操作會連線：
 
-- `uv sync` 或安裝程序從 Python、PyTorch 或 NVIDIA 套件來源取得相依套件。
-- `install.ps1` 未使用 `-SkipModelDownload`，或執行 `download-models` 時，從 GitHub
-  Releases 與 Hugging Face 下載固定版本模型。
+- 從原始碼開發或使用救援用 `install.ps1` 時，`uv sync` 會從 Python 套件來源取得固定版本
+  相依套件；一鍵 Setup 已內含 CPU 程式環境，不會安裝 Python、Torch 或 Transformers。
+- Setup 預設模型步驟、`repair models` 或 `download-models` 會直接從 Hugging Face 的固定完整
+  commit 下載可執行的 ONNX／CTranslate2 模型，並依版本化 manifest 驗證大小與 SHA-256。
+- 使用者選擇 NVIDIA GPU 元件時，安裝器會以獨立流程從固定 NVIDIA PyPI wheel 下載 CUDA
+  runtime DLL；GPU 失敗仍使用 CPU，不會改變模型來源。
+- 使用者明確開啟更新檢查後，程式每 24 小時最多查詢一次 GitHub Release metadata，只顯示
+  提示與下載頁連結，不會下載或安裝更新。此功能預設關閉。
 - 使用者自行開啟 README、Issue 或其他外部連結。
 
-程式目前沒有遠端 API、雲端同步或背景更新檢查。
+程式沒有雲端轉錄、遠端同步或遙測；未 opt-in 時也不會進行背景更新查詢。
 
 ## 刪除資料
 

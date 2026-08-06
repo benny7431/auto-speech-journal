@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .audio import InputDevice, list_wasapi_input_devices
@@ -9,18 +9,107 @@ from .config import (
     AppConfig,
     MicrophoneMode,
     MicrophoneSelection,
+    ModelConfig,
     load_config,
     save_config,
 )
-from .model_download import ensure_models
+from .model_download import ModelDownloadError, ensure_models, verify_models
 from .paths import AppPaths
 
 Output = Callable[[str], None]
 DeviceProvider = Callable[[], tuple[Sequence["InputDevice"], int | None]]
 
 
+@dataclass(frozen=True, slots=True)
+class ModelSetupStatus:
+    """Thread-safe value passed from model setup workers to the Qt view model."""
+
+    state: str
+    ready: bool
+    message: str
+    completed: int = 0
+    total: int = 0
+    asset: str = ""
+
+
+ModelSetupProgress = Callable[[ModelSetupStatus], None]
+
+
 class SetupError(RuntimeError):
     pass
+
+
+def check_runtime_models_for_setup(
+    config: ModelConfig,
+    *,
+    paths: AppPaths | None = None,
+    manifest_path: Path | None = None,
+) -> ModelSetupStatus:
+    """Verify the runtime manifest and installed models without using the network."""
+
+    selected_paths = paths or AppPaths.defaults()
+    try:
+        verify_models(
+            config,
+            selected_paths.models_dir,
+            deep=True,
+            manifest_path=manifest_path,
+        )
+    except (ModelDownloadError, OSError, ValueError) as error:
+        return ModelSetupStatus(
+            state="not_ready",
+            ready=False,
+            message=f"語音模型尚未就緒：{error}",
+        )
+    return ModelSetupStatus(
+        state="ready",
+        ready=True,
+        message="語音模型已完成驗證，可以開始錄音。",
+    )
+
+
+def repair_runtime_models_for_setup(
+    config: ModelConfig,
+    *,
+    paths: AppPaths | None = None,
+    manifest_path: Path | None = None,
+    progress: ModelSetupProgress | None = None,
+) -> ModelSetupStatus:
+    """Resume the runtime-manifest provisioner and verify its atomic result."""
+
+    selected_paths = paths or AppPaths.defaults()
+
+    def report(asset: str, completed: int, total: int) -> None:
+        if progress is not None:
+            progress(
+                ModelSetupStatus(
+                    state="provisioning",
+                    ready=False,
+                    message=f"正在續傳並驗證：{asset}",
+                    completed=max(0, int(completed)),
+                    total=max(0, int(total)),
+                    asset=asset,
+                )
+            )
+
+    try:
+        ensure_models(
+            config,
+            selected_paths.models_dir,
+            progress=report,
+            manifest_path=manifest_path,
+        )
+    except (ModelDownloadError, OSError, ValueError) as error:
+        return ModelSetupStatus(
+            state="error",
+            ready=False,
+            message=f"模型續傳／修復未完成：{error}",
+        )
+    return ModelSetupStatus(
+        state="ready",
+        ready=True,
+        message="語音模型已完成續傳、驗證與安裝。",
+    )
 
 
 def discover_input_devices() -> tuple[list[InputDevice], int | None]:
@@ -274,8 +363,12 @@ def _progress_reporter(output_fn: Output) -> Callable[[str, int, int], None]:
 
 __all__ = [
     "InputDevice",
+    "ModelSetupProgress",
+    "ModelSetupStatus",
     "SetupError",
+    "check_runtime_models_for_setup",
     "discover_input_devices",
+    "repair_runtime_models_for_setup",
     "run_setup",
     "test_microphone",
 ]

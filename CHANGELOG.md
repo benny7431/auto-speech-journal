@@ -13,10 +13,12 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Signed, per-user Windows x64 Setup built from a PyInstaller onedir application and Inno Setup.
 - Stable native GUI/CLI launchers with atomic `current.json` version switching and rollback.
-- Resumable manifest-based model provisioning, NVIDIA auto-detection, and CPU fallback.
+- Resumable direct Hugging Face model provisioning from immutable commit revisions, NVIDIA
+  auto-detection, and CPU fallback.
 - First-run consent flow for journal folder, startup, microphone testing, and update notifications.
 - Repair, installer readiness, graceful shutdown, and owned startup-task CLI commands.
-- CycloneDX SBOM, build provenance, immutable model bundle, and two-stage SignPath workflows.
+- CycloneDX SBOM, build provenance, a versioned runtime-model manifest, and two-stage SignPath
+  workflows.
 
 ### Changed
 
@@ -24,18 +26,25 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Application binaries now live under `%LOCALAPPDATA%\Programs\AutoSpeechJournal\versions` while
   runtime state remains under `%LOCALAPPDATA%\AutoSpeechJournal`.
 - Sign-in startup and update checks default to off and require explicit user consent.
+- Setup and `repair models` now fetch ready-to-run ONNX and CTranslate2 files directly from
+  Hugging Face; they do not install Torch, Transformers, or Safetensors or convert models locally.
 
 ### Fixed
 
 - Normalized Python package names so Dependabot can update pinned versions reliably.
 - Preserve configuration, SQLite/WAL, spool, models, logs, and external Markdown journals during
   upgrades and default uninstall.
+- Serialize model repair across Setup, CLI, and the first-run wizard, and recover an interrupted
+  model-directory swap before resuming its verified `.part` downloads.
+- Treat a missing or unavailable legacy Task Scheduler entry as a manual-start degradation instead
+  of rolling back an already validated application activation.
 
 ### Security
 
 - Public releases fail closed without timestamped SignPath signatures for inner executables and
   Setup; signed assets are never replaced in place.
-- CUDA wheel URLs, sizes, and SHA-256 digests are pinned, and model archives are verified before
+- CUDA wheel URLs, sizes, and SHA-256 digests remain pinned in a separate manifest. Every runtime
+  model file is pinned by Hugging Face repository, full commit revision, size, and SHA-256 before
   atomic installation.
 
 ## [0.1.0] - 2026-08-06

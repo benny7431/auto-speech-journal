@@ -23,7 +23,7 @@ Inno Setup input directory.
 `runtime_inventory.py` treats the base dependency closure in `uv.lock` as the runtime authority.
 It requires a CycloneDX 1.5 root matching `pyproject.toml`, exact locked runtime component
 versions, all direct runtime distributions in the PyInstaller payload, and no dev, CUDA,
-model-build, or packaging-only distributions.
+model-conversion, or packaging-only distributions.
 
 The PyInstaller spec should collect the destination names from both analyses and write the
 inventory after `MERGE`:
@@ -61,28 +61,47 @@ uv run --no-sync python packaging/windows/runtime_inventory.py validate `
 Do not hand-author the frozen inventory. It is derived from PyInstaller Analysis and must travel
 inside the payload whose contents it describes.
 
-## Final models-v1 assets and reference transcription
+## Runtime Hugging Face models and reference transcription
 
-The final gate verifies each of the four release files against `models-v1.json`, safely extracts
-the exact declared inventory into a clean directory, loads Preview and VAD from the re-extracted
-files, and runs CPU Whisper plus Preview against a reviewed reference recording.
+The committed runtime manifest is the installer and repair authority. It must name only
+ready-to-run ONNX or CTranslate2 files, group them into atomic model directories, and pin every
+source by Hugging Face repository, full 40-character commit revision, path, byte size, SHA-256,
+license, and provenance. Validate its schema and exact runtime allowlist with:
 
 ```powershell
-uv run --no-sync python packaging/models/verify_model_release_assets.py `
-  --manifest artifacts/models-v1/models-v1.json `
-  --assets-dir artifacts/models-v1 `
+uv run --no-sync python packaging/models/validate_runtime_model_manifest.py `
+  --manifest packaging/manifests/runtime-models-v1.json
+```
+
+The validator rejects floating revisions, unsafe or duplicate paths, missing metadata, unexpected
+Paraformer/Whisper/VAD files, and any source-model or conversion-only artifact. Setup and
+`repair models` must not install Torch, Transformers, or Safetensors and must not convert a model
+on the user's computer. Download URLs must be derived as
+`https://huggingface.co/<repository>/resolve/<40-hex-revision>/<file-path>` rather than accepted as
+arbitrary manifest input. The separately validated CUDA manifest remains the only source for
+optional NVIDIA runtime wheels.
+
+For a release candidate, provision all manifest files into a clean model root through the normal
+resumable download path, then run the inference and reference-audio gate:
+
+```powershell
+uv run --no-sync python packaging/models/verify_runtime_models.py `
+  --manifest packaging/manifests/runtime-models-v1.json `
+  --models-dir <path> `
   --reference-spec packaging/models/reference-audio-gate.json `
   --repository-root .
 ```
 
-The repository currently carries an explicit `status: blocked` reference specification because
-no redistributable reference recording has been reviewed and committed. This is intentional: the
-models workflow must fail before attestation or publication until all of the following are added:
+This gate re-verifies every downloaded size and SHA-256, loads Paraformer Preview and Silero VAD,
+and runs CPU Whisper plus Preview against the reviewed reference recording. It does not build,
+repackage, publish, or attest a GitHub model Release.
 
-1. A redistributable 16 kHz mono WAV or FLAC fixture under the repository.
-2. Its exact SHA-256 and bounded duration metadata.
-3. Reviewed non-empty Preview and Traditional Chinese final transcripts.
-4. SHA-256 values of the NFKC and whitespace-normalized transcripts.
+The committed gate uses the Apache-2.0 `test_wavs/2.wav` fixture from the pinned Paraformer Hugging
+Face revision. `reference-audio-gate.json` locks its repository, 40-character revision, source path,
+source URL, license, audio SHA-256, bounded duration, reviewed non-empty Preview and Traditional
+Chinese final transcripts, and normalized transcript hashes. Release automation additionally
+requires `RUNTIME_MODELS_REFERENCE_TRANSCRIPT_APPROVED_SHA` to equal the tagged commit; changing
+the fixture or expected text without a fresh review therefore blocks signing and publication.
 5. License/provenance documentation for the recording.
 
 Changing the gate to `ready` without those machine-verifiable fields still fails validation.

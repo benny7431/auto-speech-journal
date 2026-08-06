@@ -79,7 +79,7 @@ def test_inno_contract_is_per_user_transactional_and_data_preserving() -> None:
     assert 'Name: "{group}\\Repair runtime"' not in source
     assert "AutoSpeechJournal-Maintenance.exe" in source
     assert (
-        'Parameters: "repair models --manifest ""{app}\\manifests\\models-v1.json"""'
+        'Parameters: "repair models --manifest ""{app}\\manifests\\runtime-models-v1.json"""'
         in source
     )
     assert 'Type: filesandordirs; Name: "{app}\\versions"' in source
@@ -93,8 +93,9 @@ def test_inno_contract_is_per_user_transactional_and_data_preserving() -> None:
     assert "KillTimer(0, ProvisionTimer)" in source
     assert "TTimer" not in source
     assert "WizardIsTaskSelected('gpu') and not CmdLineParamExists('NOGPU')" in source
-    assert "if RollbackCurrentManifest() then" in source
-    assert "current.json could not be restored" in source
+    assert "RollbackCurrentManifest" not in source
+    assert "The verified new version remains active" in source
+    assert "manual_start_migration_helper_failed" in source
     assert 'MessagesFile: "languages\\ChineseTraditional.isl"' in source
 
 
@@ -104,7 +105,19 @@ def test_windows_package_e2e_waits_for_gui_installer_and_uninstaller() -> None:
     assert "Start-Process -FilePath $uninstaller" in source
     assert source.count("-WindowStyle Hidden -Wait -PassThru") == 2
     assert "Setup reported success but the stable CLI launcher is missing" in source
-    assert "artifacts/windows/e2e/*.log" in source
+    assert "artifacts/windows/e2e/" in source
+
+
+def test_windows_package_e2e_exercises_real_pinned_hugging_face_repair() -> None:
+    source = (ROOT / ".github/workflows/windows-package.yml").read_text(encoding="utf-8")
+
+    assert "huggingface.co" in source
+    assert "packaging/manifests/runtime-models-v1.json" in source
+    assert "resolve/$($vad.revision)" in source
+    assert "repair models --manifest" in source
+    assert ".part" in source
+    assert "silero_vad.onnx" in source
+    assert "corrupt" in source.lower()
 
 
 def test_traditional_chinese_inno_translation_is_vendored_with_license() -> None:
@@ -127,15 +140,180 @@ def test_legacy_task_migration_requires_exact_owned_action() -> None:
     assert "auto_speech_journal\\s+run" in source
     assert '"foreign_task_preserved"' in source
     assert "legacy_app_retained = $true" in source
-    assert "startup enable" in source
+    assert '"startup", "enable"' in source
     assert "Test-StableTaskXml" in source
+    assert "Test-StableTaskEnabledXml" in source
     assert "$ResolvedCommand.Equals($StableGui" in source
-    assert "Get-TaskXmlLines -TaskName $StableTaskName" in source
-    assert "function Restore-LegacyTask" in source
-    assert "startup disable" in source
-    assert "Test-LegacyTaskXml -XmlLines $RestoredXml" in source
+    assert "Get-TaskQuery -TaskName $StableTaskName" in source
+    assert "Get-TaskQuery -TaskName $LegacyTaskName" in source
+    assert "$LegacyBeforeDelete = Get-TaskQuery" in source
+    assert "Test-LegacyTaskXml -XmlLines $LegacyBeforeDelete.lines" in source
     assert "Migration marker activation completed, but verification failed" in source
-    assert "if ($Migrated -and $LegacyTaskRemoved)" in source
+    assert '"manual_start_scheduler_unavailable"' in source
+    assert '"legacy_task_delete_failed_preserved"' in source
+    assert "Invoke-NativeCommand" in source
+    assert '$ErrorActionPreference = "Continue"' in source
+
+
+def _write_cmd(path: Path, source: str) -> None:
+    path.write_bytes(source.strip().replace("\n", "\r\n").encode("ascii") + b"\r\n")
+
+
+def _run_legacy_migration(
+    tmp_path: Path,
+    *,
+    schtasks_source: str,
+    stable_cli_source: str = "@echo off\nexit /b 99",
+) -> tuple[subprocess.CompletedProcess[str], dict[str, object], str, Path]:
+    powershell = shutil.which("powershell.exe")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is unavailable")
+    legacy_root = tmp_path / "legacy-app"
+    legacy_python = legacy_root / ".venv/Scripts/pythonw.exe"
+    legacy_python.parent.mkdir(parents=True)
+    legacy_python.write_bytes(b"")
+    stable_cli = tmp_path / "AutoSpeechJournal.CLI.cmd"
+    stable_gui = tmp_path / "AutoSpeechJournal.exe"
+    stable_gui.write_bytes(b"")
+    _write_cmd(stable_cli, stable_cli_source)
+    schtasks = tmp_path / "schtasks.cmd"
+    _write_cmd(schtasks, schtasks_source)
+    marker = tmp_path / "legacy-migration.json"
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(WINDOWS_PACKAGING / "migrate_legacy_task.ps1"),
+            "-LegacyAppRoot",
+            str(legacy_root),
+            "-StableCli",
+            str(stable_cli),
+            "-MarkerPath",
+            str(marker),
+            "-SchtasksPath",
+            str(schtasks),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    payload = json.loads(marker.read_text(encoding="utf-8")) if marker.is_file() else {}
+    calls = (tmp_path / "schtasks-calls.txt").read_text(encoding="ascii")
+    return result, payload, calls, stable_cli
+
+
+def test_legacy_task_migration_treats_missing_task_as_normal(tmp_path: Path) -> None:
+    calls = tmp_path / "schtasks-calls.txt"
+    result, marker, invocation_log, _stable_cli = _run_legacy_migration(
+        tmp_path,
+        schtasks_source=rf"""
+@echo off
+echo %*>>"{calls}"
+if /I "%~2"=="/FO" exit /b 0
+exit /b 1
+""",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert marker["legacy_task_status"] == "no_task"
+    assert marker["legacy_app_retained"] is True
+    assert marker["manual_start_required"] is False
+    assert "/Delete" not in invocation_log
+
+
+def test_legacy_task_migration_degrades_when_scheduler_is_unavailable(tmp_path: Path) -> None:
+    calls = tmp_path / "schtasks-calls.txt"
+    result, marker, invocation_log, _stable_cli = _run_legacy_migration(
+        tmp_path,
+        schtasks_source=rf"""
+@echo off
+echo %*>>"{calls}"
+echo scheduler unavailable 1>&2
+exit /b 5
+""",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert marker["legacy_task_status"] == "manual_start_scheduler_unavailable"
+    assert marker["legacy_task_retained"] is True
+    assert marker["manual_start_required"] is True
+    assert "/Delete" not in invocation_log
+
+
+def test_legacy_task_migration_never_touches_foreign_task(tmp_path: Path) -> None:
+    calls = tmp_path / "schtasks-calls.txt"
+    foreign_xml = tmp_path / "foreign-task.xml"
+    foreign_xml.write_text(
+        "<Task><RegistrationInfo><Description>foreign</Description>"
+        "<URI>\\Auto Speech Journal</URI></RegistrationInfo>"
+        "<Actions><Exec><Command>C:\\Windows\\System32\\notepad.exe</Command>"
+        "<Arguments /></Exec></Actions></Task>",
+        encoding="utf-8",
+    )
+    result, marker, invocation_log, stable_cli = _run_legacy_migration(
+        tmp_path,
+        schtasks_source=rf"""
+@echo off
+echo %*>>"{calls}"
+if /I "%~3"=="\Auto Speech Journal" (
+  type "{foreign_xml}"
+  exit /b 0
+)
+if /I "%~2"=="/FO" exit /b 0
+exit /b 1
+""",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert marker["legacy_task_status"] == "foreign_task_preserved"
+    assert marker["legacy_task_retained"] is True
+    assert "/Delete" not in invocation_log
+    assert not stable_cli.with_name("stable-cli-calls.txt").exists()
+
+
+def test_legacy_task_enable_failure_preserves_owned_legacy_task(tmp_path: Path) -> None:
+    calls = tmp_path / "schtasks-calls.txt"
+    stable_calls = tmp_path / "stable-cli-calls.txt"
+    legacy_python = tmp_path / "legacy-app/.venv/Scripts/pythonw.exe"
+    owned_xml = tmp_path / "owned-legacy-task.xml"
+    owned_xml.write_text(
+        "<Task><RegistrationInfo><Description>legacy</Description>"
+        "<URI>\\Auto Speech Journal</URI></RegistrationInfo>"
+        f"<Actions><Exec><Command>{legacy_python}</Command>"
+        "<Arguments>-m auto_speech_journal run</Arguments></Exec></Actions></Task>",
+        encoding="utf-8",
+    )
+    result, marker, invocation_log, _stable_cli = _run_legacy_migration(
+        tmp_path,
+        schtasks_source=rf"""
+@echo off
+echo %*>>"{calls}"
+if /I "%~3"=="\Auto Speech Journal" (
+  type "{owned_xml}"
+  exit /b 0
+)
+if /I "%~2"=="/FO" exit /b 0
+exit /b 1
+""",
+        stable_cli_source=rf"""
+@echo off
+echo %*>>"{stable_calls}"
+exit /b 9
+""",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert marker["legacy_task_status"] == "manual_start_enable_failed"
+    assert marker["legacy_task_retained"] is True
+    assert marker["manual_start_required"] is True
+    assert "startup enable" in stable_calls.read_text(encoding="ascii")
+    assert "/Delete" not in invocation_log
 
 
 def test_release_workflow_signs_inner_and_setup_separately_and_fails_closed() -> None:
@@ -149,6 +327,21 @@ def test_release_workflow_signs_inner_and_setup_separately_and_fails_closed() ->
     assert "--clobber" not in workflow
     assert "--draft" in workflow
     assert "attest-build-provenance" in workflow
+
+
+def test_release_workflow_uses_hugging_face_manifest_without_models_release() -> None:
+    release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    models = (ROOT / ".github/workflows/models.yml").read_text(encoding="utf-8")
+
+    assert "validate_runtime_model_manifest.py" in release
+    assert "verify_runtime_models.py" in release
+    assert "runtime-models-v1.json" in release
+    assert "gh release download models-v1" not in release
+    assert "models-v1.sha256" not in release
+    assert "build_model_bundle.py" not in models
+    assert "runtime-models-v1.json" in models
+    assert "workflow_dispatch" in models
+    assert "verify_runtime_models.py" in models
 
 
 def test_windows_resource_and_signature_verification_contracts_are_exact() -> None:
@@ -247,31 +440,15 @@ def test_authenticode_normalization_ignores_only_pe_signature_fields(tmp_path: P
     assert digests[0] != digests[2]
 
 
-def test_release_build_rejects_repository_model_placeholder(tmp_path: Path) -> None:
-    powershell = shutil.which("powershell.exe")
-    if powershell is None:
-        pytest.skip("Windows PowerShell is unavailable")
-    result = subprocess.run(
-        [
-            powershell,
-            "-NoLogo",
-            "-NoProfile",
-            "-File",
-            str(ROOT / "tools/build_windows_installer.ps1"),
-            "-Stage",
-            "Installer",
-            "-OutputRoot",
-            str(tmp_path / "output"),
-            "-ReleaseBuild",
-        ],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        timeout=30,
+def test_release_build_validates_canonical_runtime_model_manifest() -> None:
+    source = (ROOT / "tools/build_windows_installer.ps1").read_text(
+        encoding="utf-8-sig"
     )
-    assert result.returncode != 0
-    output = (result.stdout + result.stderr).decode("utf-8", errors="replace")
-    assert "placeholders are forbidden" in output
+
+    assert 'packaging\\manifests\\runtime-models-v1.json"' in source
+    assert "validate_runtime_model_manifest.py" in source
+    assert "models-v1.sha256" not in source
+    assert "MODELS_V1_MANIFEST_NOT_PUBLISHED" not in source
 
 
 def test_native_cli_launcher_preserves_windows_argv_and_working_directory(

@@ -7,7 +7,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -290,6 +290,59 @@ def _safe_float(value: object, default: float = -120.0) -> float:
     return number if math.isfinite(number) else default
 
 
+def _model_setup_value(result: object, name: str, default: object) -> object:
+    if isinstance(result, Mapping):
+        return result.get(name, default)
+    return getattr(result, name, default)
+
+
+def _model_setup_count(result: object, name: str) -> int:
+    try:
+        return max(0, int(_model_setup_value(result, name, 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _normalized_model_setup_result(
+    result: object,
+    *,
+    default_state: str,
+) -> dict[str, object]:
+    if isinstance(result, bool):
+        ready = result
+        return {
+            "state": "ready" if ready else default_state,
+            "ready": ready,
+            "message": "語音模型已就緒" if ready else "語音模型尚未就緒",
+            "completed": 0,
+            "total": 0,
+            "asset": "",
+        }
+    ready = bool(_model_setup_value(result, "ready", False))
+    state = str(_model_setup_value(result, "state", default_state) or default_state)
+    if ready:
+        state = "ready"
+    completed = _model_setup_count(result, "completed")
+    total = _model_setup_count(result, "total")
+    return {
+        "state": state,
+        "ready": ready,
+        "message": str(_model_setup_value(result, "message", "") or ""),
+        "completed": min(completed, total) if total > 0 else completed,
+        "total": total,
+        "asset": str(_model_setup_value(result, "asset", "") or ""),
+    }
+
+
+def _format_transfer_size(value: int) -> str:
+    size = float(max(0, value))
+    for unit in ("B", "KiB", "MiB"):
+        if size < 1024:
+            return f"{size:.0f} {unit}"
+        size /= 1024
+    return f"{size:.2f} GiB"
+
+
 def _microphone_key_for_fingerprint(fingerprint: object | None) -> str:
     if fingerprint is None:
         return ""
@@ -553,10 +606,13 @@ class JournalViewModel(QObject):
     microphoneSetupChanged = Signal()
     microphoneTestChanged = Signal()
     onboardingChanged = Signal()
+    modelSetupChanged = Signal()
     updateCheckChanged = Signal()
     controllerStartChanged = Signal()
     _microphoneTestCompleted = Signal(str, bool, str, float, float)
     _updateCheckCompleted = Signal(int, object)
+    _modelSetupProgressReceived = Signal(int, object)
+    _modelSetupCompleted = Signal(int, object)
     timelineRevisionChanged = Signal()
     timelineUpdating = Signal()
     timelineUpdated = Signal(int)
@@ -576,6 +632,8 @@ class JournalViewModel(QObject):
         microphone_device_provider: Callable[[], Sequence[Any]] | None = None,
         startup_setting_callback: Callable[[bool], Any] | None = None,
         update_check_callback: Callable[[bool, Callable[[Any], None]], Any] | None = None,
+        model_status_callback: Callable[[], Any] | None = None,
+        model_provision_callback: Callable[[Callable[[Any], None]], Any] | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -587,6 +645,8 @@ class JournalViewModel(QObject):
         self._microphone_device_provider = microphone_device_provider
         self._startup_setting_callback = startup_setting_callback
         self._update_check_callback = update_check_callback
+        self._model_status_callback = model_status_callback
+        self._model_provision_callback = model_provision_callback
         self._window: Any | None = None
         self._expanded = False
         self._allow_close = False
@@ -639,6 +699,18 @@ class JournalViewModel(QObject):
         self._onboarding_records_tested = False
         self._onboarding_startup_enabled = False
         self._onboarding_update_check_enabled = False
+        self._model_setup_generation = 0
+        self._model_setup_running = False
+        self._model_setup_operation = "check"
+        self._model_setup_state = "ready" if model_status_callback is None else "checking"
+        self._model_setup_message = (
+            "語音模型已就緒"
+            if model_status_callback is None
+            else "正在確認本機語音模型…"
+        )
+        self._model_setup_completed = 0
+        self._model_setup_total = 0
+        self._model_setup_asset = ""
         self._update_available = False
         self._update_available_text = ""
         self._update_release_url = ""
@@ -648,6 +720,8 @@ class JournalViewModel(QObject):
         self._controller_started = False
         self._microphoneTestCompleted.connect(self._finish_microphone_test)
         self._updateCheckCompleted.connect(self._finish_update_check)
+        self._modelSetupProgressReceived.connect(self._finish_model_setup_progress)
+        self._modelSetupCompleted.connect(self._finish_model_setup)
         self._timeline_model = TimelineListModel(self)
         self._poll_timer = QTimer(self)
         self._poll_timer.setObjectName("journalPollTimer")
@@ -661,6 +735,7 @@ class JournalViewModel(QObject):
     def activate(self) -> None:
         if self.onboardingPending:
             self.rescanMicrophones()
+            self.checkOnboardingModels()
         self.refresh(force_timeline=True)
         self._poll_timer.start()
         config = getattr(self._controller, "config", None)
@@ -916,6 +991,36 @@ class JournalViewModel(QObject):
     def onboardingUpdateCheckEnabled(self) -> bool:
         return self._onboarding_update_check_enabled
 
+    @Property(bool, notify=modelSetupChanged)
+    def onboardingModelsReady(self) -> bool:
+        return self._model_setup_state == "ready"
+
+    @Property(bool, notify=modelSetupChanged)
+    def onboardingModelBusy(self) -> bool:
+        return self._model_setup_running
+
+    @Property(str, notify=modelSetupChanged)
+    def onboardingModelState(self) -> str:
+        return self._model_setup_state
+
+    @Property(str, notify=modelSetupChanged)
+    def onboardingModelStatusText(self) -> str:
+        return self._model_setup_message
+
+    @Property(float, notify=modelSetupChanged)
+    def onboardingModelProgress(self) -> float:
+        if self._model_setup_total <= 0:
+            return 0.0
+        return min(1.0, self._model_setup_completed / self._model_setup_total)
+
+    @Property(str, notify=modelSetupChanged)
+    def onboardingModelProgressText(self) -> str:
+        if self._model_setup_total <= 0:
+            return self._model_setup_asset
+        completed = _format_transfer_size(self._model_setup_completed)
+        total = _format_transfer_size(self._model_setup_total)
+        return f"{completed} / {total}"
+
     @Property(bool, notify=microphoneSelectionChanged)
     def onboardingMicrophoneReady(self) -> bool:
         return bool(self._selection_for_key(self._selected_microphone_key))
@@ -1130,6 +1235,119 @@ class JournalViewModel(QObject):
     def vocabularyEntries(self) -> list[dict[str, Any]]:
         return [dict(entry) for entry in self._vocabulary_entries]
 
+    @Slot(result=bool)
+    def checkOnboardingModels(self) -> bool:
+        if not self.onboardingPending or self._model_setup_running:
+            return False
+        callback = self._model_status_callback
+        if callback is None:
+            self._model_setup_state = "ready"
+            self._model_setup_message = "語音模型已就緒"
+            self.modelSetupChanged.emit()
+            return True
+        return self._start_model_setup_operation(
+            "check",
+            callback,
+            state="checking",
+            message="正在確認本機語音模型…",
+        )
+
+    @Slot(result=bool)
+    def repairOnboardingModels(self) -> bool:
+        if not self.onboardingPending or self._model_setup_running:
+            return False
+        callback = self._model_provision_callback
+        if callback is None:
+            self.actionFailed.emit("此安裝環境未提供模型續傳／修復服務")
+            return False
+        return self._start_model_setup_operation(
+            "repair",
+            callback,
+            state="provisioning",
+            message="正在準備續傳與修復語音模型…",
+            receives_progress=True,
+        )
+
+    def _start_model_setup_operation(
+        self,
+        operation: str,
+        callback: Callable[..., Any],
+        *,
+        state: str,
+        message: str,
+        receives_progress: bool = False,
+    ) -> bool:
+        self._model_setup_generation += 1
+        generation = self._model_setup_generation
+        self._model_setup_running = True
+        self._model_setup_state = state
+        self._model_setup_message = message
+        self._model_setup_completed = 0
+        self._model_setup_total = 0
+        self._model_setup_asset = ""
+        self._model_setup_operation = operation
+        self.modelSetupChanged.emit()
+
+        def run() -> None:
+            def emit_progress(value: object) -> None:
+                with suppress(RuntimeError):
+                    self._modelSetupProgressReceived.emit(generation, value)
+
+            try:
+                result = callback(emit_progress) if receives_progress else callback()
+            except Exception as error:
+                result = {
+                    "state": "error",
+                    "ready": False,
+                    "message": f"模型{('修復' if operation == 'repair' else '檢查')}失敗：{error}",
+                }
+            with suppress(RuntimeError):
+                self._modelSetupCompleted.emit(generation, result)
+
+        threading.Thread(
+            target=run,
+            name=f"speech-journal-model-{operation}",
+            daemon=True,
+        ).start()
+        return True
+
+    @Slot(int, object)
+    def _finish_model_setup_progress(self, generation: int, result: object) -> None:
+        if generation != self._model_setup_generation or not self._model_setup_running:
+            return
+        normalized = _normalized_model_setup_result(
+            result,
+            default_state="provisioning",
+        )
+        self._model_setup_state = str(normalized["state"])
+        self._model_setup_message = str(normalized["message"])
+        self._model_setup_completed = int(normalized["completed"])
+        self._model_setup_total = int(normalized["total"])
+        self._model_setup_asset = str(normalized["asset"])
+        self.modelSetupChanged.emit()
+
+    @Slot(int, object)
+    def _finish_model_setup(self, generation: int, result: object) -> None:
+        if generation != self._model_setup_generation:
+            return
+        operation = getattr(self, "_model_setup_operation", "check")
+        normalized = _normalized_model_setup_result(
+            result,
+            default_state="error" if operation == "repair" else "not_ready",
+        )
+        self._model_setup_running = False
+        self._model_setup_state = str(normalized["state"])
+        self._model_setup_message = str(normalized["message"])
+        self._model_setup_completed = int(normalized["completed"])
+        self._model_setup_total = int(normalized["total"])
+        self._model_setup_asset = str(normalized["asset"])
+        self.modelSetupChanged.emit()
+        if bool(normalized["ready"]):
+            if operation == "repair":
+                self.actionSucceeded.emit("語音模型續傳與修復完成")
+        elif operation == "repair":
+            self.actionFailed.emit(self._model_setup_message or "語音模型修復未完成")
+
     @Slot(str, bool, bool, result=bool)
     def advanceOnboarding(
         self,
@@ -1213,6 +1431,7 @@ class JournalViewModel(QObject):
         self.microphoneSelectionChanged.emit()
         self.microphoneSetupChanged.emit()
         self._apply_window_mode()
+        self.checkOnboardingModels()
         return True
 
     @Slot(result=bool)
@@ -1222,6 +1441,9 @@ class JournalViewModel(QObject):
             return False
         if not self._onboarding_records_tested:
             self._report_error("請先確認日記資料夾可寫入")
+            return False
+        if not self.onboardingModelsReady:
+            self._report_error("語音模型尚未就緒，請先續傳／修復後再開始錄音")
             return False
         selection = self._selection_for_key(self._selected_microphone_key)
         if selection is None:
@@ -2292,6 +2514,8 @@ class JournalViewModel(QObject):
 
     def shutdown(self) -> None:
         self._microphone_test_request_id = ""
+        self._model_setup_generation += 1
+        self._model_setup_running = False
         self._poll_timer.stop()
         self.persistWindowState()
 

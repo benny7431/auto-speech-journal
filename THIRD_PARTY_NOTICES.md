@@ -5,8 +5,9 @@ Auto Speech Journal 自有程式碼與專案自有 UI／場景資產採 [MIT Lic
 發行物內的 `LICENSE`、`NOTICE` 與套件 metadata 為準。
 
 GitHub release 的 wheel 與 source distribution **不內含** Python 相依套件、CUDA runtime
-或模型權重。簽章 Windows Setup 以 PyInstaller 內含 CPU 執行時與本文件；CUDA runtime
-及模型仍會由安裝／修復流程從 manifest 固定來源另行下載並驗證。
+或模型權重。簽章 Windows Setup 以 PyInstaller 內含 CPU 執行時與本文件；模型由安裝／
+修復流程直接從 Hugging Face 的固定 commit revision 下載，CUDA runtime 則由另一份 manifest
+從固定 NVIDIA PyPI wheels 下載。兩者都會驗證大小與 SHA-256。
 
 ## Runtime dependencies
 
@@ -36,16 +37,10 @@ install their own transitive dependencies. Their notices remain in their install
 | nvidia-cublas-cu12 | 12.9.2.10 | NVIDIA Software License Agreement; [CUDA EULA](https://docs.nvidia.com/cuda/eula/index.html) |
 | nvidia-cuda-nvrtc-cu12 | 12.9.86 | NVIDIA Software License Agreement; [CUDA EULA](https://docs.nvidia.com/cuda/eula/index.html) |
 
-## Optional model-build dependencies
-
-| Component | Pinned version | License / upstream |
-| --- | --- | --- |
-| safetensors | 0.8.0 | Apache-2.0; [safetensors](https://github.com/huggingface/safetensors) |
-| torch | 2.6.0+cpu | BSD-3-Clause; [PyTorch](https://github.com/pytorch/pytorch) |
-| transformers | 5.13.1 | Apache-2.0; [Transformers](https://github.com/huggingface/transformers) |
-
 Development-only tools such as Pytest, Ruff, pre-commit and Pillow are not installed into the
 application release environment and retain the licenses distributed by their own packages.
+Torch、Transformers 與 Safetensors 不屬於安裝器、runtime 或模型供應流程；Setup 與
+`repair models` 不會安裝或執行它們，也不會在使用者電腦進行模型轉換。
 
 ## Installer build components
 
@@ -64,9 +59,18 @@ binary remain subject to their upstream terms.
 
 | Model | Pinned source | License | Local handling |
 | --- | --- | --- | --- |
-| `sherpa-onnx-streaming-paraformer-bilingual-zh-en-int8` | GitHub release asset `155855418`; SHA-256 `5462a1fce42693deae572af1e8c4687124b12aa85fe61ff4d3168bb5280e205f` | Apache-2.0, as declared by the archive README | Downloaded to `models\sherpa-onnx-streaming-paraformer-bilingual-zh-en` |
-| `sherpa-onnx-silero-vad` | GitHub release asset `271935959`; SHA-256 `9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6` | MIT; [Silero VAD license](https://github.com/snakers4/silero-vad/blob/master/LICENSE) | Downloaded to `models\silero-vad` |
-| OpenAI Whisper large-v3-turbo | Hugging Face revision `41f01f3fe87f28c78e2fbf8b568835947dd65ed9`; source model SHA-256 `542566a422ae4f3fd23f1ba11add198fca01bbf82e66e6a2857b3f608b1eb9d1` | MIT; [model card](https://huggingface.co/openai/whisper-large-v3-turbo) | Downloaded, hash-checked and converted locally to CTranslate2 float16 format |
+| `sherpa-onnx-streaming-paraformer-bilingual-zh-en-int8` | [`csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en`](https://huggingface.co/csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en/tree/8e40c43232a1c5c66c82111efc5820d3accca11b) @ `8e40c43232a1c5c66c82111efc5820d3accca11b` | Apache-2.0 | Directly downloads `encoder.int8.onnx`, `decoder.int8.onnx`, and `tokens.txt` to `models\sherpa-onnx-streaming-paraformer-bilingual-zh-en` |
+| Whisper large-v3-turbo (CTranslate2 float16) | [`mobiuslabsgmbh/faster-whisper-large-v3-turbo`](https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo/tree/0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf) @ `0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf` | MIT | Directly downloads `config.json`, `model.bin`, `preprocessor_config.json`, `tokenizer.json`, and `vocabulary.json` to `models\faster-whisper-large-v3-turbo` |
+| Sherpa Silero VAD | [`R4kSo1997/sherpa-onnx-silero-vad-v5`](https://huggingface.co/R4kSo1997/sherpa-onnx-silero-vad-v5/tree/4a6e5a75370a3ca741c950f8feda0dbed11c18ac) @ `4a6e5a75370a3ca741c950f8feda0dbed11c18ac` | MIT; [upstream Silero VAD license](https://github.com/snakers4/silero-vad/blob/be95df9152c0d7618fa1edfeb296fc3dae32376f/LICENSE) | Directly downloads the exact existing Sherpa Silero VAD v4 `silero_vad.onnx` runtime artifact to `models\silero-vad` |
+
+`packaging/manifests/runtime-models-v1.json` records each repository, full revision, file path,
+byte size, SHA-256, license, and source URL. These are ready-to-run ONNX/CTranslate2 files; no
+archive repackaging or local conversion is part of installation or repair.
+
+The test-only reference recording at `tests/fixtures/reference_zh_paraformer_2.wav` is
+`test_wavs/2.wav` from the pinned Paraformer repository and revision above (Apache-2.0). Its
+source path, SHA-256, reviewed transcripts, and transcript hashes are locked in
+`packaging/models/reference-audio-gate.json`; it is not included in the frozen application payload.
 
 模型輸出不會改變模型本身的授權。使用者若重新散布模型、Qt binaries、CUDA 元件或其他
 第三方檔案，必須另外遵守相應授權及 notice 義務。

@@ -6,9 +6,10 @@
 ## Baseline checks
 
 ```powershell
-$App = "$env:LOCALAPPDATA\AutoSpeechJournal\app"
+$Cli = "$env:LOCALAPPDATA\Programs\AutoSpeechJournal\AutoSpeechJournal.CLI.exe"
 
-& "$App\.venv\Scripts\python.exe" -X utf8 -m auto_speech_journal self-test
+& $Cli installer-probe --isolated
+& $Cli startup status
 Get-ScheduledTask -TaskName "Auto Speech Journal"
 Get-Content "$env:LOCALAPPDATA\AutoSpeechJournal\logs\journal.log" -Tail 80
 ```
@@ -30,7 +31,7 @@ uv run --no-sync python -m auto_speech_journal self-test --no-model-check --no-m
 重新選擇並測試 800 ms 輸入：
 
 ```powershell
-& "$App\.venv\Scripts\python.exe" -X utf8 -m auto_speech_journal setup --test-microphone
+& $Cli setup --test-microphone
 ```
 
 固定裝置失效時，App 可能暫用 Windows 預設並顯示 fallback。原偏好不會被覆寫；裝置
@@ -38,15 +39,19 @@ uv run --no-sync python -m auto_speech_journal self-test --no-model-check --no-m
 
 ## CUDA and CPU mode
 
-`install.ps1` 目前不會自動偵測 GPU：
+簽章 Setup 會依固定 CUDA manifest 建議 GPU 模式；偵測或實際 CTranslate2 CUDA probe
+失敗時保留 CPU fallback。CUDA runtime 與模型下載是兩個獨立流程。修復 GPU runtime：
 
-- 相容 NVIDIA GPU：`./install.ps1`
-- 沒有相容 GPU或要強制 CPU：`./install.ps1 -NoCuda`
+```powershell
+& $Cli repair gpu
+```
+
+開發／救援用 `install.ps1` 可用 `-NoCuda` 強制 CPU。
 
 深度檢查 CUDA：
 
 ```powershell
-& "$App\.venv\Scripts\python.exe" -X utf8 -m auto_speech_journal self-test `
+& $Cli self-test `
   --deep-model-check --test-microphone
 ```
 
@@ -55,11 +60,17 @@ CPU 安裝需額外加入 `--allow-cpu-finalizer`。若 CUDA DLL、驅動或 VRA
 
 ## Missing or damaged models
 
-模型只會在安裝或明確修復時連網。重新下載固定 revision 並驗證雜湊：
+模型只會在安裝、首次設定補齊或明確修復時連網。重新下載固定 Hugging Face commit
+revision 並驗證大小與 SHA-256：
 
 ```powershell
-& "$App\.venv\Scripts\python.exe" -X utf8 -m auto_speech_journal download-models
+& $Cli repair models
 ```
+
+下載依 `runtime-models-v1.json` 逐檔執行，保留 `.part` 續傳並支援 Range fallback、重試、
+磁碟 preflight、SHA-256 與原子替換。中斷或模型下載失敗不會回滾已安裝程式；再次執行
+同一命令即可繼續。來源只包含可直接執行的 ONNX／CTranslate2 檔案，不會安裝 Torch、
+Transformers 或 Safetensors，也不會在本機轉換模型。
 
 需要檢查完整檔案 digest 與實際推論時使用 `self-test --deep-model-check`。模型路徑位於
 `%LOCALAPPDATA%\AutoSpeechJournal\models`；不要從 Issue 下載別人提供的未知權重取代。
@@ -72,7 +83,8 @@ Get-ScheduledTaskInfo -TaskName "Auto Speech Journal"
 Start-ScheduledTask -TaskName "Auto Speech Journal"
 ```
 
-工作排程應指向 `%LOCALAPPDATA%\AutoSpeechJournal\app` 的 ASCII 安裝路徑，而不是原始碼
+工作排程應指向 `%LOCALAPPDATA%\Programs\AutoSpeechJournal\AutoSpeechJournal.exe` 的穩定
+launcher，而不是原始碼
 資料夾。若安裝中斷，重新執行 `install.ps1`；安裝器會備份並回復既有 app、設定、
 SQLite/WAL 與排程狀態。
 

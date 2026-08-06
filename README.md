@@ -40,8 +40,8 @@
 啟動，持續監聽你選定的麥克風，先顯示低延遲逐字預覽，再以 Whisper 產生較準確的
 最終文字，最後依台北時間整理成每小時一份 Markdown。
 
-辨識、儲存與介面都在本機執行。網路只在安裝或補齊模型時使用；日常錄音不需要把音訊
-或文字送到雲端。
+辨識、儲存與介面都在本機執行。網路只在安裝、首次設定補齊或手動修復模型時連線至
+Hugging Face；日常錄音不需要把音訊或文字送到雲端。
 
 > [!IMPORTANT]
 > 目前是 `0.2.0` 預發行版，僅支援 Windows WASAPI、中文辨識與 `Asia/Taipei` 時區。
@@ -80,16 +80,18 @@
 
 - Windows 10/11 x64
 - 錄音時需要可用的 WASAPI 麥克風，以及 Windows 麥克風權限
-- 首次下載模型需要網路；Setup 會在下載前顯示精確空間需求
+- 首次下載模型需要連線至 Hugging Face；Setup 會在下載前顯示精確空間需求
 - NVIDIA GPU 為選用；偵測或 CUDA probe 失敗時會自動使用 CPU
 
 ### 2. 下載並安裝
 
-從 [GitHub Releases](https://github.com/benny7431/auto-speech-journal/releases) 下載已簽章的
-`AutoSpeechJournal-Setup-0.2.0-x64.exe`，雙擊後依畫面安裝。不需要 Python、`uv`、Git、
-PowerShell 或管理員權限。
+`v0.2.0` Setup 尚未公開；必須先通過 SignPath 簽章與 Windows 實機矩陣。門檻完成後，
+請只從 [GitHub Releases](https://github.com/benny7431/auto-speech-journal/releases) 下載已簽章的
+`AutoSpeechJournal-Setup-0.2.0-x64.exe`，不要使用 PR 的 unsigned artifact。正式 Setup 不需要
+Python、`uv`、Git、PowerShell 或管理員權限。
 
-Setup 預設下載固定版本模型，顯示進度、ETA，並允許取消後續傳。GPU 選項
+Setup 預設直接從 Hugging Face 的固定 commit revision 下載可執行模型，顯示進度、ETA，
+並允許取消後續傳。GPU 選項
 預設自動偵測，也可在安裝畫面取消或強制嘗試。安裝完成後穩定 launcher 位於
 `%LOCALAPPDATA%\Programs\AutoSpeechJournal\AutoSpeechJournal.exe`，版本內容位於
 `versions\0.2.0`。日記預設輸出到：
@@ -109,6 +111,8 @@ Setup 預設下載固定版本模型，顯示進度、ETA，並允許取消後�
 還需選擇日記資料夾、是否登入自啟（預設關閉）與是否開啟更新提示
 （預設關閉）。只有最後按下 **開始錄音** 才會儲存同意並啟動 worker。設定會寫入
 `%LOCALAPPDATA%\AutoSpeechJournal\config.json`，重新安裝時會沿用。
+Wizard 也會在背景驗證語音模型；若 Setup 曾斷線，可直接按 **續傳／修復模型**。模型未
+就緒前「開始錄音」會保持停用，但 **稍後設定** 永遠可用且不會開啟麥克風。
 
 <details>
 <summary><strong>安裝器實際會做什麼？</strong></summary>
@@ -116,7 +120,8 @@ Setup 預設下載固定版本模型，顯示進度、ETA，並允許取消後�
 1. 把內含 CPU runtime 的新版本放入獨立 `versions\<version>`。
 2. 執行實際 QML／Qt 隔離 readiness probe；失敗不會切換版本。
 3. 原子更新 `current.json`，穩定 launcher 才開始指向新版本。
-4. 下載版本化模型，並以檔案大小、SHA-256 與解壓後清單驗證。
+4. 依 `runtime-models-v1.json` 從 Hugging Face 固定的 40 位 commit revision 下載 ONNX／
+   CTranslate2 檔案；以 `.part`、Range fallback、重試、大小、SHA-256 與原子替換保護安裝。
 5. 選用 GPU 時只從固定 URL 下載三個 NVIDIA wheel，只解出 runtime DLL 並做 CUDA probe。
 6. 模型或 GPU 失敗不會卸載可用的 CPU 程式；可從開始選單續傳／修復。
 7. 舊 `AutoSpeechJournal\app` 會重用原有設定與資料；只在驗證舊 task action 後才遷移自啟。
@@ -176,8 +181,23 @@ flowchart LR
 
 ## 資料、隱私與檔案位置
 
-日常執行不會上傳音訊或逐字稿。固定版本模型只在安裝或手動補齊時下載；模型就緒後，
-錄音、VAD、預覽、最終辨識、正體轉換與匯出都可離線完成。
+日常執行不會上傳音訊或逐字稿。固定版本模型只在安裝、首次設定補齊或 `repair models`
+時直接從 Hugging Face 下載；模型就緒後，錄音、VAD、預覽、最終辨識、正體轉換與匯出
+都可離線完成。下載清單由 `packaging/manifests/runtime-models-v1.json` 管理：
+
+- Paraformer：`csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en` @
+  `8e40c43232a1c5c66c82111efc5820d3accca11b`，直接使用三個 INT8 ONNX／tokens 檔案。
+- Whisper large-v3-turbo：`mobiuslabsgmbh/faster-whisper-large-v3-turbo` @
+  `0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf`，直接使用五個 CTranslate2 float16 檔案。
+- VAD：`R4kSo1997/sherpa-onnx-silero-vad-v5` @
+  `4a6e5a75370a3ca741c950f8feda0dbed11c18ac`，直接使用 Sherpa Silero VAD ONNX。
+
+目前 manifest 共 9 個檔案、`1,859,512,338` bytes（約 1.73 GiB）。Setup 顯示整體進度與
+ETA，可取消並保留 `.part`；磁碟檢查依尚未下載的 bytes、現有 rollback 狀態與 20% 安全
+餘量計算，不使用模糊的固定容量提示。
+
+安裝／修復不會安裝 Torch、Transformers 或 Safetensors，也不會在使用者電腦轉換模型。
+NVIDIA CUDA runtime 仍由獨立的固定 PyPI wheel manifest 管理，不混入模型下載流程。
 
 | 內容 | 預設位置 |
 | --- | --- |
@@ -253,7 +273,7 @@ $Cli = "$env:LOCALAPPDATA\Programs\AutoSpeechJournal\AutoSpeechJournal.CLI.exe"
 | [建置](docs/BUILDING.md) | 開發環境、品質門檻、wheel 與合成 Demo |
 | [發布](docs/RELEASING.md) | tag、pre-release、checksum 與發布後驗證 |
 | [隱私政策](PRIVACY.md) | 收音條件、資料位置、連網時機、保存與刪除方式 |
-| [第三方聲明](THIRD_PARTY_NOTICES.md) | runtime、CUDA、建模套件與下載模型的授權來源 |
+| [第三方聲明](THIRD_PARTY_NOTICES.md) | runtime、CUDA 與 Hugging Face 模型的授權來源 |
 | [安全政策](SECURITY.md) | 支援版本、安全聯絡方式與禁止公開附加的敏感資料 |
 | [貢獻指南](CONTRIBUTING.md) | Issue、PR、診斷資料去識別化與本機驗證流程 |
 | [版本歷程](CHANGELOG.md) | Keep a Changelog 格式的版本變更 |

@@ -317,6 +317,11 @@ def test_first_run_wizard_saves_and_starts_only_from_final_action(
         application,
         window_settings=settings,
         microphone_device_provider=lambda: [_default_input_device()],
+        model_status_callback=lambda: {
+            "state": "ready",
+            "ready": True,
+            "message": "語音模型已就緒",
+        },
     )
     window.show()
     qtbot.waitUntil(window.isVisible)
@@ -326,12 +331,17 @@ def test_first_run_wizard_saves_and_starts_only_from_final_action(
     picker = window.findChild(QObject, "onboardingMicrophonePicker")
     defer_button = window.findChild(QObject, "onboardingDeferButton")
     start_button = window.findChild(QObject, "onboardingStartButton")
+    model_status = window.findChild(QObject, "onboardingModelStatus")
+    model_repair = window.findChild(QObject, "onboardingModelRepairButton")
     assert overlay.property("visible") is True
     assert picker is not None
     assert defer_button is not None
     assert start_button is not None
+    assert model_status is not None
+    assert model_repair is not None
     assert window.width() == 560
     assert window.height() == 480
+    qtbot.waitUntil(lambda: view_model.onboardingModelsReady)
 
     records_root = str(tmp_path / "chosen-journal")
     assert view_model.advanceOnboarding(records_root, False, False) is True
@@ -371,11 +381,23 @@ def test_first_run_defer_hides_wizard_without_starting_controller(qtbot, tmp_pat
             QSettings.Format.IniFormat,
         ),
         microphone_device_provider=lambda: [_default_input_device()],
+        model_status_callback=lambda: {
+            "state": "not_ready",
+            "ready": False,
+            "message": "語音模型尚未就緒",
+        },
     )
     window.show()
     qtbot.waitUntil(window.isVisible)
 
     view_model = window._journal_view_model
+    qtbot.waitUntil(lambda: view_model.onboardingModelState == "not_ready")
+    repair_button = window.findChild(QObject, "onboardingModelRepairButton")
+    defer_button = window.findChild(QObject, "onboardingDeferButton")
+    assert repair_button is not None
+    assert repair_button.property("visible") is True
+    assert defer_button is not None
+    assert defer_button.property("enabled") is True
     assert view_model.deferOnboarding() is True
     QApplication.processEvents()
 
