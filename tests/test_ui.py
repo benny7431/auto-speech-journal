@@ -4,6 +4,7 @@ import os
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -48,6 +49,7 @@ class FakeController:
         self.config = AppConfig(
             microphone=MicrophoneSelection(mode=MicrophoneMode.SYSTEM_DEFAULT),
             records_root=records_root,
+            onboarding_completed=True,
         )
         self.snapshot = ControllerSnapshot(
             state=WorkerState.RECORDING,
@@ -292,13 +294,22 @@ def _visual_items(window, object_name: str) -> list[QObject]:
     return matches
 
 
-def test_pending_microphone_setup_saves_and_starts_on_explicit_choice(qtbot, tmp_path):
+def test_first_run_wizard_saves_and_starts_only_from_final_action(
+    qtbot,
+    tmp_path,
+    monkeypatch,
+):
     application = QApplication.instance()
     assert application is not None
     controller = FakeController(str(tmp_path))
+    monkeypatch.setattr(
+        "auto_speech_journal.audio.measure_input_level",
+        lambda *args, **kwargs: SimpleNamespace(peak=0.2, rms=0.1),
+    )
     controller.config = replace(
         controller.config,
         microphone=MicrophoneSelection(mode=MicrophoneMode.PENDING),
+        onboarding_completed=False,
     )
     settings = QSettings(str(tmp_path / "setup-window.ini"), QSettings.Format.IniFormat)
     window = _create_main_window(
@@ -311,24 +322,69 @@ def test_pending_microphone_setup_saves_and_starts_on_explicit_choice(qtbot, tmp
     qtbot.waitUntil(window.isVisible)
 
     view_model = window._journal_view_model
-    overlay = window.findChild(QObject, "microphoneSetupOverlay")
-    picker = window.findChild(QObject, "setupMicrophonePicker")
-    skip_button = window.findChild(QObject, "setupMicrophoneSkipButton")
+    overlay = window.findChild(QObject, "onboardingOverlay")
+    picker = window.findChild(QObject, "onboardingMicrophonePicker")
+    defer_button = window.findChild(QObject, "onboardingDeferButton")
+    start_button = window.findChild(QObject, "onboardingStartButton")
     assert overlay.property("visible") is True
-    assert picker.property("currentIndex") == -1
-    assert window.findChild(QObject, "setupMicrophoneContinueButton") is None
-    assert window.findChild(QObject, "setupMicrophoneTestButton") is None
-    assert skip_button.property("visible") is False
+    assert picker is not None
+    assert defer_button is not None
+    assert start_button is not None
     assert window.width() == 560
     assert window.height() == 480
 
+    records_root = str(tmp_path / "chosen-journal")
+    assert view_model.advanceOnboarding(records_root, False, False) is True
+    assert view_model.advanceOnboarding(records_root, False, False) is True
+    assert view_model.advanceOnboarding(records_root, False, False) is True
     assert view_model.selectMicrophone("system_default") is True
-    qtbot.waitUntil(
-        lambda: controller.config.microphone.mode is MicrophoneMode.SYSTEM_DEFAULT
-    )
+    assert view_model.advanceOnboarding(records_root, False, False) is True
+
+    assert controller.config.microphone.mode is MicrophoneMode.PENDING
+    assert "start" not in controller.calls
+    assert view_model.startOnboardingRecording() is True
     qtbot.waitUntil(lambda: "start" in controller.calls)
 
+    assert controller.config.onboarding_completed is True
+    assert controller.config.microphone.mode is MicrophoneMode.SYSTEM_DEFAULT
     assert overlay.property("visible") is False
+    view_model._poll_timer.stop()
+    view_model._allow_close = True
+    window.close()
+    window.deleteLater()
+
+
+def test_first_run_defer_hides_wizard_without_starting_controller(qtbot, tmp_path):
+    application = QApplication.instance()
+    assert application is not None
+    controller = FakeController(str(tmp_path))
+    controller.config = replace(
+        controller.config,
+        microphone=MicrophoneSelection(mode=MicrophoneMode.PENDING),
+        onboarding_completed=False,
+    )
+    window = _create_main_window(
+        controller,
+        application,
+        window_settings=QSettings(
+            str(tmp_path / "defer-window.ini"),
+            QSettings.Format.IniFormat,
+        ),
+        microphone_device_provider=lambda: [_default_input_device()],
+    )
+    window.show()
+    qtbot.waitUntil(window.isVisible)
+
+    view_model = window._journal_view_model
+    assert view_model.deferOnboarding() is True
+    QApplication.processEvents()
+
+    assert view_model.onboardingPending is False
+    assert controller.config.onboarding_completed is False
+    assert controller.config.microphone.mode is MicrophoneMode.SKIPPED
+    assert view_model.startControllerIfReady() is False
+    assert "start" not in controller.calls
+
     view_model._poll_timer.stop()
     view_model._allow_close = True
     window.close()
@@ -352,6 +408,8 @@ def test_settings_sheet_exposes_microphone_controls(journal_window, qtbot):
         "retryPreferredInputButton",
         "retryRecordingEngineButton",
         "deferMicrophoneAfterFailureButton",
+        "startupCheck",
+        "updateCheck",
         "settingsSaveButton",
     ):
         assert window.findChild(QObject, object_name) is not None

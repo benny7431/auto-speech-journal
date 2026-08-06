@@ -98,6 +98,7 @@ class SyntheticDemoController:
         self.config = AppConfig(
             microphone=MicrophoneSelection(mode=MicrophoneMode.SYSTEM_DEFAULT),
             records_root="C:/AutoSpeechJournalSynthetic/Records",
+            onboarding_completed=True,
         )
         self.snapshot = ControllerSnapshot()
         self.segments: tuple[TimelineSegmentView, ...] = ()

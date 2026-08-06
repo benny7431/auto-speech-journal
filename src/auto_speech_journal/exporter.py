@@ -60,7 +60,17 @@ class MarkdownExporter:
 
     def __init__(self, storage: JournalStorage, records_root: Path) -> None:
         self.storage = storage
-        self.records_root = Path(records_root)
+        self.records_root = Path(records_root).expanduser().resolve()
+
+    def set_records_root(self, records_root: Path) -> None:
+        """Switch future Markdown writes while no recorder workers are active."""
+
+        candidate = Path(records_root).expanduser()
+        if not candidate.is_absolute():
+            raise ValueError("records_root must be an absolute path")
+        candidate = candidate.resolve()
+        candidate.mkdir(parents=True, exist_ok=True)
+        self.records_root = candidate
 
     def path_for_hour(self, key: str) -> Path:
         validate_hour_key(key)

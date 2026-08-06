@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "release": "models-v1",
+  "assets": [
+    {
+      "name": "MODELS_V1_MANIFEST_NOT_PUBLISHED",
+      "url": "https://example.invalid/auto-speech-journal/models-v1-not-published.zip",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size": 1,
+      "installed_size": 1,
+      "destination": "_models-v1-not-published",
+      "archive": "zip",
+      "required_files": []
+    }
+  ]
+}

@@ -46,7 +46,7 @@ during installation or model repair; routine recording does not send audio or tr
 cloud service.
 
 > [!IMPORTANT]
-> Version `0.1.0` is an early development release. It supports Windows WASAPI, Chinese
+> Version `0.2.0` is a pre-release. It supports Windows WASAPI, Chinese
 > transcription, and the `Asia/Taipei` timezone only. A microphone does not need to be connected
 > during installation; the application asks you to select an input explicitly on first launch.
 
@@ -74,7 +74,7 @@ cloud service.
 | Managed correction vocabulary | Corrected segments remain locked; learned terms can be reviewed, removed, cleared, or disabled without losing corrections |
 | Portable output | Journals are ordinary Markdown files and do not require a proprietary reader |
 | Switchable microphone | Pin a WASAPI endpoint or follow the Windows default without restarting the app |
-| Sign-in startup | The installer creates a per-user scheduled task that starts the app 20 seconds after sign-in |
+| Optional sign-in startup | The first-run wizard creates a per-user task pointing to the stable launcher only after explicit consent |
 | Offline visuals | Monthly scenes, status scenes, and particle effects ship with the application and do not call generative image services at runtime |
 
 ## Quick start
@@ -83,45 +83,25 @@ cloud service.
 
 - Windows 10/11 x64
 - A working WASAPI microphone and Windows microphone permission when recording
-- [uv](https://docs.astral.sh/uv/getting-started/installation/)
-- Python 3.11 managed by `uv`
-- A network connection and several gigabytes of free space for the first model download
-- An NVIDIA GPU is optional; use the CPU installation path without a compatible GPU
+- A network connection for the first model download; Setup reports the calculated space required
+- An NVIDIA GPU is optional; failed detection or CUDA probing falls back to CPU
 
-### 2. Download the source
+### 2. Download and install
 
-Choose **Code → Download ZIP** on GitHub and extract it, or clone the repository with Git. Open
-PowerShell in the repository root.
+Download the signed `AutoSpeechJournal-Setup-0.2.0-x64.exe` from
+[GitHub Releases](https://github.com/benny7431/auto-speech-journal/releases), then double-click it.
+Python, `uv`, Git, PowerShell, and administrator access are not required.
 
-### 3. Install and enable sign-in startup
-
-With a compatible NVIDIA GPU:
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\install.ps1
-```
-
-Without a compatible NVIDIA GPU, or to force CPU inference:
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\install.ps1 -NoCuda
-```
-
-The installed copy is placed in `%LOCALAPPDATA%\AutoSpeechJournal\app` and launched by the
-**Auto Speech Journal** scheduled task. The default journal location is:
+Setup downloads pinned models by default with visible progress, ETA, cancellation, and resume.
+It auto-detects NVIDIA support, allows an override, and always retains CPU fallback. The stable
+launcher is installed at `%LOCALAPPDATA%\Programs\AutoSpeechJournal\AutoSpeechJournal.exe`;
+versioned payloads live under `versions\<version>`. The default journal location is:
 
 ```text
 %USERPROFILE%\Documents\語音紀錄\YYYY-MM-DD\YYYY-MM-DD_HH.md
 ```
 
-> [!NOTE]
-> The source checkout may have a Unicode path, but the scheduled task must not point directly to
-> that checkout. The installer copies the app to an ASCII-only location and creates a non-editable
-> environment to avoid path-encoding failures on Traditional Chinese Windows installations.
-
-### 4. Select a microphone on first launch
+### 3. Complete first-run setup
 
 A fresh installation does not record and does not silently bind itself to a device. On first
 launch, explicitly choose one of the following:
@@ -130,30 +110,21 @@ launch, explicitly choose one of the following:
 - **Fixed device**: keep a specific WASAPI microphone as the preferred input.
 - **Configure later**: enter the main UI without recording and keep the setup reminder available.
 
-Choosing a fixed device or the Windows default starts recording. The selection is written to
+Also choose a journal folder, optional sign-in startup (off by default), and optional update
+notifications (off by default). Recording starts only after **Start recording** is pressed. The
+selection is written to
 `%LOCALAPPDATA%\AutoSpeechJournal\config.json` and survives reinstallations.
-
-### Installer options
-
-| Command | Purpose |
-| --- | --- |
-| `.\install.ps1` | Install the CUDA runtime, download models, validate the deployment, and start immediately |
-| `.\install.ps1 -NoCuda` | Use CPU inference for final transcription |
-| `.\install.ps1 -SkipModelDownload` | Defer model downloads; normal transcription is unavailable until models are repaired |
-| `.\install.ps1 -NoStart` | Complete installation but wait until the next sign-in to start |
-
-Options may be combined, for example `.\install.ps1 -NoCuda -NoStart`.
 
 <details>
 <summary><strong>What does the installer do?</strong></summary>
 
-1. Validate the bundled offline scene assets.
-2. Deploy the application to `%LOCALAPPDATA%\AutoSpeechJournal\app`.
-3. Create an isolated environment from `uv.lock` and install pinned dependencies.
-4. Download, convert, and hash-check pinned recognition models.
-5. Run model inference, SQLite, and output-folder checks that do not require a microphone.
-6. Create the sign-in scheduled task and verify the process, singleton mutex, and log output.
-7. Restore the previous app, configuration, SQLite/WAL files, and scheduled task if any step fails.
+1. Stage the self-contained CPU application in `versions\<version>`.
+2. Run the actual frozen Qt/QML readiness probe before switching versions.
+3. Atomically replace `current.json`; failure leaves the previous version active.
+4. Download model assets with size, SHA-256, extracted-file, and path-safety checks.
+5. Optionally download only pinned NVIDIA runtime wheels and run a real CUDA probe.
+6. Keep the usable CPU app when model/GPU provisioning fails; Start-menu Repair resumes it.
+7. Reuse legacy state and migrate the old sign-in task only after verifying its exact action.
 
 </details>
 
@@ -222,7 +193,8 @@ Traditional Chinese conversion, and export all work offline.
 
 | Data | Default location |
 | --- | --- |
-| Installed application | `%LOCALAPPDATA%\AutoSpeechJournal\app` |
+| Stable launcher | `%LOCALAPPDATA%\Programs\AutoSpeechJournal\AutoSpeechJournal.exe` |
+| Versioned application | `%LOCALAPPDATA%\Programs\AutoSpeechJournal\versions\<version>` |
 | Configuration | `%LOCALAPPDATA%\AutoSpeechJournal\config.json` |
 | SQLite state | `%LOCALAPPDATA%\AutoSpeechJournal\state.db` |
 | Recognition models | `%LOCALAPPDATA%\AutoSpeechJournal\models` |
@@ -242,29 +214,12 @@ First stop the app through **System status → Exit application**, then run the 
 PowerShell:
 
 ```powershell
-$App = "$env:LOCALAPPDATA\AutoSpeechJournal\app"
-
-# Select a microphone again and test a short recording
-& "$App\.venv\Scripts\python.exe" -X utf8 -m auto_speech_journal setup `
-  --test-microphone
-
-# Download or repair pinned models without changing configuration
-& "$App\.venv\Scripts\python.exe" -X utf8 -m auto_speech_journal download-models
-
-# Check Python, folders, configuration, microphone, models, and SQLite
-& "$App\.venv\Scripts\python.exe" -X utf8 -m auto_speech_journal self-test
-
-# Deep-check model hashes, real capture, and CUDA final inference
-& "$App\.venv\Scripts\python.exe" -X utf8 -m auto_speech_journal self-test `
-  --deep-model-check --test-microphone
-
-# Deep inference check for a CPU installation
-& "$App\.venv\Scripts\python.exe" -X utf8 -m auto_speech_journal self-test `
-  --deep-model-check --test-microphone --allow-cpu-finalizer
-
-# Check the rest of the installation when no microphone is available
-& "$App\.venv\Scripts\python.exe" -X utf8 -m auto_speech_journal self-test `
-  --no-microphone-check
+$Cli = "$env:LOCALAPPDATA\Programs\AutoSpeechJournal\AutoSpeechJournal.CLI.exe"
+& $Cli repair models
+& $Cli repair gpu
+& $Cli repair runtime
+& $Cli installer-probe --isolated
+& $Cli startup status
 ```
 
 ### Common situations
@@ -275,10 +230,10 @@ On a fresh install, or after choosing **Configure later**, select a fixed device
 Windows default** on the first-run screen or Settings page. The installer itself never selects a
 microphone or starts recording for you.
 
-**Models are missing after using `-SkipModelDownload`**
+**Models are missing after cancelling their download**
 
-Reconnect to the network and run the complete installer again. Existing journals, configuration,
-and pending segments are preserved.
+Reconnect, then choose **Repair models** from the Start menu. `.part` files resume; journals,
+configuration, and pending segments remain in place.
 
 **The app reports a degraded state**
 
@@ -295,14 +250,8 @@ scheduled tasks, SQLite/WAL, and spool recovery procedures.
 
 ## Uninstalling
 
-Exit the application completely, then run this from the source directory:
-
-```powershell
-.\uninstall.ps1
-```
-
-The uninstaller removes only the scheduled task and `%LOCALAPPDATA%\AutoSpeechJournal\app`. It
-preserves:
+Exit the application, then remove Auto Speech Journal from **Windows Settings → Apps**. By default
+the uninstaller removes only the program, shortcuts, and its owned sign-in task. It preserves:
 
 - Markdown journals
 - `config.json` and `settings-history.jsonl`
@@ -311,6 +260,8 @@ preserves:
 - Logs and local fonts
 
 A later installation can therefore reuse the configuration and resume incomplete segments.
+Unchecked options can additionally remove models/cache or, after a second confirmation, local
+state. External Markdown journal folders are never deleted automatically.
 
 ## Documentation, policies, and participation
 
@@ -364,9 +315,9 @@ src/auto_speech_journal/
 └── qml/, assets/              # Interface and offline visual assets
 
 tests/                         # Pytest regression tests
+packaging/                     # PyInstaller, launchers, Inno, model/CUDA manifests
 tools/                         # Recovery, assets, performance, and packaging QA
-install.ps1                    # Windows installation and scheduled task
-uninstall.ps1                  # Data-preserving uninstaller
+install.ps1, uninstall.ps1     # Legacy development/recovery path only
 ```
 
 </details>
@@ -377,8 +328,7 @@ uninstall.ps1                  # Data-preserving uninstaller
 - The microphone list includes WASAPI virtual inputs but does not support special loopback capture.
   Indistinguishable duplicate endpoints cannot be pinned; use the Windows default or disable the
   duplicate endpoint.
-- `install.ps1` does not auto-detect CUDA yet. Choose the default path or `-NoCuda` yourself.
-- Releases currently provide source distributions rather than a signed EXE/MSI.
+- Public Setup publication is blocked unless SignPath returns valid timestamped signatures.
 - Project source and first-party release assets use the MIT License; third-party content keeps its
   own terms.
 - Personal local fonts and their legal records are not release contents.

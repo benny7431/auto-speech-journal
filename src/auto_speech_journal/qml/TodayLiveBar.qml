@@ -128,6 +128,7 @@ Item {
         LiveButton {
             objectName: "expandedPauseButton"
             emphasized: true
+            enabled: root.journal.recordingControlsEnabled
             text: root.journal.paused ? "繼續聽" : "暫停錄音"
             onClicked: root.journal.togglePause()
         }

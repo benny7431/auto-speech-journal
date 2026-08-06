@@ -14,6 +14,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
+from . import __version__
 from .config import ModelConfig
 
 ProgressCallback = Callable[[str, int, int], None]
@@ -189,7 +190,10 @@ def _default_download_file(
     destination: Path,
     progress: ProgressCallback | None,
 ) -> None:
-    request = urllib.request.Request(url, headers={"User-Agent": "AutoSpeechJournal/0.1"})
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": f"AutoSpeechJournal/{__version__}"},
+    )
     destination.parent.mkdir(parents=True, exist_ok=True)
     with urllib.request.urlopen(request, timeout=60) as response, destination.open("wb") as output:
         total = int(response.headers.get("Content-Length") or 0)

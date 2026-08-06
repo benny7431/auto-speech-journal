@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "status": "blocked",
+  "reason": "No reviewed, redistributable 16 kHz mono reference recording and expected transcripts are committed yet.",
+  "required_ready_schema": {
+    "audio": {
+      "path": "repository-relative path to a redistributable WAV or FLAC fixture",
+      "sha256": "64 lowercase hexadecimal characters",
+      "sample_rate": 16000,
+      "channels": 1,
+      "minimum_duration_ms": 1000,
+      "maximum_duration_ms": 30000
+    },
+    "expected": {
+      "preview_text": "reviewed normalized Preview transcript",
+      "preview_text_sha256": "SHA-256 of the NFKC and whitespace-normalized transcript",
+      "final_text": "reviewed Traditional Chinese final transcript",
+      "final_text_sha256": "SHA-256 of the NFKC and whitespace-normalized transcript"
+    }
+  }
+}

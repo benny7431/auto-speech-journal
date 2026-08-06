@@ -203,6 +203,8 @@ def _create_main_window(
     microphone_device_provider: Any | None = None,
     clock: Callable[[], datetime] | None = None,
     font_directories: Sequence[Path] | None = None,
+    startup_setting_callback: Callable[[bool], Any] | None = None,
+    update_check_callback: Callable[[bool, Callable[[Any], None]], Any] | None = None,
 ) -> Any:
     """Create the QML window without entering Qt's event loop."""
     try:
@@ -221,6 +223,8 @@ def _create_main_window(
         clock=clock,
         font_directories=font_directories,
         microphone_device_provider=microphone_device_provider,
+        startup_setting_callback=startup_setting_callback,
+        update_check_callback=update_check_callback,
     )
     engine.rootContext().setContextProperty("journal", view_model)
     qml_path = Path(__file__).resolve().parent / "qml" / "JournalWindow.qml"
@@ -239,7 +243,13 @@ def _create_main_window(
     return window
 
 
-def run_ui(controller: JournalController, argv: Sequence[str] | None = None) -> int:
+def run_ui(
+    controller: JournalController,
+    argv: Sequence[str] | None = None,
+    *,
+    startup_setting_callback: Callable[[bool], Any] | None = None,
+    update_check_callback: Callable[[bool, Callable[[Any], None]], Any] | None = None,
+) -> int:
     """Run the local-first compact recorder and its expanded journal workspace."""
     try:
         from PySide6.QtCore import QTimer
@@ -249,7 +259,12 @@ def run_ui(controller: JournalController, argv: Sequence[str] | None = None) -> 
 
     application = QApplication.instance() or QApplication(list(argv or sys.argv))
     _configure_application(application)
-    window = _create_main_window(controller, application)
+    window = _create_main_window(
+        controller,
+        application,
+        startup_setting_callback=startup_setting_callback,
+        update_check_callback=update_check_callback,
+    )
     window.show()
 
     QTimer.singleShot(0, window._journal_view_model.startControllerIfReady)

@@ -33,6 +33,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QDesktopServices, QFont, QFontDatabase, QGuiApplication
 
+from . import __version__
 from .config import (
     DEFAULT_UI_FONT_SIZE,
     MAX_UI_FONT_SIZE,
@@ -85,7 +86,9 @@ SETTINGS_FIELD_LABELS = {
     "ui_font_size": "介面字級",
     "microphone.mode": "麥克風模式",
     "microphone.preferred_device.name": "偏好麥克風",
+    "onboarding_completed": "首次設定",
     "startup_enabled": "開機自動啟動",
+    "update_check_enabled": "版本更新提示",
     "vocabulary_learning_enabled": "校正字典自動學習",
 }
 FONT_FAMILY_DISPLAY_NAMES = {
@@ -549,8 +552,11 @@ class JournalViewModel(QObject):
     microphoneSelectionChanged = Signal()
     microphoneSetupChanged = Signal()
     microphoneTestChanged = Signal()
+    onboardingChanged = Signal()
+    updateCheckChanged = Signal()
     controllerStartChanged = Signal()
     _microphoneTestCompleted = Signal(str, bool, str, float, float)
+    _updateCheckCompleted = Signal(int, object)
     timelineRevisionChanged = Signal()
     timelineUpdating = Signal()
     timelineUpdated = Signal(int)
@@ -568,6 +574,8 @@ class JournalViewModel(QObject):
         monotonic: Callable[[], float] = time.monotonic,
         font_directories: Sequence[Path] | None = None,
         microphone_device_provider: Callable[[], Sequence[Any]] | None = None,
+        startup_setting_callback: Callable[[bool], Any] | None = None,
+        update_check_callback: Callable[[bool, Callable[[Any], None]], Any] | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -577,6 +585,8 @@ class JournalViewModel(QObject):
         self._clock = clock or (lambda: datetime.now(TAIPEI))
         self._monotonic = monotonic
         self._microphone_device_provider = microphone_device_provider
+        self._startup_setting_callback = startup_setting_callback
+        self._update_check_callback = update_check_callback
         self._window: Any | None = None
         self._expanded = False
         self._allow_close = False
@@ -618,8 +628,26 @@ class JournalViewModel(QObject):
         self._microphone_test_message = ""
         self._microphone_test_level = 0.0
         self._microphone_test_request_id = ""
+        config = getattr(self._controller, "config", None)
+        self._onboarding_deferred = (
+            not bool(getattr(config, "onboarding_completed", False))
+            and _enum_value(getattr(getattr(config, "microphone", None), "mode", ""))
+            == MicrophoneMode.SKIPPED.value
+        )
+        self._onboarding_step = 0
+        self._onboarding_records_root = str(getattr(config, "records_root", "") or "")
+        self._onboarding_records_tested = False
+        self._onboarding_startup_enabled = False
+        self._onboarding_update_check_enabled = False
+        self._update_available = False
+        self._update_available_text = ""
+        self._update_release_url = ""
+        self._update_check_generation = 0
+        self._update_check_requested = False
+        self._consent_microphone_test_required = False
         self._controller_started = False
         self._microphoneTestCompleted.connect(self._finish_microphone_test)
+        self._updateCheckCompleted.connect(self._finish_update_check)
         self._timeline_model = TimelineListModel(self)
         self._poll_timer = QTimer(self)
         self._poll_timer.setObjectName("journalPollTimer")
@@ -631,10 +659,13 @@ class JournalViewModel(QObject):
         self._apply_window_mode(initial=True)
 
     def activate(self) -> None:
-        if self.microphoneSetupPending:
+        if self.onboardingPending:
             self.rescanMicrophones()
         self.refresh(force_timeline=True)
         self._poll_timer.start()
+        config = getattr(self._controller, "config", None)
+        if bool(getattr(config, "update_check_enabled", False)):
+            self._trigger_update_check(True)
 
     @Property(QObject, constant=True)
     def timelineModel(self) -> QObject:
@@ -676,6 +707,10 @@ class JournalViewModel(QObject):
     def systemFontFamily(self) -> str:
         return self._fallback_ui_font_family
 
+    @Property(str, constant=True)
+    def appVersion(self) -> str:
+        return __version__
+
     @Property(float, notify=appearanceChanged)
     def uiFontScale(self) -> float:
         return self._ui_font_size / 16.0
@@ -695,9 +730,11 @@ class JournalViewModel(QObject):
     @Property(str, notify=snapshotChanged)
     def stateText(self) -> str:
         snapshot = self._snapshot
+        state = _enum_value(getattr(snapshot, "state", "stopped"))
+        if not self.recordingControlsEnabled and state not in {"degraded", "error"}:
+            return "尚未開始錄音"
         if bool(getattr(snapshot, "paused", False)):
             return "錄音已暫停"
-        state = _enum_value(getattr(snapshot, "state", "stopped"))
         return {
             "starting": "正在喚醒聲跡",
             "ready": "準備聆聽",
@@ -718,6 +755,8 @@ class JournalViewModel(QObject):
         text = str(getattr(self._snapshot, "partial_text", "") or "").strip()
         if text:
             return text
+        if not self.recordingControlsEnabled:
+            return "完成首次設定並啟動錄音後，這裡會顯示即時文字。"
         if bool(getattr(self._snapshot, "speech_active", False)):
             return "聽見你了，正在辨識…"
         return "等待你的聲音…"
@@ -848,24 +887,78 @@ class JournalViewModel(QObject):
     def maxSegment(self) -> int:
         return int(getattr(getattr(self._controller, "config", None), "max_segment_ms", 28000))
 
+    @Property(bool, notify=onboardingChanged)
+    def onboardingCompleted(self) -> bool:
+        config = getattr(self._controller, "config", None)
+        return bool(getattr(config, "onboarding_completed", False))
+
+    @Property(bool, notify=onboardingChanged)
+    def onboardingPending(self) -> bool:
+        return not self.onboardingCompleted and not self._onboarding_deferred
+
+    @Property(int, notify=onboardingChanged)
+    def onboardingStep(self) -> int:
+        return self._onboarding_step
+
+    @Property(str, notify=onboardingChanged)
+    def onboardingRecordsRoot(self) -> str:
+        return self._onboarding_records_root
+
+    @Property(bool, notify=onboardingChanged)
+    def onboardingRecordsTested(self) -> bool:
+        return self._onboarding_records_tested
+
+    @Property(bool, notify=onboardingChanged)
+    def onboardingStartupEnabled(self) -> bool:
+        return self._onboarding_startup_enabled
+
+    @Property(bool, notify=onboardingChanged)
+    def onboardingUpdateCheckEnabled(self) -> bool:
+        return self._onboarding_update_check_enabled
+
+    @Property(bool, notify=microphoneSelectionChanged)
+    def onboardingMicrophoneReady(self) -> bool:
+        return bool(self._selection_for_key(self._selected_microphone_key))
+
+    @Property(bool, notify=microphoneTestChanged)
+    def onboardingMicrophoneTested(self) -> bool:
+        return self._microphone_test_state in {"success", "warning"}
+
+    @Property(bool, notify=settingsChanged)
+    def startupEnabled(self) -> bool:
+        config = getattr(self._controller, "config", None)
+        return bool(getattr(config, "startup_enabled", False))
+
+    @Property(bool, notify=settingsChanged)
+    def updateCheckEnabled(self) -> bool:
+        config = getattr(self._controller, "config", None)
+        return bool(getattr(config, "update_check_enabled", False))
+
+    @Property(bool, notify=updateCheckChanged)
+    def updateAvailable(self) -> bool:
+        return self._update_available
+
+    @Property(str, notify=updateCheckChanged)
+    def updateAvailableText(self) -> str:
+        return self._update_available_text
+
+    @Property(str, notify=updateCheckChanged)
+    def updateReleaseUrl(self) -> str:
+        return self._update_release_url
+
     @Property(str, notify=settingsChanged)
     def deviceName(self) -> str:
         return self.preferredInputName
 
-    @Property(bool, notify=microphoneSetupChanged)
+    @Property(bool, notify=onboardingChanged)
     def microphoneSetupPending(self) -> bool:
-        selection = getattr(
-            getattr(self._controller, "config", None),
-            "microphone",
-            None,
-        )
-        return (
-            _enum_value(getattr(selection, "mode", ""))
-            == MicrophoneMode.PENDING.value
-        )
+        """Compatibility alias for the v3 QML window sizing contract."""
+        return self.onboardingPending
 
     @Property(bool, notify=controllerStartChanged)
     def recordingEngineNeedsStart(self) -> bool:
+        if not self.onboardingCompleted:
+            return False
         selection = getattr(
             getattr(self._controller, "config", None),
             "microphone",
@@ -878,6 +971,16 @@ class JournalViewModel(QObject):
         if workers_started is not None:
             return not bool(workers_started)
         return not self._controller_started
+
+    @Property(bool, notify=controllerStartChanged)
+    def recordingControlsEnabled(self) -> bool:
+        if not self.onboardingCompleted:
+            return False
+        workers_started = getattr(self._controller, "workers_started", None)
+        if workers_started is not None:
+            return bool(workers_started)
+        state = _enum_value(getattr(self._snapshot, "state", "stopped"))
+        return self._controller_started or state in {"recording", "paused", "degraded"}
 
     @Property("QVariantList", notify=microphoneDevicesChanged)
     def microphoneOptions(self) -> list[dict[str, Any]]:
@@ -894,6 +997,18 @@ class JournalViewModel(QObject):
     @Property(str, notify=microphoneSelectionChanged)
     def selectedMicrophoneKey(self) -> str:
         return self._selected_microphone_key
+
+    @Property(str, notify=microphoneSelectionChanged)
+    def selectedMicrophoneLabel(self) -> str:
+        option = next(
+            (
+                item
+                for item in self._microphone_options
+                if str(item.get("key", "")) == self._selected_microphone_key
+            ),
+            None,
+        )
+        return str((option or {}).get("label", "") or "")
 
     @Property(bool, notify=microphoneSelectionChanged)
     def settingsMicrophoneSelectionValid(self) -> bool:
@@ -1014,6 +1129,273 @@ class JournalViewModel(QObject):
     @Property("QVariantList", notify=vocabularyChanged)
     def vocabularyEntries(self) -> list[dict[str, Any]]:
         return [dict(entry) for entry in self._vocabulary_entries]
+
+    @Slot(str, bool, bool, result=bool)
+    def advanceOnboarding(
+        self,
+        records_root: str,
+        startup_enabled: bool,
+        update_check_enabled: bool,
+    ) -> bool:
+        if not self.onboardingPending or self._onboarding_step >= 4:
+            return False
+        if self._onboarding_step == 1:
+            if not self._test_records_folder(records_root):
+                return False
+        elif self._onboarding_step == 2:
+            self._onboarding_startup_enabled = bool(startup_enabled)
+            self._onboarding_update_check_enabled = bool(update_check_enabled)
+            self.rescanMicrophones()
+        elif self._onboarding_step == 3 and not self.onboardingMicrophoneReady:
+            self._report_error("請先選擇一個麥克風或跟隨 Windows 預設")
+            return False
+        self._onboarding_step += 1
+        self.onboardingChanged.emit()
+        return True
+
+    @Slot(result=bool)
+    def retreatOnboarding(self) -> bool:
+        if not self.onboardingPending or self._onboarding_step <= 0:
+            return False
+        self._onboarding_step -= 1
+        self.onboardingChanged.emit()
+        return True
+
+    @Slot(result=bool)
+    def deferOnboarding(self) -> bool:
+        if self.onboardingCompleted:
+            return False
+        base = getattr(self._controller, "config", None)
+        action = getattr(self._controller, "update_settings", None)
+        if base is None or not callable(action):
+            self._report_error("目前無法保存稍後設定狀態")
+            return False
+        deferred = replace(
+            base,
+            microphone=MicrophoneSelection(mode=MicrophoneMode.SKIPPED),
+            onboarding_completed=False,
+            startup_enabled=False,
+            update_check_enabled=False,
+        )
+        if not self._run_action(lambda: action(deferred)):
+            return False
+        self._onboarding_deferred = True
+        self._consent_microphone_test_required = False
+        self._onboarding_step = 0
+        self._selected_microphone_key = ""
+        self._reset_microphone_test()
+        self._trigger_update_check(False)
+        self.settingsChanged.emit()
+        self.onboardingChanged.emit()
+        self.microphoneSelectionChanged.emit()
+        self.microphoneSetupChanged.emit()
+        self._apply_window_mode()
+        self.actionSucceeded.emit("已延後首次設定；目前不會錄音或建立登入自啟")
+        return True
+
+    @Slot(result=bool)
+    def openOnboarding(self) -> bool:
+        if self.onboardingCompleted:
+            return False
+        self._onboarding_deferred = False
+        self._consent_microphone_test_required = False
+        self._onboarding_step = 0
+        self._onboarding_records_root = str(
+            getattr(getattr(self._controller, "config", None), "records_root", "") or ""
+        )
+        self._onboarding_records_tested = False
+        self._onboarding_startup_enabled = False
+        self._onboarding_update_check_enabled = False
+        self._selected_microphone_key = ""
+        self._reset_microphone_test()
+        self.rescanMicrophones()
+        self.onboardingChanged.emit()
+        self.microphoneSelectionChanged.emit()
+        self.microphoneSetupChanged.emit()
+        self._apply_window_mode()
+        return True
+
+    @Slot(result=bool)
+    def startOnboardingRecording(self) -> bool:
+        if not self.onboardingPending or self._onboarding_step != 4:
+            self._report_error("請先完成首次設定的所有步驟")
+            return False
+        if not self._onboarding_records_tested:
+            self._report_error("請先確認日記資料夾可寫入")
+            return False
+        selection = self._selection_for_key(self._selected_microphone_key)
+        if selection is None:
+            self._report_error("請先選擇麥克風")
+            return False
+        base = getattr(self._controller, "config", None)
+        action = getattr(self._controller, "update_settings", None)
+        if base is None or not callable(action):
+            self._report_error("目前無法儲存首次設定")
+            return False
+
+        startup_enabled = self._onboarding_startup_enabled
+        if startup_enabled and not self._apply_startup_setting(True, announce=False):
+            startup_enabled = False
+        config = replace(
+            base,
+            records_root=self._onboarding_records_root,
+            microphone=selection,
+            onboarding_completed=True,
+            startup_enabled=startup_enabled,
+            update_check_enabled=self._onboarding_update_check_enabled,
+        )
+        try:
+            config.validate()
+        except Exception as error:
+            if startup_enabled:
+                self._apply_startup_setting(False, announce=False)
+            self._report_error(str(error))
+            return False
+        if not self._run_action(lambda: action(config)):
+            if startup_enabled:
+                self._apply_startup_setting(False, announce=False)
+            return False
+
+        self._onboarding_deferred = False
+        self._snapshot = getattr(self._controller, "snapshot", self._snapshot)
+        self.settingsChanged.emit()
+        self.snapshotChanged.emit()
+        self.onboardingChanged.emit()
+        self.microphoneSetupChanged.emit()
+        self.controllerStartChanged.emit()
+        self._refresh_settings_history()
+        self._apply_window_mode()
+        self._trigger_update_check(self._onboarding_update_check_enabled)
+        self._consent_microphone_test_required = True
+        self.actionSucceeded.emit("首次設定已完成，正在測試麥克風")
+        self.testSelectedMicrophone()
+        return True
+
+    def _test_records_folder(self, records_root: str) -> bool:
+        base = getattr(self._controller, "config", None)
+        if base is None:
+            self._report_error("找不到目前設定")
+            return False
+        try:
+            candidate = replace(base, records_root=records_root.strip(), startup_enabled=False)
+            candidate.validate()
+            directory = Path(candidate.records_root)
+            directory.mkdir(parents=True, exist_ok=True)
+            probe = directory / f".auto-speech-journal-write-test-{uuid.uuid4().hex}.tmp"
+            try:
+                with probe.open("x", encoding="utf-8", newline="\n") as handle:
+                    handle.write("write-test\n")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            finally:
+                probe.unlink(missing_ok=True)
+        except Exception as error:
+            self._onboarding_records_tested = False
+            self._report_error(f"日記資料夾無法寫入：{error}")
+            self.onboardingChanged.emit()
+            return False
+        self._onboarding_records_root = candidate.records_root
+        self._onboarding_records_tested = True
+        self.onboardingChanged.emit()
+        self.actionSucceeded.emit("日記資料夾可正常寫入")
+        return True
+
+    def _apply_startup_setting(self, enabled: bool, *, announce: bool = True) -> bool:
+        callback = self._startup_setting_callback
+        if callback is None:
+            self._report_error("此安裝環境尚未提供登入自啟服務，設定未變更")
+            return False
+        try:
+            result = callback(bool(enabled))
+            if result is False:
+                raise RuntimeError("登入自啟服務拒絕這次變更")
+            available = bool(getattr(result, "available", True))
+            effective = bool(getattr(result, "enabled", enabled))
+            if not available and enabled:
+                self._report_error("Windows 工作排程器目前不可用，已改為手動啟動")
+                return False
+            if effective != enabled:
+                self._report_error("登入自啟狀態未套用，設定已維持原值")
+                return False
+        except Exception as error:
+            self._report_error(f"無法更新登入自啟設定：{error}")
+            return False
+        if announce:
+            self.actionSucceeded.emit("已更新登入自啟設定")
+        return True
+
+    def _trigger_update_check(self, enabled: bool) -> None:
+        self._update_check_generation += 1
+        generation = self._update_check_generation
+        self._update_check_requested = bool(enabled)
+        if not enabled:
+            self._set_update_notice(False, "", "")
+        callback = self._update_check_callback
+        if callback is None:
+            return
+        try:
+            result = callback(
+                enabled=bool(enabled),
+                callback=lambda value: self._emit_update_check_result(generation, value),
+            )
+        except Exception:
+            # Offline, rate-limit and service errors must never affect recording.
+            return
+        if result is not None and not isinstance(result, bool):
+            self._emit_update_check_result(generation, result)
+
+    def _emit_update_check_result(self, generation: int, result: Any) -> None:
+        with suppress(RuntimeError):
+            self._updateCheckCompleted.emit(generation, result)
+
+    @Slot(int, object)
+    def _finish_update_check(self, generation: int, result: Any) -> None:
+        if generation != self._update_check_generation or not self._update_check_requested:
+            return
+        if isinstance(result, dict):
+            getter = result.get
+        else:
+            def getter(name: str, default: Any = None) -> Any:
+                return getattr(result, name, default)
+        available = bool(getter("available", getter("update_available", False)))
+        version = str(getter("version", getter("latest_version", "")) or "").strip()
+        url = str(getter("release_url", getter("url", "")) or "").strip()
+        if not available or not url:
+            self._set_update_notice(False, "", "")
+            return
+        label = f"有新版本 {version} 可下載" if version else "有新版本可下載"
+        self._set_update_notice(True, label, url)
+
+    def _set_update_notice(self, available: bool, text: str, url: str) -> None:
+        values = (bool(available), text, url)
+        if values == (
+            self._update_available,
+            self._update_available_text,
+            self._update_release_url,
+        ):
+            return
+        self._update_available, self._update_available_text, self._update_release_url = values
+        self.updateCheckChanged.emit()
+
+    @Slot(result=bool)
+    def checkForUpdates(self) -> bool:
+        if not self.updateCheckEnabled:
+            return False
+        self._trigger_update_check(True)
+        return self._update_check_callback is not None
+
+    @Slot(result=bool)
+    def openUpdateRelease(self) -> bool:
+        url = QUrl(self._update_release_url)
+        if (
+            not self._update_available
+            or not url.isValid()
+            or url.scheme().casefold() != "https"
+            or url.host().casefold() != "github.com"
+        ):
+            self._report_error("更新下載連結無效")
+            return False
+        return bool(QDesktopServices.openUrl(url))
 
     @Slot(result=int)
     def rescanMicrophones(self) -> int:
@@ -1198,8 +1580,6 @@ class JournalViewModel(QObject):
             self._selected_microphone_key = normalized
             self.microphoneSelectionChanged.emit()
         self._reset_microphone_test()
-        if self.microphoneSetupPending:
-            return self.completeMicrophoneSetup()
         return True
 
     @Slot()
@@ -1221,6 +1601,8 @@ class JournalViewModel(QObject):
 
     @Slot(result=bool)
     def completeMicrophoneSetup(self) -> bool:
+        if self.onboardingPending:
+            return self.startOnboardingRecording()
         selection = self._selection_for_key(self._selected_microphone_key)
         if selection is None:
             self.actionFailed.emit("請先選擇一個麥克風或跟隨 Windows 預設")
@@ -1233,6 +1615,8 @@ class JournalViewModel(QObject):
 
     @Slot(result=bool)
     def skipMicrophoneSetup(self) -> bool:
+        if self.onboardingPending:
+            return self.deferOnboarding()
         if self._microphone_has_selectable_route:
             self.actionFailed.emit("已有可用麥克風，請先選擇後再開始")
             return False
@@ -1250,7 +1634,7 @@ class JournalViewModel(QObject):
 
     @Slot(result=bool)
     def deferMicrophoneAfterStartFailure(self) -> bool:
-        if not self.recordingEngineNeedsStart or self.microphoneSetupPending:
+        if not self.recordingEngineNeedsStart or self.onboardingPending:
             return False
         action = getattr(self._controller, "skip_microphone_setup", None)
         if not self._run_action(
@@ -1264,7 +1648,21 @@ class JournalViewModel(QObject):
 
     @Slot(result=bool)
     def startControllerIfReady(self) -> bool:
-        if self.microphoneSetupPending or self._controller_started:
+        if not self.onboardingCompleted or self._controller_started:
+            return False
+        if self._consent_microphone_test_required:
+            if not self.microphoneTestRunning:
+                self.testSelectedMicrophone()
+            return False
+        selection = getattr(
+            getattr(self._controller, "config", None),
+            "microphone",
+            None,
+        )
+        if _enum_value(getattr(selection, "mode", "")) not in {
+            MicrophoneMode.SYSTEM_DEFAULT.value,
+            MicrophoneMode.FIXED.value,
+        }:
             return False
         action = getattr(self._controller, "start", None)
         if not callable(action):
@@ -1285,6 +1683,9 @@ class JournalViewModel(QObject):
 
     @Slot(result=bool)
     def testSelectedMicrophone(self) -> bool:
+        if not self.onboardingCompleted:
+            self.actionFailed.emit("完成首次設定並按下「開始錄音」後才能測試麥克風")
+            return False
         if self.microphoneTestRunning:
             return False
         key = self._selected_microphone_key
@@ -1341,7 +1742,9 @@ class JournalViewModel(QObject):
             return
         self._microphone_test_request_id = ""
         self._microphone_test_state = "error"
-        self._microphone_test_message = "麥克風測試逾時，已停止等待；請重新掃描後再試。"
+        self._microphone_test_message = (
+            "麥克風測試逾時，設定已保存；請重新掃描後從設定頁重試。"
+        )
         self._microphone_test_level = 0.0
         self.microphoneTestChanged.emit()
         self.actionFailed.emit(self._microphone_test_message)
@@ -1359,9 +1762,12 @@ class JournalViewModel(QObject):
             return
         self._microphone_test_request_id = ""
         self._microphone_test_level = max(0.0, min(1.0, float(peak) * 5.0))
+        start_after_test = self._consent_microphone_test_required
         if not ok:
             self._microphone_test_state = "error"
-            self._microphone_test_message = f"麥克風測試失敗：{error}"
+            self._microphone_test_message = (
+                f"麥克風測試失敗：{error}。設定已保存，可從設定頁重試。"
+            )
             self.actionFailed.emit(self._microphone_test_message)
         elif rms < 0.0001:
             self._microphone_test_state = "warning"
@@ -1370,7 +1776,11 @@ class JournalViewModel(QObject):
             self._microphone_test_state = "success"
             self._microphone_test_message = f"測試成功，RMS {rms:.6f}、peak {peak:.6f}"
             self.actionSucceeded.emit("麥克風測試成功")
+        if start_after_test and ok:
+            self._consent_microphone_test_required = False
         self.microphoneTestChanged.emit()
+        if start_after_test and ok:
+            QTimer.singleShot(0, self.startControllerIfReady)
 
     def _measure_microphone_in_background(
         self,
@@ -1758,6 +2168,7 @@ class JournalViewModel(QObject):
 
     @Slot(str, int, int, int, result=bool)
     @Slot(str, int, int, int, str, result=bool)
+    @Slot(str, int, int, int, str, bool, bool, result=bool)
     def applySettings(
         self,
         records_root: str,
@@ -1765,6 +2176,8 @@ class JournalViewModel(QObject):
         endpoint_silence_ms: int,
         max_segment_ms: int,
         microphone_key: str = "",
+        startup_enabled: bool | None = None,
+        update_check_enabled: bool | None = None,
     ) -> bool:
         base = getattr(self._controller, "config", None)
         if base is None:
@@ -1773,6 +2186,9 @@ class JournalViewModel(QObject):
         requested_key = microphone_key.strip()
         current_selection = getattr(base, "microphone", None)
         current_key = _microphone_key_for_selection(current_selection)
+        if not bool(getattr(base, "onboarding_completed", False)) and requested_key:
+            self._report_error("請先從首次設定按下「開始錄音」再變更麥克風")
+            return False
         requested_selection = None
         if requested_key and requested_key != current_key:
             requested_selection = self._selection_for_key(requested_key)
@@ -1785,6 +2201,16 @@ class JournalViewModel(QObject):
             preview_interval_ms=int(preview_interval_ms),
             endpoint_silence_ms=int(endpoint_silence_ms),
             max_segment_ms=int(max_segment_ms),
+            startup_enabled=(
+                bool(startup_enabled)
+                if startup_enabled is not None
+                else bool(getattr(base, "startup_enabled", False))
+            ),
+            update_check_enabled=(
+                bool(update_check_enabled)
+                if update_check_enabled is not None
+                else bool(getattr(base, "update_check_enabled", False))
+            ),
         )
         try:
             config = AppConfig.from_dict(raw)
@@ -1798,7 +2224,17 @@ class JournalViewModel(QObject):
         if not callable(action):
             self._report_error("目前無法儲存設定")
             return False
+        startup_changed = config.startup_enabled != bool(
+            getattr(base, "startup_enabled", False)
+        )
+        if startup_changed and not self._apply_startup_setting(config.startup_enabled):
+            return False
         if not self._run_action(lambda: action(config)):
+            if startup_changed:
+                self._apply_startup_setting(
+                    bool(getattr(base, "startup_enabled", False)),
+                    announce=False,
+                )
             self.controllerStartChanged.emit()
             return False
         if requested_key:
@@ -1808,6 +2244,7 @@ class JournalViewModel(QObject):
         self.settingsChanged.emit()
         self.snapshotChanged.emit()
         self._refresh_settings_history()
+        self._trigger_update_check(config.update_check_enabled)
         message = (
             "設定已儲存，正在切換麥克風"
             if requested_selection is not None

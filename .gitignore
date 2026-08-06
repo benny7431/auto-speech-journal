@@ -21,6 +21,11 @@ artifacts/
 
 # Runtime data is installed outside the repository, but keep accidental copies out.
 models/
+!/packaging/models/
+!/packaging/models/*.py
+!/packaging/models/*.json
+!/packaging/models/*.md
+/packaging/models/__pycache__/
 spool/
 state.db*
 config.json

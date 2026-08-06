@@ -66,7 +66,7 @@ def _relative_imports(path: Path, module: str) -> set[str]:
     return imported
 
 
-def test_network_capable_imports_are_confined_to_setup_model_downloader() -> None:
+def test_network_capable_imports_are_confined_to_explicit_download_services() -> None:
     imports = {
         path.name: found
         for path in PACKAGE_ROOT.glob("*.py")
@@ -74,7 +74,14 @@ def test_network_capable_imports_are_confined_to_setup_model_downloader() -> Non
     }
 
     assert imports == {
+        "gpu_runtime.py": {"urllib.parse"},
         "model_download.py": {"huggingface_hub", "urllib.request"},
+        "provisioning.py": {"urllib.error", "urllib.parse", "urllib.request"},
+        "update_check.py": {
+            "urllib.error",
+            "urllib.parse",
+            "urllib.request",
+        },
     }
     assert all(_network_imports(PACKAGE_ROOT / name) == set() for name in RUNTIME_MODULES)
 
@@ -86,6 +93,9 @@ def test_runtime_uses_only_offline_model_path_resolution() -> None:
     assert _relative_imports(PACKAGE_ROOT / "setup_wizard.py", "model_download") == {
         "ensure_models"
     }
+    assert _relative_imports(PACKAGE_ROOT / "workers.py", "provisioning") == set()
+    assert _relative_imports(PACKAGE_ROOT / "workers.py", "update_check") == set()
+    assert _relative_imports(PACKAGE_ROOT / "workers.py", "gpu_runtime") == set()
     assert inspect.signature(run_setup).parameters["download_models"].default is False
 
 

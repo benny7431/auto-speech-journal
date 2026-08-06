@@ -1,0 +1,200 @@
+name: Windows package
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-package-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: Unsigned installer contract
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      PYTHONUTF8: "1"
+      PYTHONPATH: ${{ github.workspace }}\src
+      QT_QPA_PLATFORM: offscreen
+      QT_QUICK_BACKEND: software
+      QSG_RHI_BACKEND: software
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Verify and install locked build environment
+        shell: pwsh
+        run: |
+          uv lock --check
+          if ($LASTEXITCODE -ne 0) { throw "uv.lock is stale" }
+          uv sync --frozen --no-editable --extra dev
+          if ($LASTEXITCODE -ne 0) { throw "Locked build environment installation failed" }
+
+      - name: Run packaging contract tests
+        shell: pwsh
+        run: |
+          uv run --no-sync ruff check packaging `
+            tests/test_windows_packaging_contract.py `
+            tests/test_model_bundle_packaging.py `
+            tests/test_release_artifact_validators.py `
+            tests/test_model_release_gate.py
+          if ($LASTEXITCODE -ne 0) { throw "Windows packaging lint failed" }
+          uv run --no-sync pytest -q `
+            tests/test_windows_packaging_contract.py `
+            tests/test_model_bundle_packaging.py `
+            tests/test_release_artifact_validators.py `
+            tests/test_model_release_gate.py
+          if ($LASTEXITCODE -ne 0) { throw "Windows packaging contract tests failed" }
+          uv run --no-sync python packaging/manifests/validate_cuda_manifest.py `
+            --manifest packaging/manifests/cuda-runtime-v1.json `
+            --lock uv.lock
+          if ($LASTEXITCODE -ne 0) { throw "Pinned CUDA manifest validation failed" }
+
+      - name: Install pinned Inno Setup
+        shell: pwsh
+        run: |
+          winget install --id JRSoftware.InnoSetup -e --version 6.7.3 `
+            --silent --accept-package-agreements --accept-source-agreements
+          if ($LASTEXITCODE -ne 0) { throw "Pinned Inno Setup installation failed" }
+
+      - name: Build exact wheel and source distribution
+        shell: pwsh
+        run: |
+          uv build
+          if ($LASTEXITCODE -ne 0) { throw "Python distribution build failed" }
+          uv run --no-sync python tools/verify_wheel_contents.py
+          if ($LASTEXITCODE -ne 0) { throw "Wheel content verification failed" }
+
+          $version = uv run --no-sync python -c `
+            "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
+          if ($LASTEXITCODE -ne 0) { throw "Cannot read project version" }
+          $expected = @(
+            "auto_speech_journal-$version-py3-none-any.whl",
+            "auto_speech_journal-$version.tar.gz"
+          )
+          $actual = @(Get-ChildItem dist -File | Where-Object {
+            ($_.Extension -eq ".whl" -or $_.Name.EndsWith(".tar.gz")) -and
+            $_.Name -ne "default.gitignore"
+          } | Select-Object -ExpandProperty Name | Sort-Object)
+          if ($actual.Count -ne 2 -or (Compare-Object ($expected | Sort-Object) $actual)) {
+            throw "Expected exact versioned wheel and source distribution; found: $($actual -join ', ')"
+          }
+
+      - name: Build unsigned application and Setup
+        shell: powershell
+        run: |
+          & .\tools\build_windows_installer.ps1 -Stage All
+          if (-not $?) { throw "Unsigned Windows package build failed" }
+
+      - name: Verify frozen runtime inventory and SBOM
+        shell: pwsh
+        run: |
+          uv run --no-sync python packaging/windows/runtime_inventory.py validate `
+            --sbom artifacts/windows/application/AutoSpeechJournal.cdx.json `
+            --inventory artifacts/windows/application/payload/frozen-runtime-inventory.json `
+            --lock uv.lock `
+            --pyproject pyproject.toml `
+            --payload artifacts/windows/application/payload
+          if ($LASTEXITCODE -ne 0) { throw "Frozen runtime/SBOM inventory validation failed" }
+
+      - name: Verify frozen QML and unsigned artifacts
+        shell: powershell
+        run: |
+          & .\tools\verify_windows_installer.ps1 -AllowUnsigned
+          if (-not $?) { throw "Unsigned Windows artifact verification failed" }
+
+      - name: Install, probe, and uninstall as the current non-elevated user
+        shell: powershell
+        run: |
+          $version = uv run --no-sync python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
+          if ($LASTEXITCODE -ne 0) { throw "Cannot read project version" }
+          $setup = Join-Path $PWD "artifacts\windows\setup\AutoSpeechJournal-Setup-$version-x64.exe"
+          $target = Join-Path $env:RUNNER_TEMP "AutoSpeechJournal-E2E"
+          $e2eLogs = Join-Path $PWD "artifacts\windows\e2e"
+          New-Item -ItemType Directory -Force -Path $e2eLogs | Out-Null
+          $installLog = Join-Path $e2eLogs "install.log"
+          $install = Start-Process -FilePath $setup -ArgumentList @(
+            "/VERYSILENT",
+            "/SUPPRESSMSGBOXES",
+            "/NORESTART",
+            "/NOMODELS",
+            "/NOGPU",
+            "/DIR=$target",
+            "/LOG=$installLog"
+          ) -WindowStyle Hidden -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "Setup failed: $($install.ExitCode)" }
+          $installedCli = Join-Path $target "AutoSpeechJournal.CLI.exe"
+          if (-not (Test-Path -LiteralPath $installedCli -PathType Leaf)) {
+            Get-Content -LiteralPath $installLog -Tail 100 -ErrorAction SilentlyContinue
+            throw "Setup reported success but the stable CLI launcher is missing: $installedCli"
+          }
+          & $installedCli installer-probe --isolated
+          if ($LASTEXITCODE -ne 0) { throw "Installed launcher probe failed: $LASTEXITCODE" }
+
+          $runtime = Join-Path $env:LOCALAPPDATA "AutoSpeechJournal"
+          New-Item -ItemType Directory -Force -Path $runtime | Out-Null
+          $preserved = @(
+            (Join-Path $runtime "config.json"),
+            (Join-Path $runtime "state.db"),
+            (Join-Path $runtime "state.db-wal"),
+            (Join-Path $runtime "spool\pending.flac"),
+            (Join-Path $runtime "models\fixture\model.bin")
+          )
+          foreach ($path in $preserved) {
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $path) | Out-Null
+            Set-Content -LiteralPath $path -Value "preserve" -Encoding UTF8
+          }
+          $uninstaller = Join-Path $target "unins000.exe"
+          $uninstallLog = Join-Path $e2eLogs "uninstall.log"
+          $uninstall = Start-Process -FilePath $uninstaller -ArgumentList @(
+            "/VERYSILENT",
+            "/SUPPRESSMSGBOXES",
+            "/NORESTART",
+            "/LOG=$uninstallLog"
+          ) -WindowStyle Hidden -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0) { throw "Uninstall failed: $($uninstall.ExitCode)" }
+          if (Test-Path -LiteralPath $installedCli) {
+            throw "Uninstall retained the stable CLI launcher: $installedCli"
+          }
+          foreach ($path in $preserved) {
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Uninstall removed runtime data: $path"
+            }
+          }
+
+      - name: Upload internal unsigned artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: auto-speech-journal-windows-unsigned-${{ github.sha }}
+          path: |
+            artifacts/windows/application/
+            artifacts/windows/setup/*.exe
+            artifacts/windows/build-metadata.json
+            artifacts/windows/WINDOWS-VERIFICATION.json
+            artifacts/windows/e2e/*.log
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14

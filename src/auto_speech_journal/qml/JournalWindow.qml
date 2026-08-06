@@ -7,12 +7,12 @@ ApplicationWindow {
     id: window
     objectName: "journalWindow"
 
-    width: journal.microphoneSetupPending ? 560 : 440
-    height: journal.microphoneSetupPending ? 480 : 190
-    minimumWidth: journal.microphoneSetupPending ? 560 : (journal.expanded ? 960 : 440)
-    maximumWidth: journal.microphoneSetupPending ? 560 : (journal.expanded ? 16777215 : 440)
-    minimumHeight: journal.microphoneSetupPending ? 480 : (journal.expanded ? 680 : 190)
-    maximumHeight: journal.microphoneSetupPending ? 480 : (journal.expanded ? 16777215 : 190)
+    width: journal.onboardingPending ? 560 : 440
+    height: journal.onboardingPending ? 480 : 190
+    minimumWidth: journal.onboardingPending ? 560 : (journal.expanded ? 960 : 440)
+    maximumWidth: journal.onboardingPending ? 560 : (journal.expanded ? 16777215 : 440)
+    minimumHeight: journal.onboardingPending ? 480 : (journal.expanded ? 680 : 190)
+    maximumHeight: journal.onboardingPending ? 480 : (journal.expanded ? 16777215 : 190)
     visible: false
     color: "transparent"
     title: "聲跡日記"
@@ -71,7 +71,6 @@ ApplicationWindow {
     }
 
     function syncMicrophonePickers() {
-        setupMicrophonePicker.currentIndex = microphoneIndex(setupMicrophonePicker)
         microphonePicker.currentIndex = microphoneIndex(microphonePicker)
     }
 
@@ -81,6 +80,8 @@ ApplicationWindow {
             previewSpin.value = journal.previewInterval
             silenceSpin.value = journal.endpointSilence
             maxSegmentSpin.value = journal.maxSegment
+            startupCheck.checked = journal.startupEnabled
+            updateCheck.checked = journal.updateCheckEnabled
             fontPicker.currentIndex = Math.max(0, fontPicker.find(journal.uiFontFamily))
             fontSizeSpin.value = journal.uiFontSize
             journal.resetMicrophoneSelection()
@@ -459,6 +460,7 @@ ApplicationWindow {
                         objectName: "pauseButton"
                         Layout.fillWidth: true
                         Layout.fillHeight: true
+                        enabled: journal.recordingControlsEnabled
                         text: journal.paused ? "繼續聆聽" : "暫停"
                         onClicked: journal.togglePause()
                     }
@@ -829,6 +831,49 @@ ApplicationWindow {
                             onClicked: recordsField.text = journal.chooseRecordsFolder(recordsField.text)
                         }
                     }
+                    CheckBox {
+                        id: startupCheck
+                        objectName: "startupCheck"
+                        width: parent.width
+                        checked: journal.startupEnabled
+                        text: "登入 Windows 後自動啟動"
+                        font.family: window.systemFontFamily
+                        font.pixelSize: window.fontPx(15)
+                    }
+                    CheckBox {
+                        id: updateCheck
+                        objectName: "updateCheck"
+                        width: parent.width
+                        checked: journal.updateCheckEnabled
+                        text: "最多每 24 小時檢查 GitHub 新版本"
+                        font.family: window.systemFontFamily
+                        font.pixelSize: window.fontPx(15)
+                    }
+                    Text {
+                        width: parent.width
+                        text: "更新只會顯示提示，不會背景下載或自動安裝。"
+                        wrapMode: Text.Wrap
+                        color: "#86796B"
+                        font.family: window.systemFontFamily
+                        font.pixelSize: window.fontPx(13)
+                    }
+                    Text {
+                        width: parent.width
+                        text: "Auto Speech Journal v" + journal.appVersion
+                        color: "#86796B"
+                        font.family: window.systemFontFamily
+                        font.pixelSize: window.fontPx(13)
+                    }
+                    PaperButton {
+                        objectName: "resumeOnboardingButton"
+                        width: parent.width
+                        visible: !journal.onboardingCompleted
+                        text: "繼續首次設定"
+                        onClicked: {
+                            window.activeSheet = ""
+                            journal.openOnboarding()
+                        }
+                    }
                     Text { text: "預覽間隔（毫秒）"; color: "#695D50"; font.family: window.systemFontFamily; font.pixelSize: window.fontPx(16) }
                     SpinBox { id: previewSpin; objectName: "previewSpin"; width: parent.width; from: 250; to: 10000; value: journal.previewInterval; editable: true; font.family: window.systemFontFamily; font.pixelSize: window.fontPx(16) }
                     Text { text: "靜音分段（毫秒）"; color: "#695D50"; font.family: window.systemFontFamily; font.pixelSize: window.fontPx(16) }
@@ -848,6 +893,7 @@ ApplicationWindow {
                         objectName: "microphonePicker"
                         width: parent.width
                         model: journal.microphoneOptions
+                        enabled: journal.onboardingCompleted
                         textRole: "label"
                         valueRole: "key"
                         currentIndex: -1
@@ -921,7 +967,8 @@ ApplicationWindow {
                             objectName: "microphoneTestButton"
                             Layout.fillWidth: true
                             text: journal.microphoneTestRunning ? "測試中…" : "測試所選麥克風"
-                            enabled: journal.selectedMicrophoneKey !== "" &&
+                            enabled: journal.onboardingCompleted &&
+                                     journal.selectedMicrophoneKey !== "" &&
                                      !journal.microphoneTestRunning && !journal.inputSwitching
                             onClicked: journal.testSelectedMicrophone()
                         }
@@ -984,7 +1031,8 @@ ApplicationWindow {
                         onClicked: {
                             journal.applySettings(recordsField.text, previewSpin.value,
                                                   silenceSpin.value, maxSegmentSpin.value,
-                                                  journal.selectedMicrophoneKey)
+                                                  journal.selectedMicrophoneKey,
+                                                  startupCheck.checked, updateCheck.checked)
                         }
                     }
                     Rectangle { width: parent.width; height: 1; color: "#D8CBBA" }
@@ -1134,102 +1182,44 @@ ApplicationWindow {
         }
 
         Rectangle {
-            id: microphoneSetupOverlay
-            objectName: "microphoneSetupOverlay"
-            anchors.fill: parent
-            visible: journal.microphoneSetupPending
-            color: "#F4EEE3"
-            z: 100
+            objectName: "updateAvailableBanner"
+            anchors.top: parent.top
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.topMargin: 8
+            width: Math.min(parent.width - 20, 430)
+            height: updateBannerRow.implicitHeight + 16
+            radius: 10
+            color: "#FFF2DC"
+            border.color: "#D6AA6D"
+            visible: journal.updateAvailable && !journal.onboardingPending
+            z: 45
 
-            MouseArea {
+            RowLayout {
+                id: updateBannerRow
                 anchors.fill: parent
-                preventStealing: true
-                onClicked: function(mouse) { mouse.accepted = true }
-            }
-
-            Rectangle {
-                anchors.centerIn: parent
-                width: Math.min(parent.width - 48, 480)
-                height: setupContent.implicitHeight + 44
-                radius: 16
-                color: "#FFF9EE"
-                border.width: 1
-                border.color: "#CDBEAA"
-
-                Column {
-                    id: setupContent
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                    anchors.margins: 22
-                    spacing: 13
-
-                    Text {
-                        width: parent.width
-                        text: "先選擇要聆聽的麥克風"
-                        color: "#493F35"
-                        font.family: window.diaryFontFamily
-                        font.pixelSize: window.fontPx(25)
-                        font.weight: Font.DemiBold
-                    }
-                    Text {
-                        width: parent.width
-                        text: "選取後會立即儲存並開始聆聽。選擇「跟隨 Windows 預設」後，執行中也會自動跟著系統切換。"
-                        wrapMode: Text.Wrap
-                        color: "#6F6255"
-                        font.family: window.systemFontFamily
-                        font.pixelSize: window.fontPx(15)
-                    }
-                    ComboBox {
-                        id: setupMicrophonePicker
-                        objectName: "setupMicrophonePicker"
-                        width: parent.width
-                        model: journal.microphoneOptions
-                        textRole: "label"
-                        valueRole: "key"
-                        currentIndex: -1
-                        displayText: currentIndex >= 0 ? currentText : "請選擇，不會預先替你決定"
-                        font.family: window.systemFontFamily
-                        font.pixelSize: window.fontPx(15)
-                        delegate: ItemDelegate {
-                            required property var modelData
-                            width: setupMicrophonePicker.width
-                            enabled: Boolean(modelData.selectable)
-                            text: modelData.label
-                            font.family: window.systemFontFamily
-                            font.pixelSize: window.fontPx(15)
-                        }
-                        onActivated: {
-                            if (!journal.selectMicrophone(currentValue))
-                                Qt.callLater(window.syncMicrophonePickers)
-                        }
-                    }
-                    Text {
-                        width: parent.width
-                        visible: journal.microphoneScanError !== ""
-                        text: journal.microphoneScanError
-                        wrapMode: Text.Wrap
-                        color: "#A34739"
-                        font.family: window.systemFontFamily
-                        font.pixelSize: window.fontPx(14)
-                    }
-                    TextButton {
-                        id: setupMicrophoneRescanButton
-                        objectName: "setupMicrophoneRescanButton"
-                        width: parent.width
-                        text: "重新掃描"
-                        onClicked: journal.rescanMicrophones()
-                    }
-                    TextButton {
-                        id: setupMicrophoneSkipButton
-                        objectName: "setupMicrophoneSkipButton"
-                        width: parent.width
-                        visible: !journal.microphoneHasAvailableDevices
-                        text: "目前沒有麥克風，稍後再設定"
-                        onClicked: journal.skipMicrophoneSetup()
-                    }
+                anchors.margins: 8
+                Text {
+                    Layout.fillWidth: true
+                    text: journal.updateAvailableText
+                    color: "#815528"
+                    font.family: window.systemFontFamily
+                    font.pixelSize: window.fontPx(13)
+                    elide: Text.ElideRight
+                }
+                Button {
+                    objectName: "openUpdateReleaseButton"
+                    text: "查看下載頁"
+                    onClicked: journal.openUpdateRelease()
                 }
             }
+        }
+
+        FirstRunWizard {
+            anchors.fill: parent
+            visible: journal.onboardingPending
+            z: 100
+            viewModel: journal
+            hostWindow: window
         }
 
         Rectangle {
