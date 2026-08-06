@@ -1,9 +1,9 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+All notable changes to this project are documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
-project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
+adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
@@ -11,45 +11,44 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- Per-user Windows x64 Setup built from a PyInstaller onedir application and Inno Setup.
-- Stable native GUI/CLI launchers with atomic `current.json` version switching and rollback.
-- Resumable direct Hugging Face model provisioning from immutable commit revisions, NVIDIA
-  auto-detection, and CPU fallback.
-- First-run consent flow for journal folder, startup, microphone testing, and update notifications.
-- Repair, installer readiness, graceful shutdown, and owned startup-task CLI commands.
-- CycloneDX SBOM, artifact attestations, build provenance, a versioned runtime-model manifest, and
-  fail-closed release validation for tests, CodeQL, Windows installation E2E, and checksums.
+- Per-user Windows 10/11 x64 Setup that may be formally released without Authenticode signing.
+- First-run consent wizard for local storage, journal folder, startup, microphone, and explicit
+  recording start.
+- Direct download of ready-to-run ONNX and CTranslate2 models from immutable Hugging Face commits
+  through `huggingface_hub`.
+- Transactional journal-folder and microphone testing that preserves the last working settings.
 
 ### Changed
 
-- End users no longer need Python, `uv`, Git, PowerShell, or administrator access.
-- Application binaries now live under `%LOCALAPPDATA%\Programs\AutoSpeechJournal\versions` while
-  runtime state remains under `%LOCALAPPDATA%\AutoSpeechJournal`.
-- Sign-in startup and update checks default to off and require explicit user consent.
-- Setup and `repair models` now fetch ready-to-run ONNX and CTranslate2 files directly from
-  Hugging Face; they do not install Torch, Transformers, or Safetensors or convert models locally.
-- The `v0.2.0` release policy permits unsigned Setup and inner executables. Authenticode can be
-  restored after a suitable certificate becomes available, but its absence no longer blocks the
-  release.
+- Setup installs the PyInstaller onedir application directly to
+  `%LOCALAPPDATA%\Programs\AutoSpeechJournal\app`.
+- Setup is CPU-safe and downloads neither models nor GPU components; the first-run App owns model
+  download, Hugging Face caching, retries, verification, and resume.
+- `install.ps1` remains the advanced source/CUDA installation path, with `-NoCuda` for CPU use.
+  It no longer creates a second, incompatible login-startup task.
+- Release validation is reduced to normal CI, CodeQL, Windows installation E2E, wheel/sdist,
+  unsigned Setup, checksums, and test summary.
+
+### Removed
+
+- Stable launcher, `current.json`, versioned application directories, custom rollback/runtime
+  inventory, repair shortcuts, and the standalone model release workflow.
+- SignPath Foundation, paid OV certificate, signing secrets, inner-EXE signing, Setup signing, and
+  all Authenticode hard gates.
 
 ### Fixed
 
-- Normalized Python package names so Dependabot can update pinned versions reliably.
-- Preserve configuration, SQLite/WAL, spool, models, logs, and external Markdown journals during
-  upgrades and default uninstall.
-- Serialize model repair across Setup, CLI, and the first-run wizard, and recover an interrupted
-  model-directory swap before resuming its verified `.part` downloads.
-- Treat a missing or unavailable legacy Task Scheduler entry as a manual-start degradation instead
-  of rolling back an already validated application activation.
+- Existing v3 settings migrate without forcing established users through onboarding again.
+- Incomplete onboarding cannot start recording or create login startup.
+- Uninstall preserves configuration, SQLite/WAL, spool, models, cache, and external journals.
+- Reinstall replaces the fixed application payload cleanly so removed DLL/QML files cannot linger.
 
 ### Security
 
-- Release documentation identifies the unsigned installer and possible Windows Unknown publisher
-  or SmartScreen prompts. Users verify SHA-256 and GitHub artifact attestations without disabling
-  Windows Defender.
-- CUDA wheel URLs, sizes, and SHA-256 digests remain pinned in a separate manifest. Every runtime
-  model file is pinned by Hugging Face repository, full commit revision, size, and SHA-256 before
-  atomic installation.
+- Runtime model repositories, full commits, paths, sizes, SHA-256 values, licenses, and sources are
+  pinned in the packaged manifest.
+- Documentation warns that the unsigned installer may trigger Unknown publisher or SmartScreen,
+  requires SHA-256 verification, and never asks users to disable Windows Defender.
 
 ## [0.1.0] - 2026-08-06
 

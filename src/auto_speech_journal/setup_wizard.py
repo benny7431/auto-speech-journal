@@ -75,7 +75,7 @@ def repair_runtime_models_for_setup(
     manifest_path: Path | None = None,
     progress: ModelSetupProgress | None = None,
 ) -> ModelSetupStatus:
-    """Resume the runtime-manifest provisioner and verify its atomic result."""
+    """Download pinned runtime files with the official Hugging Face client."""
 
     selected_paths = paths or AppPaths.defaults()
 
@@ -83,9 +83,9 @@ def repair_runtime_models_for_setup(
         if progress is not None:
             progress(
                 ModelSetupStatus(
-                    state="provisioning",
+                    state="downloading",
                     ready=False,
-                    message=f"正在續傳並驗證：{asset}",
+                    message=f"正在從 Hugging Face 下載並驗證：{asset}",
                     completed=max(0, int(completed)),
                     total=max(0, int(total)),
                     asset=asset,
@@ -103,12 +103,12 @@ def repair_runtime_models_for_setup(
         return ModelSetupStatus(
             state="error",
             ready=False,
-            message=f"模型續傳／修復未完成：{error}",
+            message=f"模型下載未完成，請重試：{error}",
         )
     return ModelSetupStatus(
         state="ready",
         ready=True,
-        message="語音模型已完成續傳、驗證與安裝。",
+        message="語音模型已完成下載與驗證。",
     )
 
 

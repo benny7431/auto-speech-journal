@@ -8,6 +8,8 @@ import pytest
 from auto_speech_journal import cli
 from auto_speech_journal.config import AppConfig
 from auto_speech_journal.startup import (
+    LEGACY_TASK_ARGUMENTS,
+    LEGACY_TASK_NAME,
     OWNERSHIP_MARKER,
     StartupStatus,
     StartupTaskError,
@@ -108,6 +110,71 @@ def test_startup_manager_degrades_when_scheduler_is_unavailable(tmp_path) -> Non
     assert status.enabled is False
 
 
+def _task_xml(command: Path, arguments: str) -> str:
+    return f"""<?xml version="1.0"?>
+    <Task xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+      <RegistrationInfo><Description>legacy</Description></RegistrationInfo>
+      <Settings><Enabled>true</Enabled></Settings>
+      <Actions><Exec><Command>{command}</Command><Arguments>{arguments}</Arguments></Exec></Actions>
+    </Task>
+    """
+
+
+class _NamedTaskScheduler:
+    def __init__(self, tasks: dict[str, str]) -> None:
+        self.tasks = tasks
+        self.calls: list[tuple[str, ...]] = []
+
+    def __call__(self, command):
+        call = tuple(command)
+        self.calls.append(call)
+        task_name = call[call.index("/TN") + 1]
+        if "/Query" in call:
+            xml = self.tasks.get(task_name)
+            return _result(1, stderr="missing") if xml is None else _result(stdout=xml)
+        if "/Delete" in call:
+            self.tasks.pop(task_name, None)
+            return _result()
+        raise AssertionError(call)
+
+
+def test_disable_removes_only_exact_owned_legacy_source_task(tmp_path) -> None:
+    launcher = tmp_path / "AutoSpeechJournal.exe"
+    legacy_launcher = tmp_path / "pythonw.exe"
+    scheduler = _NamedTaskScheduler(
+        {LEGACY_TASK_NAME: _task_xml(legacy_launcher, LEGACY_TASK_ARGUMENTS)}
+    )
+    manager = StartupTaskManager(
+        launcher,
+        legacy_launcher=legacy_launcher,
+        runner=scheduler,
+        os_name="nt",
+    )
+
+    manager.disable()
+
+    assert LEGACY_TASK_NAME not in scheduler.tasks
+    assert ("schtasks.exe", "/Delete", "/TN", LEGACY_TASK_NAME, "/F") in scheduler.calls
+
+
+def test_disable_preserves_same_named_foreign_legacy_task(tmp_path) -> None:
+    launcher = tmp_path / "AutoSpeechJournal.exe"
+    legacy_launcher = tmp_path / "pythonw.exe"
+    foreign_xml = _task_xml(tmp_path / "foreign.exe", LEGACY_TASK_ARGUMENTS)
+    scheduler = _NamedTaskScheduler({LEGACY_TASK_NAME: foreign_xml})
+    manager = StartupTaskManager(
+        launcher,
+        legacy_launcher=legacy_launcher,
+        runner=scheduler,
+        os_name="nt",
+    )
+
+    manager.disable()
+
+    assert scheduler.tasks[LEGACY_TASK_NAME] == foreign_xml
+    assert not any("/Delete" in call for call in scheduler.calls)
+
+
 class _ReconcileManager:
     def __init__(self, status: StartupStatus, enabled_status: StartupStatus | None = None) -> None:
         self.current = status
@@ -177,6 +244,17 @@ def test_reconcile_removes_owned_task_when_config_is_disabled(tmp_path) -> None:
     config = AppConfig(onboarding_completed=True, startup_enabled=False)
     manager = _ReconcileManager(
         _status(tmp_path, enabled=True, owned=True, available=True)
+    )
+
+    cli.reconcile_startup_config(config, manager, persist=lambda _config: None)
+
+    assert manager.disable_calls == 1
+
+
+def test_reconcile_checks_legacy_cleanup_when_no_new_task_exists(tmp_path) -> None:
+    config = AppConfig(onboarding_completed=True, startup_enabled=False)
+    manager = _ReconcileManager(
+        _status(tmp_path, enabled=False, owned=False, available=True)
     )
 
     cli.reconcile_startup_config(config, manager, persist=lambda _config: None)

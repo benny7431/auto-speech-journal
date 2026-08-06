@@ -93,7 +93,7 @@ Item {
                         }
                         Text {
                             Layout.fillWidth: true
-                            text: "語音、轉錄結果、資料庫與日記都保存在你的電腦。安裝程式可能需要下載語音模型，但不會上傳錄音。"
+                            text: "語音、轉錄結果、資料庫與日記都保存在你的電腦。首次設定會從 Hugging Face 下載語音模型，但不會上傳錄音。"
                             wrapMode: Text.Wrap
                             color: "#6F6255"
                             font.family: hostWindow.systemFontFamily
@@ -160,7 +160,7 @@ Item {
                                         objectName: "onboardingModelRepairButton"
                                         enabled: !viewModel.onboardingModelBusy
                                         text: viewModel.onboardingModelState === "error"
-                                              ? "重試修復" : "續傳／修復模型"
+                                              ? "重試下載" : "下載語音模型"
                                         onClicked: viewModel.repairOnboardingModels()
                                     }
                                 }
@@ -361,7 +361,7 @@ Item {
                             visible: !viewModel.onboardingModelsReady
                             enabled: !viewModel.onboardingModelBusy
                             text: viewModel.onboardingModelState === "error"
-                                  ? "重新嘗試模型修復" : "續傳／修復語音模型"
+                                  ? "重新嘗試下載" : "下載語音模型"
                             onClicked: viewModel.repairOnboardingModels()
                         }
                         Item { Layout.fillHeight: true }

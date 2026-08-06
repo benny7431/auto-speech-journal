@@ -12,8 +12,8 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from auto_speech_journal.provisioning import ProvisioningError
-from auto_speech_journal.runtime_models import (
+from auto_speech_journal.model_download import (
+    ModelVerificationError,
     load_runtime_model_manifest,
     verify_installed_runtime_models,
 )
@@ -265,6 +265,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (RuntimeModelVerificationError, ProvisioningError, ValueError, OSError) as error:
+    except (RuntimeModelVerificationError, ModelVerificationError, ValueError, OSError) as error:
         print(f"runtime model reference gate failed: {error}", file=os.sys.stderr)
         raise SystemExit(1) from error

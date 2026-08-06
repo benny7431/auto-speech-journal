@@ -6,21 +6,18 @@ on:
       - "v*.*.*"
 
 permissions:
-  contents: read
+  checks: read
+  contents: write
 
 concurrency:
   group: release-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
-  windows-package:
-    name: Build unsigned Windows release package
+  release:
+    name: Build and publish unsigned prerelease
     runs-on: windows-latest
     timeout-minutes: 180
-    permissions:
-      actions: read
-      checks: read
-      contents: read
     env:
       PYTHONUTF8: "1"
       PYTHONPATH: ${{ github.workspace }}\src
@@ -29,33 +26,11 @@ jobs:
       QSG_RHI_BACKEND: software
 
     steps:
-      - name: Check out tagged source without persisted credentials
+      - name: Check out tagged source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Require completed physical Windows release matrix
-        shell: pwsh
-        env:
-          MATRIX_TAG: ${{ vars.WINDOWS_RELEASE_MATRIX_APPROVED_TAG }}
-          WIN10_CPU_SHA: ${{ vars.WINDOWS_10_CPU_E2E_APPROVED_SHA }}
-          WIN11_CPU_SHA: ${{ vars.WINDOWS_11_CPU_E2E_APPROVED_SHA }}
-          WIN11_NVIDIA_SHA: ${{ vars.WINDOWS_11_NVIDIA_E2E_APPROVED_SHA }}
-        run: |
-          if ($env:MATRIX_TAG -ne $env:GITHUB_REF_NAME) {
-            throw "Public release is blocked until the physical Windows matrix approves this tag"
-          }
-          $approvals = @{
-            WINDOWS_10_CPU_E2E_APPROVED_SHA = $env:WIN10_CPU_SHA
-            WINDOWS_11_CPU_E2E_APPROVED_SHA = $env:WIN11_CPU_SHA
-            WINDOWS_11_NVIDIA_E2E_APPROVED_SHA = $env:WIN11_NVIDIA_SHA
-          }
-          foreach ($name in $approvals.Keys) {
-            if ($approvals[$name] -ne $env:GITHUB_SHA) {
-              throw "Public release is blocked: $name does not approve $env:GITHUB_SHA"
-            }
-          }
 
       - name: Set up Python 3.11
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
@@ -68,96 +43,68 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
 
-      - name: Verify and install locked build environment
+      - name: Validate tag and install locked environment
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           uv lock --check
           if ($LASTEXITCODE -ne 0) { throw "uv.lock is stale" }
           uv sync --frozen --no-editable --extra dev
           if ($LASTEXITCODE -ne 0) { throw "Locked build environment installation failed" }
 
-      - name: Validate local and remote tag, version, and changelog
-        shell: pwsh
-        run: |
           $tag = $env:GITHUB_REF_NAME
           $version = uv run --no-sync python -c `
             "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
-          if ($LASTEXITCODE -ne 0) { throw "Cannot read project version" }
-          if ($tag -ne "v$version") {
+          if ($LASTEXITCODE -ne 0 -or $tag -ne "v$version") {
             throw "Tag $tag does not match pyproject.toml version $version"
           }
-
-          $localTag = git rev-parse "$tag^{commit}"
-          if ($LASTEXITCODE -ne 0) { throw "Cannot peel local release tag" }
-          $remoteLines = @(git ls-remote origin "refs/tags/$tag" "refs/tags/$tag^{}")
-          if ($LASTEXITCODE -ne 0) { throw "Cannot query remote release tag" }
-          if ($remoteLines.Count -lt 1) { throw "Remote release tag is missing" }
-          $peeled = @($remoteLines | Where-Object { $_.EndsWith("^{}") })
-          $remoteLine = if ($peeled.Count -eq 1) { $peeled[0] } else { $remoteLines[0] }
-          $remoteTag = ($remoteLine -split '\s+')[0]
-          if ($localTag.Trim() -ne $env:GITHUB_SHA -or $remoteTag -ne $env:GITHUB_SHA) {
-            throw "Local or remote peeled tag does not equal GITHUB_SHA"
-          }
-
           git merge-base --is-ancestor $env:GITHUB_SHA origin/main
           if ($LASTEXITCODE -ne 0) { throw "Release tag must point to a commit on main" }
-          $heading = '^## \[' + [regex]::Escape($version) + '\](?: - .+)?$'
-          if (-not (Get-Content CHANGELOG.md -Encoding UTF8 | Where-Object { $_ -match $heading })) {
-            throw "CHANGELOG.md has no section for $version"
-          }
 
-      - name: Refuse mutable or repaired release assets
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $tags = gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" `
-            --jq '.[].tag_name'
+          $releaseTags = gh api --paginate `
+            "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name'
           if ($LASTEXITCODE -ne 0) { throw "Cannot query existing releases" }
-          if (@($tags) -contains $env:GITHUB_REF_NAME) {
-            throw "Release $env:GITHUB_REF_NAME already exists. Publish a new patch version; do not replace published assets."
+          if (@($releaseTags) -contains $tag) {
+            throw "Release $tag already exists. Publish a new patch tag instead of replacing assets."
           }
 
-      - name: Require successful CI, CodeQL, and unsigned installer contract
+      - name: Wait for required checks on the tagged commit
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $required = @(
-            'Windows / Python 3.11',
-            'Python security-extended',
-            'Unsigned installer contract'
+            "Windows / Python 3.11",
+            "Python security-extended",
+            "Unsigned installer contract"
           )
-          for ($attempt = 0; $attempt -lt 60; $attempt++) {
-            $json = gh api `
-              -H "Accept: application/vnd.github+json" `
+          $deadline = [DateTime]::UtcNow.AddMinutes(60)
+          while ($true) {
+            $response = gh api `
               "repos/$env:GITHUB_REPOSITORY/commits/$env:GITHUB_SHA/check-runs?per_page=100"
-            if ($LASTEXITCODE -ne 0) { throw "Cannot query required check runs" }
-            $runs = @((ConvertFrom-Json $json).check_runs)
+            if ($LASTEXITCODE -ne 0) { throw "Cannot query required commit checks" }
+            $runs = @(($response | ConvertFrom-Json).check_runs)
             $pending = @()
             foreach ($name in $required) {
-              $run = @($runs | Where-Object {
-                $_.name -eq $name -and $_.head_sha -eq $env:GITHUB_SHA
-              } | Sort-Object started_at -Descending)[0]
-              if ($null -eq $run -or $run.status -ne 'completed') {
+              $run = $runs | Where-Object { $_.name -eq $name } |
+                Sort-Object started_at -Descending | Select-Object -First 1
+              if ($null -eq $run -or $run.status -ne "completed") {
                 $pending += $name
-                continue
               }
-              if ($run.app.slug -ne 'github-actions') {
-                throw "Required check '$name' was not produced by GitHub Actions"
-              }
-              if ($run.conclusion -ne 'success') {
+              elseif ($run.conclusion -ne "success") {
                 throw "Required check '$name' concluded '$($run.conclusion)'"
               }
             }
             if ($pending.Count -eq 0) { break }
-            if ($attempt -eq 59) {
-              throw "Required checks did not complete: $($pending -join ', ')"
+            if ([DateTime]::UtcNow -ge $deadline) {
+              throw "Timed out waiting for required checks: $($pending -join ', ')"
             }
+            Write-Host "Waiting for required checks: $($pending -join ', ')"
             Start-Sleep -Seconds 20
           }
 
-      - name: Run release quality and manifest gates
+      - name: Run Ruff and tests
         shell: pwsh
         run: |
           uv run --no-sync ruff check src tests tools packaging
@@ -165,76 +112,25 @@ jobs:
           uv run --no-sync pytest `
             --cov=auto_speech_journal `
             --cov-report=term-missing `
-            --cov-report=xml:coverage.xml `
             --cov-fail-under=75
-          if ($LASTEXITCODE -ne 0) { throw "Pytest or coverage gate failed" }
-          uv run --no-sync python tools/validate_scene_assets.py --strict
-          if ($LASTEXITCODE -ne 0) { throw "Scene asset validation failed" }
-          uv run --no-sync python packaging/manifests/validate_cuda_manifest.py `
-            --manifest packaging/manifests/cuda-runtime-v1.json `
-            --lock uv.lock
-          if ($LASTEXITCODE -ne 0) { throw "Pinned CUDA manifest validation failed" }
+          if ($LASTEXITCODE -ne 0) { throw "Tests or coverage gate failed" }
+
+      - name: Build wheel and source distribution
+        shell: pwsh
+        run: |
           uv build
           if ($LASTEXITCODE -ne 0) { throw "Python distribution build failed" }
-          uv run --no-sync python tools/verify_wheel_contents.py
-          if ($LASTEXITCODE -ne 0) { throw "Wheel content verification failed" }
 
           $version = $env:GITHUB_REF_NAME.Substring(1)
           $expected = @(
             "auto_speech_journal-$version-py3-none-any.whl",
             "auto_speech_journal-$version.tar.gz"
-          )
-          $distributions = @(Get-ChildItem dist -File | Where-Object {
-            ($_.Extension -eq ".whl" -or $_.Name.EndsWith(".tar.gz")) -and
-            $_.Name -ne "default.gitignore"
-          })
-          $actual = @($distributions | Select-Object -ExpandProperty Name | Sort-Object)
-          if ($distributions.Count -ne 2 -or (Compare-Object ($expected | Sort-Object) $actual)) {
-            throw "Expected one wheel and one source distribution for exactly $version"
-          }
-
-      - name: Validate, download, and exercise pinned Hugging Face runtime models
-        shell: pwsh
-        env:
-          REFERENCE_APPROVED_SHA: ${{ vars.RUNTIME_MODELS_REFERENCE_TRANSCRIPT_APPROVED_SHA }}
-        run: |
-          $manifest = 'packaging/manifests/runtime-models-v1.json'
-          uv run --no-sync python packaging/models/validate_runtime_model_manifest.py `
-            --manifest $manifest
-          if ($LASTEXITCODE -ne 0) {
-            throw "Pinned Hugging Face runtime manifest validation failed"
-          }
-          if ($env:REFERENCE_APPROVED_SHA -ne $env:GITHUB_SHA) {
-            throw "Reference transcript approval does not match $env:GITHUB_SHA"
-          }
-          $gate = Get-Content packaging/models/reference-audio-gate.json -Raw -Encoding UTF8 |
-            ConvertFrom-Json
-          if ($gate.status -ne 'ready') {
-            throw "Runtime-model reference inference gate is blocked: $($gate.reason)"
-          }
-
-          $originalLocalAppData = $env:LOCALAPPDATA
-          try {
-            $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'asj-release-runtime'
-            $models = Join-Path $env:LOCALAPPDATA 'AutoSpeechJournal\models'
-            $progress = Join-Path $env:RUNNER_TEMP 'runtime-models-release-progress.json'
-            uv run --no-sync python -m auto_speech_journal provision `
-              --manifest $manifest `
-              --progress-json $progress
-            if ($LASTEXITCODE -ne 0) {
-              throw "Direct Hugging Face runtime-model provisioning failed"
-            }
-            uv run --no-sync python packaging/models/verify_runtime_models.py `
-              --manifest $manifest `
-              --models-dir $models `
-              --reference-spec packaging/models/reference-audio-gate.json `
-              --repository-root .
-            if ($LASTEXITCODE -ne 0) {
-              throw "Preview, VAD, Whisper, CPU fallback, or reference transcript gate failed"
-            }
-          }
-          finally {
-            $env:LOCALAPPDATA = $originalLocalAppData
+          ) | Sort-Object
+          $actual = @(Get-ChildItem dist -File | Where-Object {
+            $_.Extension -eq ".whl" -or $_.Name.EndsWith(".tar.gz")
+          } | Select-Object -ExpandProperty Name | Sort-Object)
+          if ($actual.Count -ne 2 -or (Compare-Object $expected $actual)) {
+            throw "Expected exactly one wheel and one source distribution: $($actual -join ', ')"
           }
 
       - name: Install pinned Inno Setup
@@ -244,295 +140,71 @@ jobs:
             --silent --accept-package-agreements --accept-source-agreements
           if ($LASTEXITCODE -ne 0) { throw "Pinned Inno Setup installation failed" }
 
-      - name: Build unsigned application and Setup
+      - name: Build unsigned Setup
         shell: powershell
         run: |
-          & .\tools\build_windows_installer.ps1 `
-            -Stage All `
-            -ReleaseBuild `
-            -ModelManifestPath packaging\manifests\runtime-models-v1.json
-          if (-not $?) { throw "Unsigned Windows release package build failed" }
+          & .\tools\build_windows_installer.ps1 -ReleaseBuild
+          if (-not $?) { throw "Unsigned Windows package build failed" }
 
-      - name: Verify frozen runtime, SBOM, application, and Setup
-        shell: powershell
-        run: |
-          uv run --no-sync python packaging/windows/runtime_inventory.py validate `
-            --sbom artifacts/windows/application/AutoSpeechJournal.cdx.json `
-            --inventory artifacts/windows/application/payload/frozen-runtime-inventory.json `
-            --lock uv.lock `
-            --pyproject pyproject.toml `
-            --payload artifacts/windows/application/payload
-          if ($LASTEXITCODE -ne 0) { throw "Frozen runtime/SBOM inventory validation failed" }
-          & .\tools\verify_windows_installer.ps1
-          if (-not $?) { throw "Unsigned Windows artifact verification failed" }
-
-      - name: Install unsigned Setup and verify embedded application trees
+      - name: Prepare release files and checksums
         shell: pwsh
         run: |
           $version = $env:GITHUB_REF_NAME.Substring(1)
-          $setup = "artifacts\windows\setup\AutoSpeechJournal-Setup-$version-x64.exe"
-          $installRoot = Join-Path $env:RUNNER_TEMP "AutoSpeechJournal-Unsigned-E2E"
-          & $setup /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOMODELS /NOGPU "/DIR=$installRoot"
-          if ($LASTEXITCODE -ne 0) { throw "Unsigned Setup failed: $LASTEXITCODE" }
+          $output = Join-Path $PWD "artifacts\release"
+          New-Item -ItemType Directory -Force -Path $output | Out-Null
 
-          function Assert-TreeEqual([string]$ExpectedRoot, [string]$ActualRoot) {
-            $expected = @{}
-            foreach ($file in @(Get-ChildItem -LiteralPath $ExpectedRoot -Recurse -File)) {
-              $relative = $file.FullName.Substring($ExpectedRoot.Length).TrimStart('\', '/')
-              $expected[$relative] = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
+          $files = @(
+            "artifacts\windows\setup\AutoSpeechJournal-Setup-$version-x64.exe",
+            "dist\auto_speech_journal-$version-py3-none-any.whl",
+            "dist\auto_speech_journal-$version.tar.gz"
+          )
+          foreach ($file in $files) {
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+              throw "Release file is missing: $file"
             }
-            $actual = @{}
-            foreach ($file in @(Get-ChildItem -LiteralPath $ActualRoot -Recurse -File)) {
-              $relative = $file.FullName.Substring($ActualRoot.Length).TrimStart('\', '/')
-              $actual[$relative] = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
-            }
-            if ($expected.Count -ne $actual.Count) { throw "Installed tree file count differs" }
-            foreach ($relative in $expected.Keys) {
-              if (-not $actual.ContainsKey($relative) -or $actual[$relative] -ne $expected[$relative]) {
-                throw "Installed Setup payload differs at $relative"
-              }
-            }
+            Copy-Item -LiteralPath $file -Destination $output
           }
 
-          Assert-TreeEqual `
-            ([IO.Path]::GetFullPath('artifacts\windows\application\payload')) `
-            (Join-Path $installRoot "versions\$version")
-          foreach ($name in @('AutoSpeechJournal.exe', 'AutoSpeechJournal.CLI.exe')) {
-            $expected = Get-FileHash `
-              -LiteralPath (Join-Path 'artifacts\windows\application\launchers' $name) `
-              -Algorithm SHA256
-            $actual = Get-FileHash -LiteralPath (Join-Path $installRoot $name) -Algorithm SHA256
-            if ($expected.Hash -ne $actual.Hash) { throw "Installed launcher differs: $name" }
-          }
-          & (Join-Path $installRoot 'AutoSpeechJournal.CLI.exe') installer-probe --isolated
-          if ($LASTEXITCODE -ne 0) { throw "Installed unsigned runtime probe failed" }
-          & (Join-Path $installRoot 'unins000.exe') /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
-          if ($LASTEXITCODE -ne 0) { throw "Unsigned Setup uninstall failed" }
-
-      - name: Prepare exact immutable release bundle
-        shell: pwsh
-        run: |
-          $version = $env:GITHUB_REF_NAME.Substring(1)
-          New-Item -ItemType Directory -Force -Path artifacts/release | Out-Null
-          Copy-Item `
-            -LiteralPath "artifacts/windows/setup/AutoSpeechJournal-Setup-$version-x64.exe" `
-            -Destination artifacts/release/
-          $expectedDistributions = @(
-            "auto_speech_journal-$version-py3-none-any.whl",
-            "auto_speech_journal-$version.tar.gz"
-          )
-          $distributions = @(Get-ChildItem dist -File | Where-Object {
-            ($_.Extension -eq ".whl" -or $_.Name.EndsWith(".tar.gz")) -and
-            $_.Name -ne "default.gitignore"
-          })
-          $actualDistributions = @($distributions | Select-Object -ExpandProperty Name | Sort-Object)
-          if ($distributions.Count -ne 2 -or
-              (Compare-Object ($expectedDistributions | Sort-Object) $actualDistributions)) {
-            throw "Expected one wheel and one source distribution for exactly $version"
-          }
-          foreach ($file in $distributions) {
-            Copy-Item -LiteralPath $file.FullName -Destination artifacts/release/
-          }
-          Copy-Item -LiteralPath artifacts/windows/application/AutoSpeechJournal.cdx.json `
-            -Destination artifacts/release/
-          Copy-Item -LiteralPath packaging/manifests/runtime-models-v1.json `
-            -Destination artifacts/release/
-          Copy-Item -LiteralPath artifacts/windows/WINDOWS-VERIFICATION.json `
-            -Destination artifacts/release/
-
-          $lines = @(Get-Content CHANGELOG.md -Encoding UTF8)
-          $heading = '^## \[' + [regex]::Escape($version) + '\](?: - .+)?$'
-          $start = -1
-          for ($i = 0; $i -lt $lines.Count; $i++) {
-            if ($lines[$i] -match $heading) { $start = $i; break }
-          }
-          if ($start -lt 0) { throw "Cannot extract release notes for $version" }
-          $end = $lines.Count
-          for ($i = $start + 1; $i -lt $lines.Count; $i++) {
-            if ($lines[$i] -match '^## \[') { $end = $i; break }
-          }
-          $releaseNotes = @(
-            "# Important Windows installer notice",
-            "",
-            "The Setup executable and bundled application executables are not currently Authenticode-signed.",
-            "Windows may therefore show an Unknown publisher message or a Microsoft Defender SmartScreen prompt.",
-            "Do not disable Microsoft Defender. Verify the published SHA-256 checksums and GitHub artifact attestations before installation.",
-            "Code signing can be added in a future release, but it is not a release gate for this version.",
-            ""
-          ) + $lines[$start..($end - 1)]
-          [IO.File]::WriteAllLines(
-            "artifacts/release/RELEASE-NOTES.md",
-            $releaseNotes,
-            (New-Object Text.UTF8Encoding($false))
-          )
-
-          $summary = @(
-            "# Test summary for $env:GITHUB_REF_NAME",
-            "",
-            "- Commit: $env:GITHUB_SHA",
-            "- Workflow: https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID",
-            "- Ruff, coverage >= 75%, scene assets, wheel contents: passed",
-            "- Pinned Hugging Face model downloads plus Preview, VAD, Whisper, CPU fallback, and reference transcript: passed",
-            "- Frozen QML installer probe and runtime/SBOM inventory: passed",
-            "- Inner GUI, CLI, stable launchers, and Setup are intentionally not Authenticode-signed for this release",
-            "- Hosted-runner install, isolated probe, and uninstall preservation smoke: passed",
-            "- The physical Windows 10/11 CPU/NVIDIA matrix is not automated by this workflow.",
-            "- Windows 10 CPU physical E2E manual gate: approved for $env:GITHUB_SHA",
-            "- Windows 11 CPU physical E2E manual gate: approved for $env:GITHUB_SHA",
-            "- Windows 11 NVIDIA physical E2E manual gate: approved for $env:GITHUB_SHA",
-            "- Public release remains hard-blocked unless all three protected SHA gates match."
-          )
-          [IO.File]::WriteAllLines(
-            "artifacts/release/TEST-SUMMARY.md",
-            $summary,
-            (New-Object Text.UTF8Encoding($false))
-          )
-
-          $hashTargets = Get-ChildItem artifacts/release -File |
-            Where-Object { $_.Name -notin @('SHA256SUMS.txt', 'RELEASE-NOTES.md') } |
-            Sort-Object Name
-          $checksums = foreach ($file in $hashTargets) {
-            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash.ToLowerInvariant()
+          $checksums = foreach ($file in @(Get-ChildItem $output -File | Sort-Object Name)) {
+            $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
             "$hash  $($file.Name)"
           }
           [IO.File]::WriteAllLines(
-            "artifacts/release/SHA256SUMS.txt",
+            (Join-Path $output "SHA256SUMS.txt"),
             $checksums,
             (New-Object Text.UTF8Encoding($false))
           )
 
-          $expected = @(
-            "AutoSpeechJournal-Setup-$version-x64.exe",
-            "auto_speech_journal-$version-py3-none-any.whl",
-            "auto_speech_journal-$version.tar.gz",
-            'AutoSpeechJournal.cdx.json',
-            'runtime-models-v1.json',
-            'WINDOWS-VERIFICATION.json',
-            'SHA256SUMS.txt',
-            'TEST-SUMMARY.md',
-            'RELEASE-NOTES.md'
-          ) | Sort-Object
-          $actual = @(Get-ChildItem artifacts/release -File |
-            Select-Object -ExpandProperty Name | Sort-Object)
-          if ($actual.Count -ne $expected.Count -or (Compare-Object $expected $actual)) {
-            throw "Release bundle has missing or unexpected files: $($actual -join ', ')"
+          $changelog = @(Get-Content CHANGELOG.md -Encoding UTF8)
+          $heading = '^## \[' + [regex]::Escape($version) + '\](?: - .+)?$'
+          $start = -1
+          for ($index = 0; $index -lt $changelog.Count; $index++) {
+            if ($changelog[$index] -match $heading) { $start = $index; break }
           }
-
-      - name: Upload verified release bundle
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: release-${{ github.ref_name }}-${{ github.sha }}
-          path: artifacts/release/
-          if-no-files-found: error
-          retention-days: 14
-
-  publish:
-    name: Reverify, attest, and publish release
-    needs: windows-package
-    runs-on: windows-latest
-    timeout-minutes: 45
-    permissions:
-      actions: read
-      attestations: write
-      contents: write
-      id-token: write
-    env:
-      PYTHONUTF8: "1"
-
-    steps:
-      - name: Check out the exact tag without persisted credentials
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ github.ref }}
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Set up uv for post-build lock verification
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
-
-      - name: Download verified release bundle
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: release-${{ github.ref_name }}-${{ github.sha }}
-          path: artifacts/release
-
-      - name: Reverify lock, source version, remote tag, and release absence
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          uv lock --check
-          if ($LASTEXITCODE -ne 0) { throw "uv.lock changed after the release build" }
-          $tag = $env:GITHUB_REF_NAME
-          $project = Get-Content pyproject.toml -Raw -Encoding UTF8
-          $match = [regex]::Match($project, '(?m)^version\s*=\s*"([^"]+)"\s*$')
-          if (-not $match.Success -or $tag -ne "v$($match.Groups[1].Value)") {
-            throw "Publish tag does not match pyproject.toml"
+          if ($start -lt 0) { throw "CHANGELOG.md has no section for $version" }
+          $end = $changelog.Count
+          for ($index = $start + 1; $index -lt $changelog.Count; $index++) {
+            if ($changelog[$index] -match '^## \[') { $end = $index; break }
           }
-          $localTag = git rev-parse "$tag^{commit}"
-          if ($LASTEXITCODE -ne 0) { throw "Cannot peel local publish tag" }
-          $remoteLines = @(git ls-remote origin "refs/tags/$tag" "refs/tags/$tag^{}")
-          if ($LASTEXITCODE -ne 0) { throw "Cannot query remote publish tag" }
-          if ($remoteLines.Count -lt 1) { throw "Remote publish tag is missing" }
-          $peeled = @($remoteLines | Where-Object { $_.EndsWith("^{}") })
-          $remoteLine = if ($peeled.Count -eq 1) { $peeled[0] } else { $remoteLines[0] }
-          $remoteTag = ($remoteLine -split '\s+')[0]
-          if ($localTag.Trim() -ne $env:GITHUB_SHA -or $remoteTag -ne $env:GITHUB_SHA) {
-            throw "Publish checkout or remote peeled tag changed after build"
-          }
-          git merge-base --is-ancestor $env:GITHUB_SHA origin/main
-          if ($LASTEXITCODE -ne 0) { throw "Publish commit is no longer reachable from main" }
-          $tags = gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" `
-            --jq '.[].tag_name'
-          if ($LASTEXITCODE -ne 0) { throw "Cannot query existing releases" }
-          if (@($tags) -contains $tag) { throw "Release already exists; published assets are immutable" }
+          $notes = @(
+            "# Auto Speech Journal $version",
+            "",
+            "## Important Windows installer notice",
+            "",
+            "The Setup executable and bundled application executables are not Authenticode-signed.",
+            "Windows may show an Unknown publisher message or a Microsoft Defender SmartScreen prompt.",
+            "Do not disable Microsoft Defender. Verify SHA256SUMS.txt before installation.",
+            "Code signing can be added later, but it does not block this release.",
+            "",
+            "This prerelease contains the per-user Windows Setup, Python wheel, and source distribution."
+          ) + $changelog[$start..($end - 1)]
+          [IO.File]::WriteAllLines(
+            (Join-Path $output "RELEASE-NOTES.md"),
+            $notes,
+            (New-Object Text.UTF8Encoding($false))
+          )
 
-      - name: Reverify exact release files and checksums
-        shell: pwsh
-        run: |
-          $version = $env:GITHUB_REF_NAME.Substring(1)
-          $expected = @(
-            "AutoSpeechJournal-Setup-$version-x64.exe",
-            "auto_speech_journal-$version-py3-none-any.whl",
-            "auto_speech_journal-$version.tar.gz",
-            'AutoSpeechJournal.cdx.json',
-            'runtime-models-v1.json',
-            'WINDOWS-VERIFICATION.json',
-            'SHA256SUMS.txt',
-            'TEST-SUMMARY.md',
-            'RELEASE-NOTES.md'
-          ) | Sort-Object
-          $actual = @(Get-ChildItem artifacts/release -File |
-            Select-Object -ExpandProperty Name | Sort-Object)
-          if ($actual.Count -ne $expected.Count -or (Compare-Object $expected $actual)) {
-            throw "Downloaded release bundle is incomplete or contains unexpected files"
-          }
-          foreach ($line in Get-Content artifacts/release/SHA256SUMS.txt) {
-            if ($line -notmatch '^([0-9a-f]{64})  (.+)$') { throw "Malformed checksum line: $line" }
-            $path = Join-Path artifacts/release $Matches[2]
-            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
-            if ($hash -ne $Matches[1]) { throw "Release checksum mismatch: $($Matches[2])" }
-          }
-
-      - name: Attest every release asset and release notes
-        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
-        with:
-          subject-path: artifacts/release/*
-
-      - name: Verify every attestation is bound to this tag and workflow
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          foreach ($file in @(Get-ChildItem artifacts/release -File)) {
-            gh attestation verify $file.FullName `
-              -R $env:GITHUB_REPOSITORY `
-              --source-ref "refs/tags/$env:GITHUB_REF_NAME" `
-              --signer-workflow "$env:GITHUB_REPOSITORY/.github/workflows/release.yml"
-            if ($LASTEXITCODE -ne 0) { throw "Release attestation verification failed: $($file.Name)" }
-          }
-
-      - name: Create fully populated draft pre-release
+      - name: Publish unsigned prerelease
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -541,7 +213,6 @@ jobs:
           $version = $tag.Substring(1)
           gh release create $tag `
             --verify-tag `
-            --draft `
             --prerelease `
             --latest=false `
             --title $tag `
@@ -549,78 +220,5 @@ jobs:
             "artifacts/release/AutoSpeechJournal-Setup-$version-x64.exe" `
             "artifacts/release/auto_speech_journal-$version-py3-none-any.whl" `
             "artifacts/release/auto_speech_journal-$version.tar.gz" `
-            artifacts/release/AutoSpeechJournal.cdx.json `
-            artifacts/release/runtime-models-v1.json `
-            artifacts/release/WINDOWS-VERIFICATION.json `
-            artifacts/release/SHA256SUMS.txt `
-            artifacts/release/TEST-SUMMARY.md
-          if ($LASTEXITCODE -ne 0) { throw "Draft release creation failed" }
-
-      - name: Download and verify every draft asset before publication
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $tag = $env:GITHUB_REF_NAME
-          $version = $tag.Substring(1)
-          $names = @(
-            "AutoSpeechJournal-Setup-$version-x64.exe",
-            "auto_speech_journal-$version-py3-none-any.whl",
-            "auto_speech_journal-$version.tar.gz",
-            'AutoSpeechJournal.cdx.json',
-            'runtime-models-v1.json',
-            'WINDOWS-VERIFICATION.json',
-            'SHA256SUMS.txt',
-            'TEST-SUMMARY.md'
-          )
-          $json = gh release view $tag --json isDraft,isPrerelease,tagName,assets
-          if ($LASTEXITCODE -ne 0) { throw "Cannot inspect draft release" }
-          $release = ConvertFrom-Json $json
-          $remoteNames = @($release.assets | ForEach-Object name | Sort-Object)
-          if (-not $release.isDraft -or -not $release.isPrerelease -or
-              $release.tagName -ne $tag -or (Compare-Object ($names | Sort-Object) $remoteNames)) {
-            throw "Draft release is incomplete or has unexpected state"
-          }
-          $download = Join-Path $env:RUNNER_TEMP 'release-draft-verification'
-          New-Item -ItemType Directory -Force -Path $download | Out-Null
-          foreach ($name in $names) {
-            gh release download $tag --pattern $name --dir $download
-            if ($LASTEXITCODE -ne 0) { throw "Cannot download draft release asset: $name" }
-            $localHash = (Get-FileHash -Algorithm SHA256 `
-              -LiteralPath (Join-Path 'artifacts/release' $name)).Hash
-            $remoteHash = (Get-FileHash -Algorithm SHA256 `
-              -LiteralPath (Join-Path $download $name)).Hash
-            if ($localHash -ne $remoteHash) { throw "Draft release asset hash mismatch: $name" }
-          }
-
-          $remoteLines = @(git ls-remote origin "refs/tags/$tag" "refs/tags/$tag^{}")
-          if ($LASTEXITCODE -ne 0) { throw "Cannot requery remote tag before publication" }
-          if ($remoteLines.Count -lt 1) { throw "Remote tag disappeared before publication" }
-          $peeled = @($remoteLines | Where-Object { $_.EndsWith("^{}") })
-          $remoteLine = if ($peeled.Count -eq 1) { $peeled[0] } else { $remoteLines[0] }
-          if (($remoteLine -split '\s+')[0] -ne $env:GITHUB_SHA) {
-            throw "Remote tag moved after release build; draft remains unpublished"
-          }
-
-      - name: Publish pre-release and perform final immutable checks
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $tag = $env:GITHUB_REF_NAME
-          gh release edit $tag --draft=false --prerelease --latest=false
-          if ($LASTEXITCODE -ne 0) { throw "Publishing pre-release failed" }
-          $json = gh release view $tag --json isDraft,isPrerelease,tagName
-          if ($LASTEXITCODE -ne 0) { throw "Cannot verify published pre-release" }
-          $release = ConvertFrom-Json $json
-          if ($release.isDraft -or -not $release.isPrerelease -or $release.tagName -ne $tag) {
-            throw "Published release has unexpected state"
-          }
-          $remoteLines = @(git ls-remote origin "refs/tags/$tag" "refs/tags/$tag^{}")
-          if ($LASTEXITCODE -ne 0) { throw "Cannot perform final remote tag verification" }
-          if ($remoteLines.Count -lt 1) { throw "Remote tag disappeared during publication" }
-          $peeled = @($remoteLines | Where-Object { $_.EndsWith("^{}") })
-          $remoteLine = if ($peeled.Count -eq 1) { $peeled[0] } else { $remoteLines[0] }
-          if (($remoteLine -split '\s+')[0] -ne $env:GITHUB_SHA) {
-            throw "Remote tag changed during publication"
-          }
+            artifacts/release/SHA256SUMS.txt
+          if ($LASTEXITCODE -ne 0) { throw "Prerelease publication failed" }

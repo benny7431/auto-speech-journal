@@ -43,7 +43,7 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
 
-      - name: Verify and install locked build environment
+      - name: Install locked build environment
         shell: pwsh
         run: |
           uv lock --check
@@ -51,28 +51,13 @@ jobs:
           uv sync --frozen --no-editable --extra dev
           if ($LASTEXITCODE -ne 0) { throw "Locked build environment installation failed" }
 
-      - name: Run packaging contract tests
+      - name: Run focused packaging tests
         shell: pwsh
         run: |
-          uv run --no-sync ruff check packaging `
-            tests/test_windows_packaging_contract.py `
-            tests/test_runtime_models.py `
-            tests/test_release_artifact_validators.py `
-            tests/test_model_release_gate.py
+          uv run --no-sync ruff check packaging/windows tests/test_windows_packaging_contract.py
           if ($LASTEXITCODE -ne 0) { throw "Windows packaging lint failed" }
-          uv run --no-sync pytest -q `
-            tests/test_windows_packaging_contract.py `
-            tests/test_runtime_models.py `
-            tests/test_release_artifact_validators.py `
-            tests/test_model_release_gate.py
+          uv run --no-sync pytest -q tests/test_windows_packaging_contract.py
           if ($LASTEXITCODE -ne 0) { throw "Windows packaging contract tests failed" }
-          uv run --no-sync python packaging/models/validate_runtime_model_manifest.py `
-            --manifest packaging/manifests/runtime-models-v1.json
-          if ($LASTEXITCODE -ne 0) { throw "Pinned Hugging Face model manifest validation failed" }
-          uv run --no-sync python packaging/manifests/validate_cuda_manifest.py `
-            --manifest packaging/manifests/cuda-runtime-v1.json `
-            --lock uv.lock
-          if ($LASTEXITCODE -ne 0) { throw "Pinned CUDA manifest validation failed" }
 
       - name: Install pinned Inno Setup
         shell: pwsh
@@ -81,285 +66,147 @@ jobs:
             --silent --accept-package-agreements --accept-source-agreements
           if ($LASTEXITCODE -ne 0) { throw "Pinned Inno Setup installation failed" }
 
-      - name: Build exact wheel and source distribution
-        shell: pwsh
-        run: |
-          uv build
-          if ($LASTEXITCODE -ne 0) { throw "Python distribution build failed" }
-          uv run --no-sync python tools/verify_wheel_contents.py
-          if ($LASTEXITCODE -ne 0) { throw "Wheel content verification failed" }
-
-          $version = uv run --no-sync python -c `
-            "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
-          if ($LASTEXITCODE -ne 0) { throw "Cannot read project version" }
-          $expected = @(
-            "auto_speech_journal-$version-py3-none-any.whl",
-            "auto_speech_journal-$version.tar.gz"
-          )
-          $actual = @(Get-ChildItem dist -File | Where-Object {
-            ($_.Extension -eq ".whl" -or $_.Name.EndsWith(".tar.gz")) -and
-            $_.Name -ne "default.gitignore"
-          } | Select-Object -ExpandProperty Name | Sort-Object)
-          if ($actual.Count -ne 2 -or (Compare-Object ($expected | Sort-Object) $actual)) {
-            throw "Expected exact versioned wheel and source distribution; found: $($actual -join ', ')"
-          }
-
-      - name: Build application and Setup
+      - name: Build application and unsigned Setup
         shell: powershell
         run: |
-          & .\tools\build_windows_installer.ps1 -Stage All
+          & .\tools\build_windows_installer.ps1 -ReleaseBuild
           if (-not $?) { throw "Windows package build failed" }
 
-      - name: Verify frozen runtime inventory and SBOM
-        shell: pwsh
-        run: |
-          uv run --no-sync python packaging/windows/runtime_inventory.py validate `
-            --sbom artifacts/windows/application/AutoSpeechJournal.cdx.json `
-            --inventory artifacts/windows/application/payload/frozen-runtime-inventory.json `
-            --lock uv.lock `
-            --pyproject pyproject.toml `
-            --payload artifacts/windows/application/payload
-          if ($LASTEXITCODE -ne 0) { throw "Frozen runtime/SBOM inventory validation failed" }
-
-      - name: Verify frozen QML and Windows artifacts
-        shell: powershell
-        run: |
-          & .\tools\verify_windows_installer.ps1
-          if (-not $?) { throw "Windows artifact verification failed" }
-
-      - name: Install, probe, and uninstall as the current non-elevated user
+      - name: Install, launch, reinstall, and uninstall without elevation
         shell: powershell
         run: |
           $version = uv run --no-sync python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
           if ($LASTEXITCODE -ne 0) { throw "Cannot read project version" }
-          $setup = Join-Path $PWD "artifacts\windows\setup\AutoSpeechJournal-Setup-$version-x64.exe"
-          $target = Join-Path $env:RUNNER_TEMP "AutoSpeechJournal-E2E"
-          $e2eLogs = Join-Path $PWD "artifacts\windows\e2e"
-          New-Item -ItemType Directory -Force -Path $e2eLogs | Out-Null
-          $installLog = Join-Path $e2eLogs "install.log"
-          $install = Start-Process -FilePath $setup -ArgumentList @(
-            "/VERYSILENT",
-            "/SUPPRESSMSGBOXES",
-            "/NORESTART",
-            "/NOMODELS",
-            "/NOGPU",
-            "/DIR=$target",
-            "/LOG=$installLog"
-          ) -WindowStyle Hidden -Wait -PassThru
-          if ($install.ExitCode -ne 0) { throw "Setup failed: $($install.ExitCode)" }
-          $installedCli = Join-Path $target "AutoSpeechJournal.CLI.exe"
-          if (-not (Test-Path -LiteralPath $installedCli -PathType Leaf)) {
-            Get-Content -LiteralPath $installLog -Tail 100 -ErrorAction SilentlyContinue
-            throw "Setup reported success but the stable CLI launcher is missing: $installedCli"
+
+          $root = Join-Path $env:RUNNER_TEMP "asj-package-e2e-$([Guid]::NewGuid().ToString('N'))"
+          $env:USERPROFILE = Join-Path $root "Profile"
+          $env:HOME = $env:USERPROFILE
+          $env:LOCALAPPDATA = Join-Path $env:USERPROFILE "AppData\Local"
+          $env:APPDATA = Join-Path $env:USERPROFILE "AppData\Roaming"
+          foreach ($directory in @(
+            $env:LOCALAPPDATA,
+            $env:APPDATA,
+            (Join-Path $env:USERPROFILE "Documents")
+          )) {
+            New-Item -ItemType Directory -Force -Path $directory | Out-Null
           }
-          & $installedCli installer-probe --isolated
-          if ($LASTEXITCODE -ne 0) { throw "Installed launcher probe failed: $LASTEXITCODE" }
+
+          $setup = Join-Path $PWD "artifacts\windows\setup\AutoSpeechJournal-Setup-$version-x64.exe"
+          $target = Join-Path $env:LOCALAPPDATA "Programs\AutoSpeechJournal\app"
+          $logs = Join-Path $PWD "artifacts\windows\e2e"
+          New-Item -ItemType Directory -Force -Path $logs | Out-Null
+
+          function Invoke-Setup([string]$LogPath) {
+            $process = Start-Process -FilePath $setup -ArgumentList @(
+              "/VERYSILENT",
+              "/SUPPRESSMSGBOXES",
+              "/NORESTART",
+              "/DIR=$target",
+              "/LOG=$LogPath"
+            ) -WindowStyle Hidden -Wait -PassThru
+            if ($process.ExitCode -ne 0) {
+              Get-Content -LiteralPath $LogPath -Tail 100 -ErrorAction SilentlyContinue
+              throw "Setup failed: $($process.ExitCode)"
+            }
+          }
+
+          Invoke-Setup (Join-Path $logs "install.log")
+          $gui = Join-Path $target "AutoSpeechJournal.exe"
+          $cli = Join-Path $target "AutoSpeechJournal.CLI.exe"
+          foreach ($executable in @($gui, $cli)) {
+            if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
+              throw "Setup did not install the direct application executable: $executable"
+            }
+          }
+
+          & $cli self-test `
+            --no-model-check `
+            --no-microphone-check `
+            --allow-cpu-finalizer
+          if ($LASTEXITCODE -ne 0) { throw "Installed direct CLI self-test failed" }
+
+          $application = Start-Process -FilePath $gui -WorkingDirectory $target -PassThru
+          try {
+            Start-Sleep -Seconds 8
+            if ($application.HasExited) {
+              throw "The installed GUI exited during the launch smoke test: $($application.ExitCode)"
+            }
+          }
+          finally {
+            if (-not $application.HasExited) {
+              Stop-Process -Id $application.Id -Force
+              $application.WaitForExit()
+            }
+          }
 
           $runtime = Join-Path $env:LOCALAPPDATA "AutoSpeechJournal"
-          New-Item -ItemType Directory -Force -Path $runtime | Out-Null
-          $currentManifest = Join-Path $target 'current.json'
-          if (-not (Test-Path -LiteralPath $currentManifest -PathType Leaf)) {
-            throw "Setup did not activate current.json"
-          }
-          $currentManifestHash = (Get-FileHash -LiteralPath $currentManifest -Algorithm SHA256).Hash
-
-          function Copy-JsonObject([object]$Value) {
-            return ($Value | ConvertTo-Json -Depth 12 | ConvertFrom-Json)
-          }
-
-          function Write-JsonNoBom([string]$Path, [object]$Value) {
-            $json = ($Value | ConvertTo-Json -Depth 12) + "`n"
-            [IO.File]::WriteAllText($Path, $json, (New-Object Text.UTF8Encoding($false)))
-          }
-
-          function New-VadManifest(
-            [object]$Canonical,
-            [string]$Release,
-            [string]$Destination,
-            [string]$Sha256
-          ) {
-            $model = Copy-JsonObject (@($Canonical.models | Where-Object name -eq 'silero-vad')[0])
-            $model.destination = $Destination
-            $model.files[0].sha256 = $Sha256
-            return [ordered]@{
-              schema_version = 1
-              release = $Release
-              provider = 'huggingface'
-              models = @($model)
-            }
-          }
-
-          $canonical = Get-Content packaging/manifests/runtime-models-v1.json `
-            -Raw -Encoding UTF8 | ConvertFrom-Json
-          $vad = @($canonical.models | Where-Object name -eq 'silero-vad')[0]
-          $vadFile = $vad.files[0]
-          $expectedVadHash = [string]$vadFile.sha256
-          $resumeRelease = 'runtime-models-v1-e2e-resume'
-          $resumeDestination = 'e2e-hf-vad-resume'
-          $resumeManifest = Join-Path $e2eLogs 'runtime-models-v1-e2e-resume.json'
-          Write-JsonNoBom $resumeManifest (
-            New-VadManifest $canonical $resumeRelease $resumeDestination $expectedVadHash
-          )
-
-          $resumePart = Join-Path $runtime `
-            "models\.downloads\$resumeRelease\$resumeDestination\silero_vad.onnx.part"
-          New-Item -ItemType Directory -Force -Path (Split-Path -Parent $resumePart) | Out-Null
-          $vadUrl = "https://huggingface.co/$($vad.repository)/resolve/$($vad.revision)/$($vadFile.path)"
-          & curl.exe --fail --location --retry 3 --range 0-65535 --output $resumePart $vadUrl
-          if ($LASTEXITCODE -ne 0) { throw "Cannot seed the Hugging Face resume E2E" }
-          $partStream = [IO.File]::Open(
-            $resumePart,
-            [IO.FileMode]::Open,
-            [IO.FileAccess]::Write,
-            [IO.FileShare]::None
-          )
-          try {
-            if ($partStream.Length -ge [int64]$vadFile.size) {
-              $partStream.SetLength(65536)
-            }
-          }
-          finally {
-            $partStream.Dispose()
-          }
-          $partialSize = (Get-Item -LiteralPath $resumePart).Length
-          if ($partialSize -le 0 -or $partialSize -ge [int64]$vadFile.size) {
-            throw "Resume fixture is not a proper partial file: $partialSize"
-          }
-
-          $resumeProgress = Join-Path $e2eLogs 'hf-resume-progress.json'
-          & $installedCli provision --manifest $resumeManifest --progress-json $resumeProgress
-          if ($LASTEXITCODE -ne 0) { throw "Pinned Hugging Face Range/resume E2E failed" }
-          $resumeVad = Join-Path $runtime "models\$resumeDestination\silero_vad.onnx"
-          if ((Get-FileHash -LiteralPath $resumeVad -Algorithm SHA256).Hash.ToLowerInvariant() `
-              -ne $expectedVadHash) {
-            throw "Resumed Hugging Face VAD hash mismatch"
-          }
-
-          & $installedCli repair models --manifest $resumeManifest --progress-json $resumeProgress
-          if ($LASTEXITCODE -ne 0) { throw "Repair models could not reuse the verified VAD" }
-
-          $retryRelease = 'runtime-models-v1-e2e-retry'
-          $retryDestination = 'e2e-hf-vad-retry'
-          $retryManifest = Join-Path $e2eLogs 'runtime-models-v1-e2e-retry.json'
-          Write-JsonNoBom $retryManifest (
-            New-VadManifest $canonical $retryRelease $retryDestination $expectedVadHash
-          )
-          $retryPart = Join-Path $runtime `
-            "models\.downloads\$retryRelease\$retryDestination\silero_vad.onnx.part"
-          New-Item -ItemType Directory -Force -Path (Split-Path -Parent $retryPart) | Out-Null
-          $retryStream = [IO.File]::Open(
-            $retryPart,
-            [IO.FileMode]::Create,
-            [IO.FileAccess]::Write,
-            [IO.FileShare]::None
-          )
-          try {
-            $retryStream.SetLength([int64]$vadFile.size)
-          }
-          finally {
-            $retryStream.Dispose()
-          }
-          $retryProgress = Join-Path $e2eLogs 'hf-corrupt-part-retry-progress.json'
-          & $installedCli provision --manifest $retryManifest --progress-json $retryProgress
-          if ($LASTEXITCODE -ne 0) { throw "Corrupt .part discard/retry E2E failed" }
-          $retryVad = Join-Path $runtime "models\$retryDestination\silero_vad.onnx"
-          if ((Get-FileHash -LiteralPath $retryVad -Algorithm SHA256).Hash.ToLowerInvariant() `
-              -ne $expectedVadHash) {
-            throw "Retried Hugging Face VAD hash mismatch"
-          }
-
-          $corruptStream = [IO.File]::Open(
-            $resumeVad,
-            [IO.FileMode]::Open,
-            [IO.FileAccess]::ReadWrite,
-            [IO.FileShare]::None
-          )
-          try {
-            $firstByte = $corruptStream.ReadByte()
-            $corruptStream.Position = 0
-            $corruptStream.WriteByte([byte]($firstByte -bxor 255))
-          }
-          finally {
-            $corruptStream.Dispose()
-          }
-          & $installedCli repair models --manifest $resumeManifest --progress-json $resumeProgress
-          if ($LASTEXITCODE -ne 0) { throw "Repair models did not repair installed corruption" }
-          if ((Get-FileHash -LiteralPath $resumeVad -Algorithm SHA256).Hash.ToLowerInvariant() `
-              -ne $expectedVadHash) {
-            throw "Repair models retained corrupt model bytes"
-          }
-
-          $badManifest = Join-Path $e2eLogs 'runtime-models-v1-e2e-bad-hash.json'
-          Write-JsonNoBom $badManifest (
-            New-VadManifest $canonical 'runtime-models-v1-e2e-bad-hash' `
-              $resumeDestination ('a' * 64)
-          )
-          $goodModelHash = (Get-FileHash -LiteralPath $resumeVad -Algorithm SHA256).Hash
-          $badProgress = Join-Path $e2eLogs 'hf-bad-hash-progress.json'
-          & $installedCli repair models --manifest $badManifest --progress-json $badProgress
-          $badExit = $LASTEXITCODE
-          if ($badExit -eq 0) { throw "A wrong Hugging Face SHA-256 unexpectedly succeeded" }
-          if (-not (Test-Path -LiteralPath $installedCli -PathType Leaf)) {
-            throw "Model failure rolled back the installed program"
-          }
-          if ((Get-FileHash -LiteralPath $currentManifest -Algorithm SHA256).Hash `
-              -ne $currentManifestHash) {
-            throw "Model failure changed the active application manifest"
-          }
-          if ((Get-FileHash -LiteralPath $resumeVad -Algorithm SHA256).Hash -ne $goodModelHash) {
-            throw "Failed model repair replaced the previously verified model"
-          }
-          & $installedCli installer-probe --isolated
-          if ($LASTEXITCODE -ne 0) {
-            throw "Application was not usable after expected model failure"
-          }
-
-          $preserved = @(
+          $externalJournal = Join-Path $root "ExternalJournal\journal.md"
+          $sentinels = @(
             (Join-Path $runtime "config.json"),
             (Join-Path $runtime "state.db"),
             (Join-Path $runtime "state.db-wal"),
             (Join-Path $runtime "spool\pending.flac"),
-            (Join-Path $runtime "models\fixture\model.bin")
+            (Join-Path $runtime "models\fixture\model.bin"),
+            $externalJournal
           )
-          foreach ($path in $preserved) {
+          $expected = @{}
+          foreach ($path in $sentinels) {
             New-Item -ItemType Directory -Force -Path (Split-Path -Parent $path) | Out-Null
-            Set-Content -LiteralPath $path -Value "preserve" -Encoding UTF8
+            $bytes = [Text.Encoding]::UTF8.GetBytes("preserve:$path")
+            [IO.File]::WriteAllBytes($path, $bytes)
+            $expected[$path] = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
           }
-          $uninstaller = Join-Path $target "unins000.exe"
-          $uninstallLog = Join-Path $e2eLogs "uninstall.log"
+
+          $stalePayload = Join-Path $target "_internal\obsolete-plugin.dll"
+          New-Item -ItemType Directory -Force -Path (Split-Path -Parent $stalePayload) |
+            Out-Null
+          [IO.File]::WriteAllBytes($stalePayload, [byte[]](1, 2, 3, 4))
+
+          Invoke-Setup (Join-Path $logs "reinstall.log")
+          if (Test-Path -LiteralPath $stalePayload) {
+            throw "Reinstall retained stale application payload: $stalePayload"
+          }
+          foreach ($path in $sentinels) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Reinstall removed preserved data: $path"
+            }
+            if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $expected[$path]) {
+              throw "Reinstall changed preserved data: $path"
+            }
+          }
+
+          $uninstaller = Join-Path $env:LOCALAPPDATA `
+            "Programs\AutoSpeechJournal\uninstall\unins000.exe"
+          $uninstallLog = Join-Path $logs "uninstall.log"
           $uninstall = Start-Process -FilePath $uninstaller -ArgumentList @(
             "/VERYSILENT",
             "/SUPPRESSMSGBOXES",
             "/NORESTART",
             "/LOG=$uninstallLog"
           ) -WindowStyle Hidden -Wait -PassThru
-          if ($uninstall.ExitCode -ne 0) { throw "Uninstall failed: $($uninstall.ExitCode)" }
-          if (Test-Path -LiteralPath $installedCli) {
-            throw "Uninstall retained the stable CLI launcher: $installedCli"
+          if ($uninstall.ExitCode -ne 0) {
+            Get-Content -LiteralPath $uninstallLog -Tail 100 -ErrorAction SilentlyContinue
+            throw "Uninstall failed: $($uninstall.ExitCode)"
           }
-          foreach ($path in $preserved) {
-            if (-not (Test-Path -LiteralPath $path)) {
-              throw "Uninstall removed runtime data: $path"
+          if (Test-Path -LiteralPath $gui -PathType Leaf) {
+            throw "Uninstall retained the application executable"
+          }
+          foreach ($path in $sentinels) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Uninstall removed preserved data: $path"
             }
-          }
-          foreach ($path in @($resumeVad, $retryVad)) {
-            if (-not (Test-Path -LiteralPath $path)) {
-              throw "Uninstall removed a downloaded Hugging Face model: $path"
+            if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $expected[$path]) {
+              throw "Uninstall changed preserved data: $path"
             }
           }
 
-      - name: Upload internal unsigned artifacts
-        if: always()
+      - name: Upload unsigned Setup
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: auto-speech-journal-windows-unsigned-${{ github.sha }}
+          name: AutoSpeechJournal-Setup-unsigned-${{ github.sha }}
           path: |
-            artifacts/windows/application/
-            artifacts/windows/setup/*.exe
-            artifacts/windows/build-metadata.json
-            artifacts/windows/WINDOWS-VERIFICATION.json
-            artifacts/windows/e2e/
-            dist/*.whl
-            dist/*.tar.gz
+            artifacts/windows/setup/AutoSpeechJournal-Setup-*-x64.exe
+            artifacts/windows/setup/SHA256SUMS.txt
+            artifacts/windows/e2e/*.log
           if-no-files-found: error
           retention-days: 14

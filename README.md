@@ -40,8 +40,8 @@
 啟動，持續監聽你選定的麥克風，先顯示低延遲逐字預覽，再以 Whisper 產生較準確的
 最終文字，最後依台北時間整理成每小時一份 Markdown。
 
-辨識、儲存與介面都在本機執行。網路只在安裝、首次設定補齊或手動修復模型時連線至
-Hugging Face；日常錄音不需要把音訊或文字送到雲端。
+辨識、儲存與介面都在本機執行。網路只在首次設定或手動下載模型時連線至 Hugging
+Face；日常錄音不需要把音訊或文字送到雲端。
 
 > [!IMPORTANT]
 > 目前是 `0.2.0` 預發行版，僅支援 Windows WASAPI、中文辨識與 `Asia/Taipei` 時區。
@@ -71,7 +71,7 @@ Hugging Face；日常錄音不需要把音訊或文字送到雲端。
 | 可管理校正字典 | 修正後的片段會鎖定；可查看已學詞與次數、刪除或清空詞語，並停用自動學習 |
 | 容易帶走 | 預設輸出一般 Markdown，不綁定專用閱讀器 |
 | 麥克風可切換 | 可固定使用某個 WASAPI 端點，或跟隨 Windows 預設，切換不需重開 App |
-| 選用登入自啟 | 首次設定明確同意後，才建立指向穩定 launcher 的個人工作排程 |
+| 選用登入自啟 | 首次設定明確同意後，才建立指向已安裝 App 的個人工作排程 |
 | 離線視覺 | 月份、狀態場景與粒子效果隨程式安裝，執行時不呼叫生成式影像服務 |
 
 ## 快速開始
@@ -80,23 +80,21 @@ Hugging Face；日常錄音不需要把音訊或文字送到雲端。
 
 - Windows 10/11 x64
 - 錄音時需要可用的 WASAPI 麥克風，以及 Windows 麥克風權限
-- 首次下載模型需要連線至 Hugging Face；Setup 會在下載前顯示精確空間需求
-- NVIDIA GPU 為選用；偵測或 CUDA probe 失敗時會自動使用 CPU
+- 首次啟動下載模型時需要連線至 Hugging Face
+- 正式 Setup 使用 CPU-safe 路徑；進階 NVIDIA CUDA 安裝請使用 `install.ps1`
 
 ### 2. 下載並安裝
 
 `v0.2.0` 允許正式發布未簽章的 `AutoSpeechJournal-Setup-0.2.0-x64.exe` 與內層 EXE。
 請只從 [GitHub Releases](https://github.com/benny7431/auto-speech-journal/releases) 下載正式資產，
 不要使用 PR 的內部 artifact。由於目前沒有 Authenticode 簽章，Windows 可能顯示
-「未知的發行者」或 Microsoft Defender SmartScreen 提示；請先比對 Release 提供的 SHA-256，
-並使用 GitHub artifact attestation 驗證來源。無需也不應為了安裝而停用 Windows Defender。
+「未知的發行者」或 Microsoft Defender SmartScreen 提示；請先比對 Release 提供的 SHA-256。
+無需也不應為了安裝而停用 Windows Defender。
 正式 Setup 不需要 Python、`uv`、Git、PowerShell、管理員權限或另外安裝憑證。
 
-Setup 預設直接從 Hugging Face 的固定 commit revision 下載可執行模型，顯示進度、ETA，
-並允許取消後續傳。GPU 選項
-預設自動偵測，也可在安裝畫面取消或強制嘗試。安裝完成後穩定 launcher 位於
-`%LOCALAPPDATA%\Programs\AutoSpeechJournal\AutoSpeechJournal.exe`，版本內容位於
-`versions\0.2.0`。日記預設輸出到：
+Setup 只安裝 CPU-safe App，不下載模型或 GPU 元件。程式會直接安裝到
+`%LOCALAPPDATA%\Programs\AutoSpeechJournal\app`。首次啟動時，App 才從固定 Hugging
+Face commit 下載可直接執行的 ONNX／CTranslate2 模型。日記預設輸出到：
 
 ```text
 %USERPROFILE%\Documents\語音紀錄\YYYY-MM-DD\YYYY-MM-DD_HH.md
@@ -113,20 +111,17 @@ Setup 預設直接從 Hugging Face 的固定 commit revision 下載可執行模�
 還需選擇日記資料夾、是否登入自啟（預設關閉）與是否開啟更新提示
 （預設關閉）。只有最後按下 **開始錄音** 才會儲存同意並啟動 worker。設定會寫入
 `%LOCALAPPDATA%\AutoSpeechJournal\config.json`，重新安裝時會沿用。
-Wizard 也會在背景驗證語音模型；若 Setup 曾斷線，可直接按 **續傳／修復模型**。模型未
-就緒前「開始錄音」會保持停用，但 **稍後設定** 永遠可用且不會開啟麥克風。
+Wizard 會下載並驗證語音模型；若網路中斷，可在首次設定重試，或稍後執行
+`AutoSpeechJournal.CLI.exe download-models`。Hugging Face cache 會重用已完成的檔案。
+模型未就緒前「開始錄音」會保持停用，但 **稍後設定** 永遠可用且不會開啟麥克風。
 
 <details>
 <summary><strong>安裝器實際會做什麼？</strong></summary>
 
-1. 把內含 CPU runtime 的新版本放入獨立 `versions\<version>`。
-2. 執行實際 QML／Qt 隔離 readiness probe；失敗不會切換版本。
-3. 原子更新 `current.json`，穩定 launcher 才開始指向新版本。
-4. 依 `runtime-models-v1.json` 從 Hugging Face 固定的 40 位 commit revision 下載 ONNX／
-   CTranslate2 檔案；以 `.part`、Range fallback、重試、大小、SHA-256 與原子替換保護安裝。
-5. 選用 GPU 時只從固定 URL 下載三個 NVIDIA wheel，只解出 runtime DLL 並做 CUDA probe。
-6. 模型或 GPU 失敗不會卸載可用的 CPU 程式；可從開始選單續傳／修復。
-7. 舊 `AutoSpeechJournal\app` 會重用原有設定與資料；只在驗證舊 task action 後才遷移自啟。
+1. 將 PyInstaller onedir 的 CPU-safe App 直接安裝到固定 `app` 目錄。
+2. 建立開始選單捷徑與 Windows「應用程式」解除安裝項目。
+3. 不下載模型或 NVIDIA runtime；模型由首次啟動的 App 負責。
+4. 不開啟麥克風、不建立登入自啟，也不刪除既有 runtime 資料或外部日記。
 
 </details>
 
@@ -183,9 +178,10 @@ flowchart LR
 
 ## 資料、隱私與檔案位置
 
-日常執行不會上傳音訊或逐字稿。固定版本模型只在安裝、首次設定補齊或 `repair models`
-時直接從 Hugging Face 下載；模型就緒後，錄音、VAD、預覽、最終辨識、正體轉換與匯出
-都可離線完成。下載清單由 `packaging/manifests/runtime-models-v1.json` 管理：
+日常執行不會上傳音訊或逐字稿。固定版本模型只在首次設定或 `download-models` 時直接
+從 Hugging Face 下載；模型就緒後，錄音、VAD、預覽、最終辨識、正體轉換與匯出都可
+離線完成。下載清單隨 App 封裝在
+`src/auto_speech_journal/runtime-models-v1.json`：
 
 - Paraformer：`csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en` @
   `8e40c43232a1c5c66c82111efc5820d3accca11b`，直接使用三個 INT8 ONNX／tokens 檔案。
@@ -194,17 +190,16 @@ flowchart LR
 - VAD：`R4kSo1997/sherpa-onnx-silero-vad-v5` @
   `4a6e5a75370a3ca741c950f8feda0dbed11c18ac`，直接使用 Sherpa Silero VAD ONNX。
 
-目前 manifest 共 9 個檔案、`1,859,512,338` bytes（約 1.73 GiB）。Setup 顯示整體進度與
-ETA，可取消並保留 `.part`；磁碟檢查依尚未下載的 bytes、現有 rollback 狀態與 20% 安全
-餘量計算，不使用模糊的固定容量提示。
+目前 manifest 共 9 個檔案、`1,859,512,338` bytes（約 1.73 GiB）。App 使用
+`huggingface_hub` 的 cache 與 retry；中斷後重新執行只會補齊未完成的檔案，並在使用前
+核對固定 revision、大小與 SHA-256。
 
-安裝／修復不會安裝 Torch、Transformers 或 Safetensors，也不會在使用者電腦轉換模型。
-NVIDIA CUDA runtime 仍由獨立的固定 PyPI wheel manifest 管理，不混入模型下載流程。
+Setup 與模型下載都不會安裝 Torch、Transformers 或 Safetensors，也不會在使用者電腦
+轉換模型。NVIDIA CUDA 是獨立的進階 `install.ps1` 路徑，不混入 Setup 或模型流程。
 
 | 內容 | 預設位置 |
 | --- | --- |
-| 穩定 launcher | `%LOCALAPPDATA%\Programs\AutoSpeechJournal\AutoSpeechJournal.exe` |
-| 版本副本 | `%LOCALAPPDATA%\Programs\AutoSpeechJournal\versions\<version>` |
+| 已安裝 App | `%LOCALAPPDATA%\Programs\AutoSpeechJournal\app` |
 | 設定 | `%LOCALAPPDATA%\AutoSpeechJournal\config.json` |
 | SQLite 狀態 | `%LOCALAPPDATA%\AutoSpeechJournal\state.db` |
 | 辨識模型 | `%LOCALAPPDATA%\AutoSpeechJournal\models` |
@@ -222,11 +217,9 @@ NVIDIA CUDA runtime 仍由獨立的固定 PyPI wheel manifest 管理，不混入
 先從 **系統狀態 → 結束程式** 停止應用程式，再於 PowerShell 執行需要的命令。
 
 ```powershell
-$Cli = "$env:LOCALAPPDATA\Programs\AutoSpeechJournal\AutoSpeechJournal.CLI.exe"
-& $Cli repair models
-& $Cli repair gpu
-& $Cli repair runtime
-& $Cli installer-probe --isolated
+$Cli = "$env:LOCALAPPDATA\Programs\AutoSpeechJournal\app\AutoSpeechJournal.CLI.exe"
+& $Cli self-test --no-model-check --no-microphone-check
+& $Cli download-models
 & $Cli startup status
 ```
 
@@ -237,10 +230,10 @@ $Cli = "$env:LOCALAPPDATA\Programs\AutoSpeechJournal\AutoSpeechJournal.CLI.exe"
 新安裝或曾選擇「稍後設定」時，請在首次畫面或設定頁選擇固定裝置或
 「跟隨 Windows 預設」。安裝器本身不會要求麥克風，也不會替你開始錄音。
 
-**安裝時取消下載後顯示缺少模型**
+**首次設定下載中斷後顯示缺少模型**
 
-連上網路後從開始選單選擇 **Repair models**。`.part` 會續傳，既有日記、設定與
-待處理片段會保留。
+連上網路後回到首次設定重試，或執行 `AutoSpeechJournal.CLI.exe download-models`。
+Hugging Face cache 會重用已完成的檔案；既有日記、設定與待處理片段會保留。
 
 **程式顯示降級狀態**
 
@@ -262,9 +255,8 @@ $Cli = "$env:LOCALAPPDATA\Programs\AutoSpeechJournal\AutoSpeechJournal.CLI.exe"
 - 模型與 spool
 - 日誌與本機字體
 
-因此之後重新安裝仍可沿用設定，並恢復尚未完成的片段。
-解除安裝畫面另有預設未勾選的「移除模型/cache」與需二次確認的「移除本機狀態」；
-外部 Markdown 日記資料夾永遠不會自動刪除。
+因此之後重新安裝仍可沿用設定，並恢復尚未完成的片段。若確定不再使用，請先備份後
+自行刪除保留的 runtime 資料；外部 Markdown 日記資料夾永遠不會由解除安裝程式刪除。
 
 ## 文件、政策與參與
 
@@ -318,9 +310,9 @@ src/auto_speech_journal/
 └── qml/, assets/              # 介面與離線視覺資產
 
 tests/                         # Pytest 回歸測試
-packaging/                     # PyInstaller、launcher、Inno、model/CUDA manifests
+packaging/                     # PyInstaller、Inno Setup 與最小發布驗證
 tools/                         # 復原、資產、效能與打包 QA
-install.ps1, uninstall.ps1     # 僅供開發／救援的舊 PowerShell 流程
+install.ps1, uninstall.ps1     # 進階 source/CUDA 安裝與救援流程
 ```
 
 </details>
