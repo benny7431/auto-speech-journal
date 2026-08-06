@@ -1,0 +1,41 @@
+name: Feature request
+description: 提議符合本機優先與 Windows 使用情境的新功能
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 要解決的問題
+      description: 描述使用情境與目前受阻之處，而不只描述解法。
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建議行為
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 考慮過的替代方式
+  - type: textarea
+    id: privacy
+    attributes:
+      label: 本機優先與隱私影響
+      description: 說明是否新增連網、資料保存、麥克風、模型或第三方服務需求。
+    validations:
+      required: true
+  - type: textarea
+    id: platform
+    attributes:
+      label: Windows／硬體限制
+      description: 若與特定 Windows、WASAPI、CPU、GPU 或驅動相關，請在此說明。
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 確認
+      options:
+        - label: 我沒有附上錄音、逐字稿、資料庫、設定或其他私人資料。
+          required: true

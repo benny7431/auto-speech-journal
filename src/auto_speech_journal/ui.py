@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -201,6 +201,8 @@ def _create_main_window(
     *,
     window_settings: Any | None = None,
     microphone_device_provider: Any | None = None,
+    clock: Callable[[], datetime] | None = None,
+    font_directories: Sequence[Path] | None = None,
 ) -> Any:
     """Create the QML window without entering Qt's event loop."""
     try:
@@ -216,6 +218,8 @@ def _create_main_window(
         controller,
         application,
         settings=settings,
+        clock=clock,
+        font_directories=font_directories,
         microphone_device_provider=microphone_device_provider,
     )
     engine.rootContext().setContextProperty("journal", view_model)

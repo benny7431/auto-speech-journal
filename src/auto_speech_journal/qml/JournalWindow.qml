@@ -972,6 +972,7 @@ ApplicationWindow {
                         width: parent.width
                         visible: journal.recordingEngineNeedsStart
                         text: "稍後設定麥克風，先進入主介面"
+                        font.pixelSize: Math.min(window.fontPx(15), 22)
                         onClicked: journal.deferMicrophoneAfterStartFailure()
                     }
                     PaperButton {

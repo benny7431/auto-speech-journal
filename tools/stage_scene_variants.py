@@ -36,7 +36,12 @@ RAW_ROOT = PRODUCTION_ROOT / "raw"
 PROMPT_ROOT = PRODUCTION_ROOT / "prompts"
 MATRIX_ROOT = PRODUCTION_ROOT / "matrix"
 BASE_MANIFEST = (
-    ROOT / "artifacts" / "today-river-prototype" / "month-07" / "manifest.json"
+    ROOT
+    / "src"
+    / "auto_speech_journal"
+    / "assets"
+    / "scenes"
+    / "manifest.json"
 )
 BASE_SCHEMA = (
     ROOT
