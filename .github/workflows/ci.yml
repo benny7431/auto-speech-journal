@@ -82,7 +82,8 @@ jobs:
         with:
           name: auto-speech-journal-${{ github.sha }}
           path: |
-            dist/*
+            dist/*.whl
+            dist/*.tar.gz
             coverage.xml
           if-no-files-found: error
           retention-days: 14

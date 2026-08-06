@@ -116,7 +116,14 @@ jobs:
             $utf8
           )
 
-          $artifacts = Get-ChildItem -LiteralPath dist -File | Sort-Object Name
+          $artifacts = @(
+            Get-ChildItem -LiteralPath dist -File |
+              Where-Object { $_.Extension -eq ".whl" -or $_.Name.EndsWith(".tar.gz") } |
+              Sort-Object Name
+          )
+          if ($artifacts.Count -ne 2) {
+            throw "Expected one wheel and one source distribution; found $($artifacts.Count)"
+          }
           $checksums = foreach ($artifact in $artifacts) {
             $hash = (Get-FileHash -LiteralPath $artifact.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
             "$hash  $($artifact.Name)"
@@ -151,8 +158,16 @@ jobs:
         shell: pwsh
         run: |
           $tag = $env:GITHUB_REF_NAME
+          $distributions = @(
+            Get-ChildItem -LiteralPath dist -File |
+              Where-Object { $_.Extension -eq ".whl" -or $_.Name.EndsWith(".tar.gz") } |
+              Sort-Object Name
+          )
+          if ($distributions.Count -ne 2) {
+            throw "Expected one wheel and one source distribution; found $($distributions.Count)"
+          }
           $assets = @(
-            (Get-ChildItem -LiteralPath dist -File | ForEach-Object FullName)
+            ($distributions | ForEach-Object FullName)
             (Join-Path $PWD "SHA256SUMS.txt")
             (Join-Path $PWD "TEST-SUMMARY.md")
           )
@@ -160,6 +175,9 @@ jobs:
 
           gh release view $tag *> $null
           if ($LASTEXITCODE -eq 0) {
+            foreach ($unexpected in @(".gitignore", "default.gitignore")) {
+              gh release delete-asset $tag $unexpected --yes 2> $null
+            }
             gh release upload $tag @assets --clobber
             $editArgs = @("release", "edit", $tag, "--title", $tag, "--notes-file", "RELEASE_NOTES.md")
             if ($isPrerelease) { $editArgs += "--prerelease" }
