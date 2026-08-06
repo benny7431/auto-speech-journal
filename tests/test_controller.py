@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -87,6 +87,7 @@ class FakeStorage:
 
 class FakeExporter:
     def __init__(self) -> None:
+        self.records_root = Path("records").resolve()
         self.exported: list[str] = []
         self.rebuilt: list[str] = []
         self.deleted: list[str] = []
@@ -96,6 +97,9 @@ class FakeExporter:
         self.pending_deletions: tuple[Path, ...] = ()
         self.deletion_retry_count = 0
         self.delete_segment_ids: tuple[str, ...] = ()
+
+    def set_records_root(self, records_root: Path) -> None:
+        self.records_root = Path(records_root).resolve()
 
     def export_segment(self, segment_id: str) -> None:
         if self.fail_next_export:
@@ -257,6 +261,7 @@ def make_controller(
         or AppConfig(
             final_deadline_ms=10_000,
             microphone=MicrophoneSelection(mode=MicrophoneMode.SYSTEM_DEFAULT),
+            onboarding_completed=True,
         ),
         vocabulary=vocabulary,
         save_config_callback=save_config_callback,
@@ -303,7 +308,7 @@ def test_configure_before_start_saves_then_lazy_factory_uses_selection() -> None
         exporter=FakeExporter(),
         workers=None,
         workers_factory=factory,
-        config=AppConfig(),
+        config=AppConfig(onboarding_completed=True),
         save_config_callback=lambda config: order.append(
             f"save:{config.microphone.mode.value}"
         ),
@@ -341,7 +346,7 @@ def test_lazy_worker_start_failure_is_not_marked_started_and_same_selection_retr
         exporter=FakeExporter(),
         workers=None,
         workers_factory=lambda _config: workers,
-        config=AppConfig(),
+        config=AppConfig(onboarding_completed=True),
         save_config_callback=saves.append,
     )
     controller.start()
@@ -349,19 +354,22 @@ def test_lazy_worker_start_failure_is_not_marked_started_and_same_selection_retr
     with pytest.raises(OSError, match="transient worker start failure"):
         controller.configure_microphone(selected)
 
-    assert controller.config.microphone == selected
+    assert controller.config.microphone.mode is MicrophoneMode.PENDING
     assert not controller._workers_started
-    assert workers.actions == ["start"]
-    assert len(saves) == 1
+    assert workers.actions == ["start", "stop"]
+    assert [saved.microphone.mode for saved in saves] == [
+        MicrophoneMode.FIXED,
+        MicrophoneMode.PENDING,
+    ]
 
     assert controller.configure_microphone(selected) is None
 
     assert controller._workers_started
-    assert workers.actions == ["start", "start"]
-    assert len(saves) == 1
+    assert workers.actions == ["start", "stop", "start"]
+    assert len(saves) == 3
 
 
-def test_live_microphone_change_writes_history_before_reconfigure() -> None:
+def test_live_microphone_change_records_history_after_successful_reconfigure() -> None:
     order: list[str] = []
 
     class History:
@@ -382,7 +390,8 @@ def test_live_microphone_change_writes_history_before_reconfigure() -> None:
         exporter=FakeExporter(),
         workers=workers,
         config=AppConfig(
-            microphone=MicrophoneSelection(mode=MicrophoneMode.SYSTEM_DEFAULT)
+            microphone=MicrophoneSelection(mode=MicrophoneMode.SYSTEM_DEFAULT),
+            onboarding_completed=True,
         ),
         save_config_callback=lambda _config: order.append("save"),
         settings_history_store=History(),
@@ -397,8 +406,101 @@ def test_live_microphone_change_writes_history_before_reconfigure() -> None:
     )
 
     assert request_id == "request-1"
-    assert order == ["save", "history", "reconfigure"]
+    assert order == ["save", "reconfigure", "history"]
     assert controller.snapshot.input_switching is True
+
+
+def test_failed_live_settings_transaction_restores_config_exporter_and_input(tmp_path):
+    class FailNewInputWorkers(FakeWorkers):
+        def reconfigure_input(self, selection, *, request_id=None):
+            self.input_selections.append(selection)
+            self.actions.append(f"reconfigure:{selection.mode.value}")
+            if selection.mode is MicrophoneMode.FIXED:
+                raise OSError("device activation failed")
+            return request_id or "rollback-request"
+
+    active_root = (tmp_path / "active").resolve()
+    next_root = (tmp_path / "next").resolve()
+    exporter = FakeExporter()
+    exporter.records_root = active_root
+    workers = FailNewInputWorkers()
+    saved: list[AppConfig] = []
+    original = AppConfig(
+        records_root=str(active_root),
+        microphone=MicrophoneSelection(mode=MicrophoneMode.SYSTEM_DEFAULT),
+        onboarding_completed=True,
+    )
+    controller = JournalController(
+        storage=FakeStorage(),
+        exporter=exporter,
+        workers=workers,
+        config=original,
+        save_config_callback=saved.append,
+    )
+    controller.start()
+    before_snapshot = controller.snapshot
+    requested = replace(
+        original,
+        records_root=str(next_root),
+        microphone=MicrophoneSelection(
+            MicrophoneMode.FIXED,
+            DeviceFingerprint(name="Broken USB microphone"),
+        ),
+    )
+
+    with pytest.raises(OSError, match="device activation failed"):
+        controller.update_settings(requested)
+
+    assert controller.config is original
+    assert controller.snapshot == before_snapshot
+    assert controller.workers is workers
+    assert controller.workers_started is True
+    assert exporter.records_root == active_root
+    assert [item.records_root for item in saved] == [str(next_root), str(active_root)]
+    assert [item.mode for item in workers.input_selections] == [
+        MicrophoneMode.FIXED,
+        MicrophoneMode.SYSTEM_DEFAULT,
+    ]
+
+
+def test_idle_activation_failure_rolls_back_immediate_records_root_switch(tmp_path):
+    class RejectInputWorkers(FakeWorkers):
+        def start(self) -> None:
+            self.actions.append("start")
+            raise OSError("cannot bind input")
+
+    active_root = (tmp_path / "active").resolve()
+    next_root = (tmp_path / "next").resolve()
+    exporter = FakeExporter()
+    exporter.records_root = active_root
+    workers = RejectInputWorkers()
+    saved: list[AppConfig] = []
+    original = AppConfig(records_root=str(active_root), onboarding_completed=True)
+    controller = JournalController(
+        storage=FakeStorage(),
+        exporter=exporter,
+        workers=workers,
+        config=original,
+        save_config_callback=saved.append,
+    )
+    controller.start()
+    requested = replace(
+        original,
+        records_root=str(next_root),
+        microphone=MicrophoneSelection(
+            MicrophoneMode.FIXED,
+            DeviceFingerprint(name="Unavailable microphone"),
+        ),
+    )
+
+    with pytest.raises(OSError, match="cannot bind input"):
+        controller.update_settings(requested)
+
+    assert controller.config is original
+    assert exporter.records_root == active_root
+    assert controller.workers is workers
+    assert workers.actions == ["start", "stop"]
+    assert [item.records_root for item in saved] == [str(next_root), str(active_root)]
 
 
 def test_route_update_separates_preferred_from_active_and_retry() -> None:
@@ -406,7 +508,9 @@ def test_route_update_separates_preferred_from_active_and_retry() -> None:
         mode=MicrophoneMode.FIXED,
         preferred_device=DeviceFingerprint(name="Preferred USB"),
     )
-    controller, _, _, workers, _ = make_controller(config=AppConfig(microphone=selected))
+    controller, _, _, workers, _ = make_controller(
+        config=AppConfig(microphone=selected, onboarding_completed=True)
+    )
     controller.start()
 
     controller.handle_event(
@@ -1013,7 +1117,8 @@ def test_transient_final_storage_failure_resubmits_finalizing_segment(tmp_path):
         exporter=exporter,
         workers=workers,
         config=AppConfig(
-            microphone=MicrophoneSelection(mode=MicrophoneMode.SYSTEM_DEFAULT)
+            microphone=MicrophoneSelection(mode=MicrophoneMode.SYSTEM_DEFAULT),
+            onboarding_completed=True,
         ),
         monotonic=lambda: now[0],
     )
@@ -1084,7 +1189,8 @@ def test_staged_shutdown_drains_captured_and_final_events(tmp_path):
         exporter=exporter,
         workers=workers,
         config=AppConfig(
-            microphone=MicrophoneSelection(mode=MicrophoneMode.SYSTEM_DEFAULT)
+            microphone=MicrophoneSelection(mode=MicrophoneMode.SYSTEM_DEFAULT),
+            onboarding_completed=True,
         ),
         sleep=lambda _seconds: None,
     )
@@ -1124,7 +1230,8 @@ def test_staged_shutdown_can_retry_without_abandoning_recorder() -> None:
         exporter=FakeExporter(),
         workers=workers,
         config=AppConfig(
-            microphone=MicrophoneSelection(mode=MicrophoneMode.SYSTEM_DEFAULT)
+            microphone=MicrophoneSelection(mode=MicrophoneMode.SYSTEM_DEFAULT),
+            onboarding_completed=True,
         ),
     )
     controller.start()
@@ -1173,13 +1280,14 @@ def test_delete_cleanup_failure_remains_red_until_retry_succeeds(tmp_path):
     assert exporter.deletion_retry_count == 2
 
 
-def test_settings_require_absolute_records_root_and_switch_only_after_restart(tmp_path):
+def test_settings_require_absolute_records_root_and_switch_immediately_when_idle(tmp_path):
     storage = FakeStorage()
     exporter = FakeExporter()
     workers = FakeWorkers()
     opened: list[Path] = []
     saved: list[AppConfig] = []
     active_root = (tmp_path / "active").resolve()
+    exporter.records_root = active_root
     controller = JournalController(
         storage=storage,
         exporter=exporter,
@@ -1197,8 +1305,9 @@ def test_settings_require_absolute_records_root_and_switch_only_after_restart(tm
     controller.open_records_folder()
 
     assert saved[-1].records_root == str(next_root)
-    assert opened == [active_root]
-    assert "下次啟動" in controller.snapshot.message
+    assert exporter.records_root == next_root
+    assert opened == [next_root]
+    assert "已切換" in controller.snapshot.message
 
 
 def test_ui_error_is_surfaced_in_red_main_window_state() -> None:
@@ -1463,7 +1572,8 @@ def test_retrying_recovered_durable_segment_advances_timeline_revision(
         exporter=FakeExporter(),
         workers=FakeWorkers(),
         config=AppConfig(
-            microphone=MicrophoneSelection(mode=MicrophoneMode.SYSTEM_DEFAULT)
+            microphone=MicrophoneSelection(mode=MicrophoneMode.SYSTEM_DEFAULT),
+            onboarding_completed=True,
         ),
     )
 

@@ -1,12 +1,12 @@
 # Third-Party Notices
 
 Auto Speech Journal 自有程式碼與專案自有 UI／場景資產採 [MIT License](LICENSE)。本文件
-記錄 `0.1.0` 直接使用的第三方套件、選用安裝元件及下載模型。實際授權文字以各上游
+記錄 `0.2.0` 直接使用的第三方套件、選用安裝元件及下載模型。實際授權文字以各上游
 發行物內的 `LICENSE`、`NOTICE` 與套件 metadata 為準。
 
 GitHub release 的 wheel 與 source distribution **不內含** Python 相依套件、CUDA runtime
-或模型權重；安裝程序會從各自來源另行取得它們。每個已安裝 distribution 所附的完整
-授權與第三方聲明仍須保留。
+或模型權重。簽章 Windows Setup 以 PyInstaller 內含 CPU 執行時與本文件；CUDA runtime
+及模型仍會由安裝／修復流程從 manifest 固定來源另行下載並驗證。
 
 ## Runtime dependencies
 
@@ -16,8 +16,10 @@ GitHub release 的 wheel 與 source distribution **不內含** Python 相依套�
 | sounddevice | 0.5.5 | MIT | WASAPI capture; [python-sounddevice](https://github.com/spatialaudio/python-sounddevice) |
 | soxr | 1.1.0 | LGPL-2.1-or-later | Sample-rate conversion; [python-soxr](https://github.com/dofuuz/python-soxr) |
 | numpy | 2.4.6 | BSD-3-Clause plus bundled notices | Audio arrays; [NumPy](https://numpy.org/) |
+| ONNX Runtime | 1.27.0 | MIT | Native ONNX execution used by sherpa-onnx; [ONNX Runtime](https://github.com/microsoft/onnxruntime) |
 | sherpa-onnx | 1.13.4 | Apache-2.0 | Streaming ASR and VAD runtime; [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) |
 | faster-whisper | 1.2.1 | MIT | Final transcription integration; [faster-whisper](https://github.com/SYSTRAN/faster-whisper) |
+| huggingface-hub | 1.23.0 | Apache-2.0 | Local model-file helpers required by faster-whisper; [Hugging Face Hub](https://github.com/huggingface/huggingface_hub) |
 | ctranslate2 | 4.8.1 | MIT | Whisper inference runtime; [CTranslate2](https://github.com/OpenNMT/CTranslate2) |
 | OpenCC | 1.4.1 | Apache-2.0 | Traditional Chinese normalization; [OpenCC](https://github.com/BYVoid/OpenCC) |
 | soundfile | 0.13.1 | BSD-3-Clause; bundled libsndfile has its own LGPL terms | FLAC I/O; [python-soundfile](https://github.com/bastibe/python-soundfile) |
@@ -38,13 +40,25 @@ install their own transitive dependencies. Their notices remain in their install
 
 | Component | Pinned version | License / upstream |
 | --- | --- | --- |
-| huggingface-hub | 1.23.0 | Apache-2.0; [Hugging Face Hub](https://github.com/huggingface/huggingface_hub) |
 | safetensors | 0.8.0 | Apache-2.0; [safetensors](https://github.com/huggingface/safetensors) |
 | torch | 2.6.0+cpu | BSD-3-Clause; [PyTorch](https://github.com/pytorch/pytorch) |
 | transformers | 5.13.1 | Apache-2.0; [Transformers](https://github.com/huggingface/transformers) |
 
 Development-only tools such as Pytest, Ruff, pre-commit and Pillow are not installed into the
 application release environment and retain the licenses distributed by their own packages.
+
+## Installer build components
+
+| Component | Pinned version / source | License | Use |
+| --- | --- | --- | --- |
+| PyInstaller | 6.16.0 | GPL-2.0-or-later with the PyInstaller bootloader exception | Builds the redistributable onedir runtime |
+| Inno Setup | 6.7.3 | Inno Setup License | Builds the per-user Setup executable |
+| Traditional Chinese Inno messages | `jrsoftware/issrc@6ef32198ef1f7b7b375cd4b6b90896c2a58eb4c2` | Inno Setup License; translator attribution retained in the vendored file | Provides the `zh-TW` Setup interface |
+
+The vendored translation and its full redistribution terms are in
+`packaging/windows/languages/ChineseTraditional.isl`. These build components are not installed as
+Python packages in the application runtime; the generated PyInstaller bootloader and Inno Setup
+binary remain subject to their upstream terms.
 
 ## Downloaded models
 

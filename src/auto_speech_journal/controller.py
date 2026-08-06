@@ -84,6 +84,8 @@ class StoragePort(Protocol):
 
 
 class ExporterPort(Protocol):
+    def set_records_root(self, records_root: Path) -> None: ...
+
     def export_segment(self, segment_id: str) -> Any: ...
 
     def rebuild_hour(self, hour_key: str) -> Any: ...
@@ -278,6 +280,19 @@ class JournalController:
 
     def start(self) -> None:
         selection = self._config.microphone
+        if not self._config.onboarding_completed:
+            self._started = False
+            self._closed = False
+            self._update(
+                state=WorkerState.READY,
+                severity=Severity.WARNING,
+                message="尚未同意開始錄音；請先完成首次設定",
+                input_route=_selection_input_route(selection),
+                input_switching=False,
+                input_route_reason="等待首次設定確認",
+                **self._silent_audio_changes(),
+            )
+            return
         if self._started and (
             self._workers_started
             or selection.mode in {MicrophoneMode.PENDING, MicrophoneMode.SKIPPED}
@@ -693,12 +708,14 @@ class JournalController:
         raw = config.to_dict()
         raw["records_root"] = str(records_root)
         validated = AppConfig.from_dict(raw)
-        before = self._config.to_dict()
+        previous_config = self._config
+        before = previous_config.to_dict()
         after = validated.to_dict()
         if before == after:
             if (
                 not self._closed
                 and not self._workers_started
+                and validated.onboarding_completed
                 and validated.microphone.mode
                 in {MicrophoneMode.SYSTEM_DEFAULT, MicrophoneMode.FIXED}
             ):
@@ -710,11 +727,51 @@ class JournalController:
         if self._save_config_callback is None:
             raise RuntimeError("save_config callback is not configured")
         records_root.mkdir(parents=True, exist_ok=True)
-        self._save_config_callback(validated)
         root_changed = records_root != self._active_records_root
-        previous_microphone = self._config.microphone
+        switch_root_now = root_changed and not self._workers_started
+        previous_microphone = previous_config.microphone
         microphone_changed = validated.microphone != previous_microphone
-        self._config = validated
+        previous_snapshot = self.snapshot
+        previous_workers = self.workers
+        previous_started = self._started
+        previous_workers_started = self._workers_started
+        previous_closed = self._closed
+        previous_pause_requested = self._pause_requested
+        persisted = False
+        root_switched = False
+        try:
+            self._save_config_callback(validated)
+            persisted = True
+            self._config = validated
+            if switch_root_now:
+                self._set_exporter_records_root(records_root)
+                self._active_records_root = records_root
+                root_switched = True
+            request_id = (
+                self._activate_microphone_selection(
+                    validated.microphone,
+                    previous=previous_microphone,
+                )
+                if microphone_changed
+                else None
+            )
+        except Exception as error:
+            rollback_errors = self._rollback_settings_transaction(
+                previous_config=previous_config,
+                previous_snapshot=previous_snapshot,
+                previous_workers=previous_workers,
+                previous_started=previous_started,
+                previous_workers_started=previous_workers_started,
+                previous_closed=previous_closed,
+                previous_pause_requested=previous_pause_requested,
+                microphone_changed=microphone_changed,
+                root_switched=root_switched,
+                persisted=persisted,
+            )
+            if rollback_errors:
+                detail = "; ".join(str(item) for item in rollback_errors)
+                raise RuntimeError(f"設定套用失敗，且回復未完整完成：{detail}") from error
+            raise
         history_failed = False
         if self._settings_history_store is not None:
             try:
@@ -722,14 +779,6 @@ class JournalController:
             except Exception:
                 history_failed = True
                 LOGGER.exception("Settings saved, but writing settings history failed")
-        request_id = (
-            self._activate_microphone_selection(
-                validated.microphone,
-                previous=previous_microphone,
-            )
-            if microphone_changed
-            else None
-        )
         suffix = "；設定歷程寫入失敗" if history_failed else ""
         self._update(
             message=(
@@ -737,12 +786,83 @@ class JournalController:
                 if microphone_changed and self.snapshot.input_switching
                 else "設定已儲存；麥克風會在開始錄音時套用" + suffix
                 if microphone_changed
+                else "設定已儲存；紀錄資料夾已切換" + suffix
+                if root_switched
                 else "設定已儲存；紀錄資料夾會在下次啟動切換，目前仍使用原資料夾" + suffix
                 if root_changed
                 else "設定已儲存；音訊或模型變更會在下次啟動生效" + suffix
             )
         )
         return request_id
+
+    def _set_exporter_records_root(self, records_root: Path) -> None:
+        setter = getattr(self.exporter, "set_records_root", None)
+        if not callable(setter):
+            raise RuntimeError("exporter does not support changing records_root")
+        setter(records_root)
+
+    def _rollback_settings_transaction(
+        self,
+        *,
+        previous_config: AppConfig,
+        previous_snapshot: ControllerSnapshot,
+        previous_workers: WorkersPort | None,
+        previous_started: bool,
+        previous_workers_started: bool,
+        previous_closed: bool,
+        previous_pause_requested: bool,
+        microphone_changed: bool,
+        root_switched: bool,
+        persisted: bool,
+    ) -> list[Exception]:
+        errors: list[Exception] = []
+        current_workers = self.workers
+        if microphone_changed and current_workers is not None:
+            try:
+                if not previous_workers_started:
+                    current_workers.stop()
+                elif previous_config.microphone.mode in {
+                    MicrophoneMode.SYSTEM_DEFAULT,
+                    MicrophoneMode.FIXED,
+                }:
+                    reconfigure = getattr(current_workers, "reconfigure_input", None)
+                    if callable(reconfigure):
+                        reconfigure(previous_config.microphone)
+            except Exception as rollback_error:
+                LOGGER.exception("Unable to restore microphone after settings failure")
+                errors.append(rollback_error)
+        self.workers = previous_workers
+        self._started = previous_started
+        self._workers_started = previous_workers_started
+        self._closed = previous_closed
+        self._pause_requested = previous_pause_requested
+        self._config = previous_config
+        if root_switched:
+            try:
+                previous_root = Path(previous_config.records_root).expanduser().resolve()
+                self._set_exporter_records_root(previous_root)
+                self._active_records_root = previous_root
+            except Exception as rollback_error:
+                LOGGER.exception("Unable to restore records_root after settings failure")
+                errors.append(rollback_error)
+        self._restore_snapshot(previous_snapshot)
+        if persisted and self._save_config_callback is not None:
+            try:
+                self._save_config_callback(previous_config)
+            except Exception as rollback_error:
+                LOGGER.exception("Unable to restore persisted config after settings failure")
+                errors.append(rollback_error)
+        return errors
+
+    def _restore_snapshot(self, snapshot: ControllerSnapshot) -> None:
+        with self._lock:
+            self._snapshot = snapshot
+            listeners = tuple(self._listeners)
+        for listener in listeners:
+            try:
+                listener(snapshot)
+            except Exception:
+                LOGGER.exception("Controller listener failed")
 
     def _activate_microphone_selection(
         self,
@@ -787,9 +907,6 @@ class JournalController:
         )
 
         if not self._started:
-            reconfigure = getattr(self.workers, "reconfigure_input", None)
-            if callable(reconfigure):
-                return str(reconfigure(selection))
             return None
 
         if not self._workers_started:

@@ -37,14 +37,17 @@ def test_load_config_creates_defaults(tmp_path):
 
     assert path.exists()
     assert config.microphone == MicrophoneSelection(MicrophoneMode.PENDING)
-    assert config.schema_version == 3
+    assert config.schema_version == 4
+    assert config.onboarding_completed is False
+    assert config.startup_enabled is False
+    assert config.update_check_enabled is False
     assert "device" not in json.loads(path.read_text(encoding="utf-8"))
     assert config.preview_interval_ms == 350
     assert config.ui_font_family == DEFAULT_UI_FONT_FAMILY == "SentyCreek"
     assert config.ui_font_size == DEFAULT_UI_FONT_SIZE == 18
 
 
-def test_load_config_adds_missing_appearance_defaults_to_existing_v3(tmp_path: Path) -> None:
+def test_load_config_adds_missing_appearance_defaults_to_existing_v4(tmp_path: Path) -> None:
     path = tmp_path / "config.json"
     raw = AppConfig(records_root=str(tmp_path / "records")).to_dict()
     raw.pop("ui_font_family")
@@ -58,7 +61,7 @@ def test_load_config_adds_missing_appearance_defaults_to_existing_v3(tmp_path: P
     assert loaded.ui_font_size == persisted["ui_font_size"] == 18
 
 
-def test_load_config_adds_missing_vocabulary_learning_default_to_existing_v3(
+def test_load_config_adds_missing_vocabulary_learning_default_to_existing_v4(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "config.json"
@@ -131,7 +134,8 @@ def test_load_config_atomically_migrates_v1_preview_interval(
     migrated = load_config(path)
     persisted = json.loads(path.read_text(encoding="utf-8"))
 
-    assert migrated.schema_version == persisted["schema_version"] == 3
+    assert migrated.schema_version == persisted["schema_version"] == 4
+    assert migrated.onboarding_completed is True
     assert migrated.microphone.mode is MicrophoneMode.FIXED
     assert migrated.microphone.preferred_device == DeviceFingerprint(
         name="Legacy microphone",
@@ -178,6 +182,55 @@ def test_load_config_migrates_v2_device_without_losing_fingerprint(tmp_path: Pat
     assert persisted["microphone"]["mode"] == "fixed"
     assert persisted["microphone"]["preferred_device"] == raw["device"]
     assert "device" not in persisted
+
+
+def test_load_config_migrates_v3_as_completed_without_losing_user_choices(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "config.json"
+    records_root = tmp_path / "existing-journal"
+    raw = AppConfig(
+        records_root=str(records_root),
+        microphone=MicrophoneSelection(
+            MicrophoneMode.FIXED,
+            DeviceFingerprint(name="Existing USB microphone", endpoint_id="wasapi:existing"),
+        ),
+    ).to_dict()
+    raw.update(schema_version=3, startup_enabled=True)
+    raw.pop("onboarding_completed")
+    raw.pop("update_check_enabled")
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    migrated = load_config(path)
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+
+    assert migrated.schema_version == 4
+    assert migrated.onboarding_completed is True
+    assert migrated.startup_enabled is True
+    assert migrated.update_check_enabled is False
+    assert migrated.records_root == str(records_root.resolve())
+    assert migrated.microphone.preferred_device is not None
+    assert migrated.microphone.preferred_device.name == "Existing USB microphone"
+    assert persisted == migrated.to_dict()
+
+
+@pytest.mark.parametrize("mode", [MicrophoneMode.PENDING, MicrophoneMode.SKIPPED])
+def test_load_config_keeps_incomplete_v3_users_out_of_recording(mode, tmp_path: Path) -> None:
+    path = tmp_path / "config.json"
+    raw = AppConfig(
+        microphone=MicrophoneSelection(mode=mode),
+        onboarding_completed=False,
+    ).to_dict()
+    raw.update(schema_version=3, startup_enabled=True)
+    raw.pop("onboarding_completed")
+    raw.pop("update_check_enabled")
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    migrated = load_config(path)
+
+    assert migrated.onboarding_completed is False
+    assert migrated.startup_enabled is False
+    assert migrated.microphone.mode is mode
 
 
 @pytest.mark.parametrize(
@@ -273,6 +326,26 @@ def test_config_rejects_non_boolean_vocabulary_learning_setting(value: object) -
 
     with pytest.raises(ValueError, match="vocabulary_learning_enabled must be boolean"):
         config.validate()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("onboarding_completed", 1),
+        ("startup_enabled", "false"),
+        ("update_check_enabled", None),
+    ],
+)
+def test_config_rejects_non_boolean_v4_flags(field: str, value: object) -> None:
+    config = AppConfig(**{field: value})  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match=f"{field} must be boolean"):
+        config.validate()
+
+
+def test_config_rejects_startup_before_onboarding_completion() -> None:
+    with pytest.raises(ValueError, match="before onboarding"):
+        AppConfig(startup_enabled=True).validate()
 
 
 @pytest.mark.parametrize(

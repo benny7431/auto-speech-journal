@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import re
+import tomllib
 from collections.abc import Sequence
 from email.parser import BytesParser
 from pathlib import Path, PurePosixPath
@@ -13,6 +14,11 @@ from zipfile import ZipFile
 
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
+
+
+def _project_version() -> str:
+    with (ROOT / "pyproject.toml").open("rb") as handle:
+        return str(tomllib.load(handle)["project"]["version"])
 STATES = (
     "starting",
     "listening",
@@ -114,8 +120,9 @@ def verify_wheel(path: Path) -> list[str]:
             metadata = BytesParser().parsebytes(wheel.read(metadata_name))
             if metadata.get("Name") != "auto-speech-journal":
                 errors.append("wheel project name is not auto-speech-journal")
-            if metadata.get("Version") != "0.1.0":
-                errors.append("wheel version is not 0.1.0")
+            expected_version = _project_version()
+            if metadata.get("Version") != expected_version:
+                errors.append(f"wheel version is not {expected_version}")
             requires_python = str(metadata.get("Requires-Python", ""))
             if ">=3.11" not in requires_python or "<3.12" not in requires_python:
                 errors.append("wheel Requires-Python does not enforce Python 3.11")

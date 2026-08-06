@@ -36,15 +36,15 @@
 
 </details>
 
-**聲跡日記（Auto Speech Journal）** 是一套 Windows 本機常駐語音日誌。它在登入後
-自動啟動，持續監聽你選定的麥克風，先顯示低延遲逐字預覽，再以 Whisper 產生較準確的
+**聲跡日記（Auto Speech Journal）** 是一套 Windows 本機常駐語音日誌。它可依你的選擇在登入後
+啟動，持續監聽你選定的麥克風，先顯示低延遲逐字預覽，再以 Whisper 產生較準確的
 最終文字，最後依台北時間整理成每小時一份 Markdown。
 
 辨識、儲存與介面都在本機執行。網路只在安裝或補齊模型時使用；日常錄音不需要把音訊
 或文字送到雲端。
 
 > [!IMPORTANT]
-> 目前是 `0.1.0` 開發版，僅支援 Windows WASAPI、中文辨識與 `Asia/Taipei` 時區。
+> 目前是 `0.2.0` 預發行版，僅支援 Windows WASAPI、中文辨識與 `Asia/Taipei` 時區。
 > 安裝不需要先接上麥克風；第一次啟動 App 時再明確選擇收音來源。
 
 ## 目錄
@@ -71,7 +71,7 @@
 | 可管理校正字典 | 修正後的片段會鎖定；可查看已學詞與次數、刪除或清空詞語，並停用自動學習 |
 | 容易帶走 | 預設輸出一般 Markdown，不綁定專用閱讀器 |
 | 麥克風可切換 | 可固定使用某個 WASAPI 端點，或跟隨 Windows 預設，切換不需重開 App |
-| 登入自啟 | 安裝器建立目前使用者的工作排程，登入 20 秒後啟動 |
+| 選用登入自啟 | 首次設定明確同意後，才建立指向穩定 launcher 的個人工作排程 |
 | 離線視覺 | 月份、狀態場景與粒子效果隨程式安裝，執行時不呼叫生成式影像服務 |
 
 ## 快速開始
@@ -80,44 +80,25 @@
 
 - Windows 10/11 x64
 - 錄音時需要可用的 WASAPI 麥克風，以及 Windows 麥克風權限
-- [uv](https://docs.astral.sh/uv/getting-started/installation/)
-- Python 3.11 環境（由 `uv` 管理）
-- 首次下載模型需要網路與數 GB 可用空間
-- NVIDIA GPU 為選用；沒有相容 GPU 時使用 CPU 安裝方式
+- 首次下載模型需要網路；Setup 會在下載前顯示精確空間需求
+- NVIDIA GPU 為選用；偵測或 CUDA probe 失敗時會自動使用 CPU
 
-### 2. 下載原始碼
+### 2. 下載並安裝
 
-在 GitHub 頁面選擇 **Code → Download ZIP** 並解壓縮，或使用 Git clone。接著在專案
-根目錄開啟 PowerShell。
+從 [GitHub Releases](https://github.com/benny7431/auto-speech-journal/releases) 下載已簽章的
+`AutoSpeechJournal-Setup-0.2.0-x64.exe`，雙擊後依畫面安裝。不需要 Python、`uv`、Git、
+PowerShell 或管理員權限。
 
-### 3. 安裝並啟用登入自啟
-
-有相容 NVIDIA GPU：
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\install.ps1
-```
-
-沒有相容 NVIDIA GPU，或想強制使用 CPU：
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\install.ps1 -NoCuda
-```
-
-安裝完成後，程式位於 `%LOCALAPPDATA%\AutoSpeechJournal\app`，並由工作排程
-**Auto Speech Journal** 啟動。日記預設輸出到：
+Setup 預設下載固定版本模型，顯示進度、ETA，並允許取消後續傳。GPU 選項
+預設自動偵測，也可在安裝畫面取消或強制嘗試。安裝完成後穩定 launcher 位於
+`%LOCALAPPDATA%\Programs\AutoSpeechJournal\AutoSpeechJournal.exe`，版本內容位於
+`versions\0.2.0`。日記預設輸出到：
 
 ```text
 %USERPROFILE%\Documents\語音紀錄\YYYY-MM-DD\YYYY-MM-DD_HH.md
 ```
 
-> [!NOTE]
-> 原始碼路徑可以包含中文，但工作排程不要直接指向原始碼資料夾。安裝器會先複製到
-> 純 ASCII 路徑，再建立非 editable 環境，避開繁體中文 Windows 的路徑編碼問題。
-
-### 4. 第一次啟動選擇麥克風
+### 3. 完成首次設定
 
 新安裝預設不錄音，也不會暗中綁定某台電腦的裝置。第一次啟動時請主動選擇：
 
@@ -125,30 +106,20 @@ Set-ExecutionPolicy -Scope Process Bypass
 - **固定裝置**：持續偏好指定的 WASAPI 麥克風。
 - **稍後設定**：先進入主介面但不錄音；提示會保留，之後可從設定頁選擇。
 
-選擇固定裝置或 Windows 預設即表示開始錄音。設定會寫入
+還需選擇日記資料夾、是否登入自啟（預設關閉）與是否開啟更新提示
+（預設關閉）。只有最後按下 **開始錄音** 才會儲存同意並啟動 worker。設定會寫入
 `%LOCALAPPDATA%\AutoSpeechJournal\config.json`，重新安裝時會沿用。
-
-### 安裝選項
-
-| 指令 | 用途 |
-| --- | --- |
-| `.\install.ps1` | 安裝 CUDA runtime、下載模型、驗證並立即啟動 |
-| `.\install.ps1 -NoCuda` | 使用 CPU 完成最終辨識 |
-| `.\install.ps1 -SkipModelDownload` | 暫不下載模型；補齊模型前無法正常轉錄 |
-| `.\install.ps1 -NoStart` | 完成安裝，但等到下次登入才啟動 |
-
-這些參數可以組合，例如 `.\install.ps1 -NoCuda -NoStart`。
 
 <details>
 <summary><strong>安裝器實際會做什麼？</strong></summary>
 
-1. 驗證隨程式提供的離線場景資產。
-2. 將程式部署到 `%LOCALAPPDATA%\AutoSpeechJournal\app`。
-3. 依 `uv.lock` 建立隔離環境並安裝固定版本相依套件。
-4. 下載、轉換並以雜湊檢查固定版本的辨識模型。
-5. 執行不依賴麥克風的模型推論、SQLite 與輸出資料夾自我檢查。
-6. 建立登入工作排程並確認程式、單例 mutex 與日誌都正常。
-7. 任一步驟失敗時，回復先前的程式、設定、SQLite/WAL 與排程狀態。
+1. 把內含 CPU runtime 的新版本放入獨立 `versions\<version>`。
+2. 執行實際 QML／Qt 隔離 readiness probe；失敗不會切換版本。
+3. 原子更新 `current.json`，穩定 launcher 才開始指向新版本。
+4. 下載版本化模型，並以檔案大小、SHA-256 與解壓後清單驗證。
+5. 選用 GPU 時只從固定 URL 下載三個 NVIDIA wheel，只解出 runtime DLL 並做 CUDA probe。
+6. 模型或 GPU 失敗不會卸載可用的 CPU 程式；可從開始選單續傳／修復。
+7. 舊 `AutoSpeechJournal\app` 會重用原有設定與資料；只在驗證舊 task action 後才遷移自啟。
 
 </details>
 
@@ -210,7 +181,8 @@ flowchart LR
 
 | 內容 | 預設位置 |
 | --- | --- |
-| 安裝副本 | `%LOCALAPPDATA%\AutoSpeechJournal\app` |
+| 穩定 launcher | `%LOCALAPPDATA%\Programs\AutoSpeechJournal\AutoSpeechJournal.exe` |
+| 版本副本 | `%LOCALAPPDATA%\Programs\AutoSpeechJournal\versions\<version>` |
 | 設定 | `%LOCALAPPDATA%\AutoSpeechJournal\config.json` |
 | SQLite 狀態 | `%LOCALAPPDATA%\AutoSpeechJournal\state.db` |
 | 辨識模型 | `%LOCALAPPDATA%\AutoSpeechJournal\models` |
@@ -228,29 +200,12 @@ flowchart LR
 先從 **系統狀態 → 結束程式** 停止應用程式，再於 PowerShell 執行需要的命令。
 
 ```powershell
-$App = "$env:LOCALAPPDATA\AutoSpeechJournal\app"
-
-# 重新選擇麥克風並測試短錄音
-& "$App\.venv\Scripts\python.exe" -X utf8 -m auto_speech_journal setup `
-  --test-microphone
-
-# 只下載或修復固定版本模型（不修改設定檔）
-& "$App\.venv\Scripts\python.exe" -X utf8 -m auto_speech_journal download-models
-
-# 檢查 Python、資料夾、設定、麥克風、模型與 SQLite
-& "$App\.venv\Scripts\python.exe" -X utf8 -m auto_speech_journal self-test
-
-# 深度檢查模型雜湊、實際收音與 CUDA 最終推論
-& "$App\.venv\Scripts\python.exe" -X utf8 -m auto_speech_journal self-test `
-  --deep-model-check --test-microphone
-
-# CPU 安裝的深度推論檢查
-& "$App\.venv\Scripts\python.exe" -X utf8 -m auto_speech_journal self-test `
-  --deep-model-check --test-microphone --allow-cpu-finalizer
-
-# 沒有麥克風時檢查其餘安裝項目
-& "$App\.venv\Scripts\python.exe" -X utf8 -m auto_speech_journal self-test `
-  --no-microphone-check
+$Cli = "$env:LOCALAPPDATA\Programs\AutoSpeechJournal\AutoSpeechJournal.CLI.exe"
+& $Cli repair models
+& $Cli repair gpu
+& $Cli repair runtime
+& $Cli installer-probe --isolated
+& $Cli startup status
 ```
 
 ### 常見情況
@@ -260,9 +215,10 @@ $App = "$env:LOCALAPPDATA\AutoSpeechJournal\app"
 新安裝或曾選擇「稍後設定」時，請在首次畫面或設定頁選擇固定裝置或
 「跟隨 Windows 預設」。安裝器本身不會要求麥克風，也不會替你開始錄音。
 
-**使用 `-SkipModelDownload` 後顯示缺少模型**
+**安裝時取消下載後顯示缺少模型**
 
-連上網路後重新執行完整安裝器。既有日記、設定與待處理片段會保留。
+連上網路後從開始選單選擇 **Repair models**。`.part` 會續傳，既有日記、設定與
+待處理片段會保留。
 
 **程式顯示降級狀態**
 
@@ -275,13 +231,8 @@ $App = "$env:LOCALAPPDATA\AutoSpeechJournal\app"
 
 ## 解除安裝
 
-先從應用程式內完整結束，再在原始碼目錄執行：
-
-```powershell
-.\uninstall.ps1
-```
-
-解除安裝器只移除工作排程與 `%LOCALAPPDATA%\AutoSpeechJournal\app`。它會保留：
+先從應用程式內完整結束，再從 **Windows 設定 → 應用程式** 移除 Auto Speech Journal。
+預設只移除程式、捷徑與本專案擁有的自啟 task，並保留：
 
 - Markdown 日記
 - `config.json` 與 `settings-history.jsonl`
@@ -290,6 +241,8 @@ $App = "$env:LOCALAPPDATA\AutoSpeechJournal\app"
 - 日誌與本機字體
 
 因此之後重新安裝仍可沿用設定，並恢復尚未完成的片段。
+解除安裝畫面另有預設未勾選的「移除模型/cache」與需二次確認的「移除本機狀態」；
+外部 Markdown 日記資料夾永遠不會自動刪除。
 
 ## 文件、政策與參與
 
@@ -343,9 +296,9 @@ src/auto_speech_journal/
 └── qml/, assets/              # 介面與離線視覺資產
 
 tests/                         # Pytest 回歸測試
+packaging/                     # PyInstaller、launcher、Inno、model/CUDA manifests
 tools/                         # 復原、資產、效能與打包 QA
-install.ps1                    # Windows 安裝與工作排程
-uninstall.ps1                  # 保留資料的解除安裝
+install.ps1, uninstall.ps1     # 僅供開發／救援的舊 PowerShell 流程
 ```
 
 </details>
@@ -355,8 +308,7 @@ uninstall.ps1                  # 保留資料的解除安裝
 - 僅支援 Windows WASAPI、Python 3.11、中文辨識與台北時區。
 - 麥克風清單包含 WASAPI 虛擬輸入，但不支援特殊 loopback capture；無法安全區分的
   同名端點不能固定綁定，請改用 Windows 預設或停用重複端點。
-- `install.ps1` 尚未自動偵測 CUDA；請依硬體自行選擇預設安裝或 `-NoCuda`。
-- 目前提供原始碼安裝流程，沒有已簽章的 EXE/MSI。
+- 公開 Setup 依賴 SignPath Foundation 審核與簽章；沒有有效簽章時 release workflow 會直接失敗。
 - 專案原始碼與專案自有發行資產採 MIT License；第三方內容仍受各自條款約束。
 - 個人本機字體與其聲明不屬於發行內容。
 

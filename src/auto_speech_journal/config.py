@@ -67,7 +67,7 @@ class ModelConfig:
 
 @dataclass(slots=True)
 class AppConfig:
-    schema_version: int = 3
+    schema_version: int = 4
     microphone: MicrophoneSelection = field(default_factory=MicrophoneSelection)
     records_root: str = field(default_factory=lambda: str(AppPaths.defaults().records_root))
     timezone: str = "Asia/Taipei"
@@ -81,20 +81,22 @@ class AppConfig:
     spool_limit_bytes: int = 10 * 1024**3
     spool_warning_ratio: float = 0.8
     audio_sample_rate: int = 16_000
-    startup_enabled: bool = True
+    onboarding_completed: bool = False
+    startup_enabled: bool = False
+    update_check_enabled: bool = False
     vocabulary_learning_enabled: bool = True
     ui_font_family: str = DEFAULT_UI_FONT_FAMILY
     ui_font_size: int = DEFAULT_UI_FONT_SIZE
     model: ModelConfig = field(default_factory=ModelConfig)
 
     def validate(self) -> None:
-        if self.schema_version != 3:
+        if self.schema_version != 4:
             raise ValueError(f"unsupported config schema: {self.schema_version}")
         self.microphone.validate()
         if self.timezone != "Asia/Taipei":
-            raise ValueError("v3 supports only Asia/Taipei")
+            raise ValueError("v4 supports only Asia/Taipei")
         if self.language != "zh":
-            raise ValueError("v3 supports only Chinese transcription")
+            raise ValueError("v4 supports only Chinese transcription")
         if not (250 <= self.preview_interval_ms <= 10_000):
             raise ValueError("preview_interval_ms is out of range")
         if not (250 <= self.endpoint_silence_ms <= 10_000):
@@ -112,9 +114,15 @@ class AppConfig:
         if self.spool_limit_bytes <= 0:
             raise ValueError("spool limit must be positive")
         if self.audio_sample_rate != 16_000:
-            raise ValueError("v3 requires a 16000 Hz audio sample rate")
+            raise ValueError("v4 requires a 16000 Hz audio sample rate")
+        if not isinstance(self.onboarding_completed, bool):
+            raise ValueError("onboarding_completed must be boolean")
         if not isinstance(self.startup_enabled, bool):
             raise ValueError("startup_enabled must be boolean")
+        if not isinstance(self.update_check_enabled, bool):
+            raise ValueError("update_check_enabled must be boolean")
+        if not self.onboarding_completed and self.startup_enabled:
+            raise ValueError("startup cannot be enabled before onboarding is completed")
         if not isinstance(self.vocabulary_learning_enabled, bool):
             raise ValueError("vocabulary_learning_enabled must be boolean")
         self.ui_font_family = self.ui_font_family.strip()
@@ -126,7 +134,7 @@ class AppConfig:
             )
         expected_model = ModelConfig()
         if self.model != expected_model:
-            raise ValueError("v3 model names, revisions, and compute profiles are fixed")
+            raise ValueError("v4 model names, revisions, and compute profiles are fixed")
         records_value = self.records_root.strip()
         if not records_value:
             raise ValueError("records_root is required")
@@ -179,7 +187,7 @@ def load_config(path: Path) -> AppConfig:
     schema_version = raw.get("schema_version", 1)
     if schema_version in {1, 2}:
         migrated = dict(raw)
-        migrated["schema_version"] = 3
+        migrated["schema_version"] = 4
         legacy_device = migrated.pop(
             "device",
             {
@@ -196,6 +204,30 @@ def load_config(path: Path) -> AppConfig:
         }
         if schema_version == 1 and migrated.get("preview_interval_ms", 2_000) == 2_000:
             migrated["preview_interval_ms"] = 350
+        mode = str(migrated.get("microphone", {}).get("mode", ""))
+        migrated["onboarding_completed"] = mode in {
+            MicrophoneMode.SYSTEM_DEFAULT.value,
+            MicrophoneMode.FIXED.value,
+        }
+        migrated.setdefault("startup_enabled", True)
+        if not migrated["onboarding_completed"]:
+            migrated["startup_enabled"] = False
+        migrated.setdefault("update_check_enabled", False)
+        config = AppConfig.from_dict(migrated)
+        save_config(path, config)
+        return config
+    if schema_version == 3:
+        migrated = dict(raw)
+        migrated["schema_version"] = 4
+        mode = str(migrated.get("microphone", {}).get("mode", ""))
+        migrated["onboarding_completed"] = mode in {
+            MicrophoneMode.SYSTEM_DEFAULT.value,
+            MicrophoneMode.FIXED.value,
+        }
+        migrated.setdefault("startup_enabled", True)
+        if not migrated["onboarding_completed"]:
+            migrated["startup_enabled"] = False
+        migrated["update_check_enabled"] = False
         config = AppConfig.from_dict(migrated)
         save_config(path, config)
         return config
@@ -206,6 +238,9 @@ def load_config(path: Path) -> AppConfig:
             "ui_font_family",
             "ui_font_size",
             "vocabulary_learning_enabled",
+            "onboarding_completed",
+            "startup_enabled",
+            "update_check_enabled",
         )
     ):
         save_config(path, config)

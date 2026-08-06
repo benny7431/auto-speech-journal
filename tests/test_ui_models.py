@@ -4,14 +4,17 @@ import ctypes
 import json
 import os
 import threading
+import time
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QSettings, QSize
 
+from auto_speech_journal import __version__
 from auto_speech_journal.audio import InputDevice
 from auto_speech_journal.config import (
     AppConfig,
@@ -43,7 +46,8 @@ from auto_speech_journal.ui_models import (
 class _TimelineController:
     def __init__(self) -> None:
         self.config = AppConfig(
-            microphone=MicrophoneSelection(mode=MicrophoneMode.SYSTEM_DEFAULT)
+            microphone=MicrophoneSelection(mode=MicrophoneMode.SYSTEM_DEFAULT),
+            onboarding_completed=True,
         )
         self.saved_configs: list[AppConfig] = []
         self.microphone_calls: list[object] = []
@@ -158,7 +162,7 @@ def _input_device(
     )
 
 
-def test_pending_microphone_setup_has_no_preselection_and_starts_after_choice(
+def test_onboarding_selection_does_not_save_or_start_before_explicit_confirmation(
     qapp,
     tmp_path,
 ):
@@ -166,6 +170,7 @@ def test_pending_microphone_setup_has_no_preselection_and_starts_after_choice(
     controller.config = replace(
         controller.config,
         microphone=MicrophoneSelection(mode=MicrophoneMode.PENDING),
+        onboarding_completed=False,
     )
     devices = [_input_device("Built-in Mic", 2, is_default=True)]
     view_model = JournalViewModel(
@@ -179,22 +184,328 @@ def test_pending_microphone_setup_has_no_preselection_and_starts_after_choice(
     assert view_model.rescanMicrophones() == 1
     assert view_model.microphoneOptions[0]["key"] == "system_default"
     assert view_model.selectedMicrophoneKey == ""
-    assert view_model.completeMicrophoneSetup() is False
-
     assert view_model.selectMicrophone("system_default") is True
     qapp.processEvents()
 
+    assert controller.config.microphone.mode is MicrophoneMode.PENDING
+    assert controller.started is False
+    assert view_model.microphoneSetupPending is True
+
+
+def test_onboarding_commits_once_then_starts_and_invokes_opt_in_services(
+    qapp,
+    tmp_path,
+    monkeypatch,
+):
+    controller = _TimelineController()
+    controller.config = replace(
+        controller.config,
+        records_root=str(tmp_path / "initial"),
+        microphone=MicrophoneSelection(mode=MicrophoneMode.PENDING),
+        onboarding_completed=False,
+        startup_enabled=False,
+        update_check_enabled=False,
+    )
+    startup_calls: list[bool] = []
+    update_calls: list[bool] = []
+    microphone_open_calls: list[object] = []
+    measurement_started = threading.Event()
+    release_measurement = threading.Event()
+
+    def measure_input(*args, **kwargs):
+        microphone_open_calls.append((args, kwargs))
+        measurement_started.set()
+        assert release_measurement.wait(timeout=1)
+        return SimpleNamespace(peak=0.2, rms=0.1)
+
+    monkeypatch.setattr(
+        "auto_speech_journal.audio.measure_input_level",
+        measure_input,
+    )
+
+    def update_check(*, enabled: bool, callback) -> bool:
+        update_calls.append(enabled)
+        callback(
+            {
+                "update_available": True,
+                "latest_version": "0.2.1",
+                "release_url": "https://github.com/benny7431/auto-speech-journal/releases/tag/v0.2.1",
+            }
+        )
+        return True
+
+    view_model = JournalViewModel(
+        controller,
+        qapp,
+        settings=QSettings(str(tmp_path / "window.ini"), QSettings.Format.IniFormat),
+        microphone_device_provider=lambda: [
+            _input_device("Built-in Mic", 2, is_default=True)
+        ],
+        startup_setting_callback=lambda enabled: startup_calls.append(enabled),
+        update_check_callback=update_check,
+    )
+    view_model.rescanMicrophones()
+
+    records_root = str(tmp_path / "chosen-journal")
+    assert view_model.advanceOnboarding(records_root, False, False) is True
+    assert view_model.advanceOnboarding(records_root, False, False) is True
+    assert view_model.advanceOnboarding(records_root, True, True) is True
+    assert view_model.selectMicrophone("system_default") is True
+    assert view_model.testSelectedMicrophone() is False
+    assert view_model.advanceOnboarding(records_root, True, True) is True
+
+    assert controller.saved_configs == []
+    assert controller.started is False
+    assert microphone_open_calls == []
+    assert view_model.startOnboardingRecording() is True
+    assert measurement_started.wait(timeout=1)
+
+    assert len(controller.saved_configs) == 1
+    assert controller.config.onboarding_completed is True
+    assert controller.config.records_root == str((tmp_path / "chosen-journal").resolve())
     assert controller.config.microphone.mode is MicrophoneMode.SYSTEM_DEFAULT
+    assert controller.config.startup_enabled is True
+    assert controller.config.update_check_enabled is True
+    assert startup_calls == [True]
+    assert update_calls == [True]
+    assert len(microphone_open_calls) == 1
+    assert controller.started is False
+
+    release_measurement.set()
+    deadline = time.monotonic() + 1
+    while not controller.started and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
     assert controller.started is True
-    assert view_model.microphoneSetupPending is False
+    assert view_model.updateAvailableText == "有新版本 0.2.1 可下載"
 
 
-def test_failed_first_start_retries_after_settings_are_saved(qapp, tmp_path):
+def test_onboarding_folder_probe_is_temporary_and_does_not_persist(qapp, tmp_path):
     controller = _TimelineController()
     controller.config = replace(
         controller.config,
         microphone=MicrophoneSelection(mode=MicrophoneMode.PENDING),
+        onboarding_completed=False,
     )
+    view_model = JournalViewModel(
+        controller,
+        qapp,
+        settings=QSettings(str(tmp_path / "window.ini"), QSettings.Format.IniFormat),
+    )
+    chosen = tmp_path / "new-journal"
+
+    assert view_model.advanceOnboarding(str(chosen), False, False) is True
+    assert view_model.advanceOnboarding(str(chosen), False, False) is True
+
+    assert chosen.is_dir()
+    assert list(chosen.iterdir()) == []
+    assert controller.saved_configs == []
+    assert controller.config.records_root != str(chosen)
+
+
+def test_post_consent_microphone_failure_keeps_config_and_retries_before_worker_start(
+    qapp,
+    tmp_path,
+    monkeypatch,
+):
+    controller = _TimelineController()
+    controller.config = replace(
+        controller.config,
+        microphone=MicrophoneSelection(mode=MicrophoneMode.PENDING),
+        onboarding_completed=False,
+    )
+
+    def fail_measurement(*_args, **_kwargs):
+        raise OSError("microphone permission denied")
+
+    monkeypatch.setattr(
+        "auto_speech_journal.audio.measure_input_level",
+        fail_measurement,
+    )
+    view_model = JournalViewModel(
+        controller,
+        qapp,
+        settings=QSettings(str(tmp_path / "window.ini"), QSettings.Format.IniFormat),
+        microphone_device_provider=lambda: [
+            _input_device("Built-in Mic", 2, is_default=True)
+        ],
+    )
+    view_model.rescanMicrophones()
+    records_root = str(tmp_path / "journal")
+    for _ in range(3):
+        assert view_model.advanceOnboarding(records_root, False, False) is True
+    assert view_model.selectMicrophone("system_default") is True
+    assert view_model.advanceOnboarding(records_root, False, False) is True
+
+    assert view_model.startOnboardingRecording() is True
+    deadline = time.monotonic() + 1
+    while view_model.microphoneTestState != "error" and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+
+    assert controller.config.onboarding_completed is True
+    assert controller.config.microphone.mode is MicrophoneMode.SYSTEM_DEFAULT
+    assert controller.started is False
+    assert view_model.recordingEngineNeedsStart is True
+
+    monkeypatch.setattr(
+        "auto_speech_journal.audio.measure_input_level",
+        lambda *_args, **_kwargs: SimpleNamespace(peak=0.2, rms=0.1),
+    )
+    assert view_model.startControllerIfReady() is False
+    deadline = time.monotonic() + 1
+    while not controller.started and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+
+    assert controller.started is True
+
+
+def test_settings_flags_use_injected_services_and_update_notice(qapp, tmp_path):
+    controller = _TimelineController()
+    startup_calls: list[bool] = []
+    update_calls: list[bool] = []
+
+    def update_check(*, enabled: bool, callback) -> bool:
+        update_calls.append(enabled)
+        callback(
+            {
+                "update_available": enabled,
+                "latest_version": "0.3.0",
+                "release_url": "https://github.com/benny7431/auto-speech-journal/releases/tag/v0.3.0",
+            }
+        )
+        return True
+
+    view_model = JournalViewModel(
+        controller,
+        qapp,
+        settings=QSettings(str(tmp_path / "window.ini"), QSettings.Format.IniFormat),
+        startup_setting_callback=lambda enabled: startup_calls.append(enabled),
+        update_check_callback=update_check,
+    )
+    config = controller.config
+
+    assert view_model.applySettings(
+        config.records_root,
+        config.preview_interval_ms,
+        config.endpoint_silence_ms,
+        config.max_segment_ms,
+        "",
+        True,
+        True,
+    ) is True
+    qapp.processEvents()
+
+    assert startup_calls == [True]
+    assert update_calls == [True]
+    assert controller.config.startup_enabled is True
+    assert controller.config.update_check_enabled is True
+    assert view_model.updateAvailable is True
+    assert view_model.updateAvailableText == "有新版本 0.3.0 可下載"
+
+
+def test_update_opt_out_ignores_stale_in_flight_callbacks(qapp, tmp_path):
+    controller = _TimelineController()
+    callbacks: list[tuple[bool, object]] = []
+
+    def update_check(*, enabled: bool, callback) -> bool:
+        callbacks.append((enabled, callback))
+        return True
+
+    view_model = JournalViewModel(
+        controller,
+        qapp,
+        settings=QSettings(str(tmp_path / "window.ini"), QSettings.Format.IniFormat),
+        update_check_callback=update_check,
+    )
+    config = controller.config
+    args = (
+        config.records_root,
+        config.preview_interval_ms,
+        config.endpoint_silence_ms,
+        config.max_segment_ms,
+        "",
+        False,
+    )
+
+    assert view_model.applySettings(*args, True) is True
+    assert view_model.applySettings(*args, False) is True
+    assert [enabled for enabled, _ in callbacks] == [True, False]
+
+    stale_result = {
+        "update_available": True,
+        "latest_version": "9.9.9",
+        "release_url": "https://github.com/benny7431/auto-speech-journal/releases/tag/v9.9.9",
+    }
+    for _, callback in callbacks:
+        callback(stale_result)
+    qapp.processEvents()
+
+    assert controller.config.update_check_enabled is False
+    assert view_model.updateAvailable is False
+    assert view_model.updateAvailableText == ""
+
+
+def test_unavailable_task_scheduler_keeps_startup_disabled(qapp, tmp_path):
+    controller = _TimelineController()
+    view_model = JournalViewModel(
+        controller,
+        qapp,
+        settings=QSettings(str(tmp_path / "window.ini"), QSettings.Format.IniFormat),
+        startup_setting_callback=lambda _enabled: SimpleNamespace(
+            available=False,
+            enabled=False,
+        ),
+    )
+    config = controller.config
+
+    assert view_model.applySettings(
+        config.records_root,
+        config.preview_interval_ms,
+        config.endpoint_silence_ms,
+        config.max_segment_ms,
+        "",
+        True,
+        False,
+    ) is False
+
+    assert controller.config.startup_enabled is False
+    assert controller.saved_configs == []
+
+
+def test_settings_failure_rolls_back_external_startup_task(qapp, tmp_path):
+    controller = _TimelineController()
+    startup_calls: list[bool] = []
+
+    def fail_update(_config: AppConfig) -> None:
+        raise OSError("config write failed")
+
+    controller.update_settings = fail_update  # type: ignore[method-assign]
+    view_model = JournalViewModel(
+        controller,
+        qapp,
+        settings=QSettings(str(tmp_path / "window.ini"), QSettings.Format.IniFormat),
+        startup_setting_callback=lambda enabled: startup_calls.append(enabled),
+    )
+    config = controller.config
+
+    assert view_model.applySettings(
+        config.records_root,
+        config.preview_interval_ms,
+        config.endpoint_silence_ms,
+        config.max_segment_ms,
+        "",
+        True,
+        False,
+    ) is False
+
+    assert startup_calls == [True, False]
+    assert controller.config.startup_enabled is False
+
+
+def test_failed_first_start_retries_after_settings_are_saved(qapp, tmp_path):
+    controller = _TimelineController()
     attempts: list[int] = []
 
     def flaky_start() -> None:
@@ -210,10 +521,7 @@ def test_failed_first_start_retries_after_settings_are_saved(qapp, tmp_path):
         settings=QSettings(str(tmp_path / "window.ini"), QSettings.Format.IniFormat),
         microphone_device_provider=lambda: [_input_device("Built-in Mic", 2, is_default=True)],
     )
-    view_model.rescanMicrophones()
-
-    assert view_model.selectMicrophone("system_default") is True
-    qapp.processEvents()
+    assert view_model.startControllerIfReady() is False
     assert attempts == [1]
     assert view_model.recordingEngineNeedsStart is True
 
@@ -223,7 +531,7 @@ def test_failed_first_start_retries_after_settings_are_saved(qapp, tmp_path):
         config.preview_interval_ms,
         config.endpoint_silence_ms,
         config.max_segment_ms,
-        "system_default",
+        "",
     ) is True
     qapp.processEvents()
 
@@ -234,10 +542,6 @@ def test_failed_first_start_retries_after_settings_are_saved(qapp, tmp_path):
 
 def test_failed_first_start_can_defer_even_when_catalog_has_a_device(qapp, tmp_path):
     controller = _TimelineController()
-    controller.config = replace(
-        controller.config,
-        microphone=MicrophoneSelection(mode=MicrophoneMode.PENDING),
-    )
     attempts = 0
 
     def fail_once_then_start() -> None:
@@ -254,25 +558,23 @@ def test_failed_first_start_can_defer_even_when_catalog_has_a_device(qapp, tmp_p
         settings=QSettings(str(tmp_path / "window.ini"), QSettings.Format.IniFormat),
         microphone_device_provider=lambda: [_input_device("Built-in Mic", 2, is_default=True)],
     )
-    view_model.rescanMicrophones()
-
-    assert view_model.selectMicrophone("system_default") is True
-    qapp.processEvents()
+    assert view_model.startControllerIfReady() is False
     assert view_model.recordingEngineNeedsStart is True
 
     assert view_model.deferMicrophoneAfterStartFailure() is True
     qapp.processEvents()
 
     assert controller.config.microphone.mode is MicrophoneMode.SKIPPED
-    assert controller.started is True
+    assert controller.started is False
     assert view_model.recordingEngineNeedsStart is False
 
 
-def test_pending_microphone_setup_can_be_skipped_without_devices(qapp, tmp_path):
+def test_onboarding_defer_is_persisted_without_starting(qapp, tmp_path):
     controller = _TimelineController()
     controller.config = replace(
         controller.config,
         microphone=MicrophoneSelection(mode=MicrophoneMode.PENDING),
+        onboarding_completed=False,
     )
     view_model = JournalViewModel(
         controller,
@@ -286,7 +588,24 @@ def test_pending_microphone_setup_can_be_skipped_without_devices(qapp, tmp_path)
     qapp.processEvents()
 
     assert controller.config.microphone.mode is MicrophoneMode.SKIPPED
-    assert controller.started is True
+    assert controller.config.onboarding_completed is False
+    assert len(controller.saved_configs) == 1
+    assert controller.saved_configs[0].microphone.mode is MicrophoneMode.SKIPPED
+    assert controller.started is False
+    assert view_model.onboardingPending is False
+    assert view_model.recordingControlsEnabled is False
+    assert view_model.stateText == "尚未開始錄音"
+    assert "完成首次設定" in view_model.partialText
+
+    restarted = JournalViewModel(
+        controller,
+        qapp,
+        settings=QSettings(str(tmp_path / "restarted.ini"), QSettings.Format.IniFormat),
+        microphone_device_provider=lambda: [],
+    )
+    assert restarted.onboardingPending is False
+    assert restarted.openOnboarding() is True
+    assert restarted.onboardingPending is True
 
 
 def test_skipped_microphone_allows_saving_non_microphone_settings(qapp, tmp_path):
@@ -326,6 +645,7 @@ def test_pending_microphone_setup_can_be_skipped_when_no_route_is_selectable(
     controller.config = replace(
         controller.config,
         microphone=MicrophoneSelection(mode=MicrophoneMode.PENDING),
+        onboarding_completed=False,
     )
     unsafe_device = _input_device(
         "Ambiguous Mic",
@@ -347,7 +667,8 @@ def test_pending_microphone_setup_can_be_skipped_when_no_route_is_selectable(
     qapp.processEvents()
 
     assert controller.config.microphone.mode is MicrophoneMode.SKIPPED
-    assert controller.started is True
+    assert controller.started is False
+    assert view_model.onboardingPending is False
 
 
 def test_microphone_catalog_keeps_offline_preference_and_disables_ambiguous_fixed(
@@ -935,6 +1256,12 @@ def test_appearance_choice_persists_and_updates_application_immediately(
     assert view_model.systemFontFamily == system_font_family
     assert qapp.font().family() == "Readable Ink"
     assert qapp.font().pixelSize() == 24
+
+
+def test_view_model_exposes_package_version(qapp, tmp_path) -> None:
+    view_model, _controller = _view_model(qapp, tmp_path)
+
+    assert view_model.appVersion == __version__
 
 
 def test_appearance_rejects_unscanned_font_and_out_of_range_size(qapp, tmp_path):

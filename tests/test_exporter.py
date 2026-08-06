@@ -95,6 +95,24 @@ def test_segment_is_filed_by_start_time_even_when_it_crosses_hour(
     assert not (result.path.parent / "2026-07-12_15.md").exists()
 
 
+def test_records_root_can_switch_before_recording_starts(
+    system: tuple[JournalStorage, MarkdownExporter, Path],
+    tmp_path: Path,
+) -> None:
+    storage, exporter, spool = system
+    next_root = tmp_path / "selected-records"
+    exporter.set_records_root(next_root)
+    start = datetime(2026, 7, 12, 6, 23, 8, tzinfo=UTC)
+    segment = add_segment(storage, spool, started=start)
+    storage.apply_final(FinalResult(segment.segment_id, "新路徑", "新路徑", "cpu:int8"))
+
+    result = exporter.export_segment(segment.segment_id)
+
+    assert exporter.records_root == next_root.resolve()
+    assert result.path.is_relative_to(next_root)
+    assert result.path.exists()
+
+
 def test_user_lock_wins_when_final_arrives_after_correction(
     system: tuple[JournalStorage, MarkdownExporter, Path]
 ) -> None:
