@@ -98,6 +98,15 @@ def test_inno_contract_is_per_user_transactional_and_data_preserving() -> None:
     assert 'MessagesFile: "languages\\ChineseTraditional.isl"' in source
 
 
+def test_windows_package_e2e_waits_for_gui_installer_and_uninstaller() -> None:
+    source = (ROOT / ".github/workflows/windows-package.yml").read_text(encoding="utf-8")
+    assert "Start-Process -FilePath $setup" in source
+    assert "Start-Process -FilePath $uninstaller" in source
+    assert source.count("-WindowStyle Hidden -Wait -PassThru") == 2
+    assert "Setup reported success but the stable CLI launcher is missing" in source
+    assert "artifacts/windows/e2e/*.log" in source
+
+
 def test_traditional_chinese_inno_translation_is_vendored_with_license() -> None:
     language_file = WINDOWS_PACKAGING / "languages" / "ChineseTraditional.isl"
     contents = language_file.read_bytes()

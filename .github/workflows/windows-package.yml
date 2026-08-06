@@ -131,9 +131,25 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Cannot read project version" }
           $setup = Join-Path $PWD "artifacts\windows\setup\AutoSpeechJournal-Setup-$version-x64.exe"
           $target = Join-Path $env:RUNNER_TEMP "AutoSpeechJournal-E2E"
-          & $setup /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOMODELS /NOGPU "/DIR=$target"
-          if ($LASTEXITCODE -ne 0) { throw "Setup failed: $LASTEXITCODE" }
-          & (Join-Path $target "AutoSpeechJournal.CLI.exe") installer-probe --isolated
+          $e2eLogs = Join-Path $PWD "artifacts\windows\e2e"
+          New-Item -ItemType Directory -Force -Path $e2eLogs | Out-Null
+          $installLog = Join-Path $e2eLogs "install.log"
+          $install = Start-Process -FilePath $setup -ArgumentList @(
+            "/VERYSILENT",
+            "/SUPPRESSMSGBOXES",
+            "/NORESTART",
+            "/NOMODELS",
+            "/NOGPU",
+            "/DIR=$target",
+            "/LOG=$installLog"
+          ) -WindowStyle Hidden -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "Setup failed: $($install.ExitCode)" }
+          $installedCli = Join-Path $target "AutoSpeechJournal.CLI.exe"
+          if (-not (Test-Path -LiteralPath $installedCli -PathType Leaf)) {
+            Get-Content -LiteralPath $installLog -Tail 100 -ErrorAction SilentlyContinue
+            throw "Setup reported success but the stable CLI launcher is missing: $installedCli"
+          }
+          & $installedCli installer-probe --isolated
           if ($LASTEXITCODE -ne 0) { throw "Installed launcher probe failed: $LASTEXITCODE" }
 
           $runtime = Join-Path $env:LOCALAPPDATA "AutoSpeechJournal"
@@ -149,8 +165,18 @@ jobs:
             New-Item -ItemType Directory -Force -Path (Split-Path -Parent $path) | Out-Null
             Set-Content -LiteralPath $path -Value "preserve" -Encoding UTF8
           }
-          & (Join-Path $target "unins000.exe") /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
-          if ($LASTEXITCODE -ne 0) { throw "Uninstall failed: $LASTEXITCODE" }
+          $uninstaller = Join-Path $target "unins000.exe"
+          $uninstallLog = Join-Path $e2eLogs "uninstall.log"
+          $uninstall = Start-Process -FilePath $uninstaller -ArgumentList @(
+            "/VERYSILENT",
+            "/SUPPRESSMSGBOXES",
+            "/NORESTART",
+            "/LOG=$uninstallLog"
+          ) -WindowStyle Hidden -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0) { throw "Uninstall failed: $($uninstall.ExitCode)" }
+          if (Test-Path -LiteralPath $installedCli) {
+            throw "Uninstall retained the stable CLI launcher: $installedCli"
+          }
           foreach ($path in $preserved) {
             if (-not (Test-Path -LiteralPath $path)) {
               throw "Uninstall removed runtime data: $path"
@@ -158,6 +184,7 @@ jobs:
           }
 
       - name: Upload internal unsigned artifacts
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: auto-speech-journal-windows-unsigned-${{ github.sha }}
@@ -166,6 +193,7 @@ jobs:
             artifacts/windows/setup/*.exe
             artifacts/windows/build-metadata.json
             artifacts/windows/WINDOWS-VERIFICATION.json
+            artifacts/windows/e2e/*.log
             dist/*.whl
             dist/*.tar.gz
           if-no-files-found: error
