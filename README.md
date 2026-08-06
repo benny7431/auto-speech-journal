@@ -3,6 +3,10 @@
        width="88" alt="聲跡日記圖示">
 </p>
 
+<p align="center">
+  <strong>繁體中文</strong> · <a href="README.en.md">English</a>
+</p>
+
 <h1 align="center">聲跡日記</h1>
 
 <p align="center">
@@ -14,7 +18,23 @@
   <code>Local-first</code> · <code>繁體中文</code>
 </p>
 
+<p align="center">
+  <a href="https://github.com/benny7431/auto-speech-journal/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/benny7431/auto-speech-journal/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/benny7431/auto-speech-journal/actions/workflows/codeql.yml"><img alt="CodeQL" src="https://github.com/benny7431/auto-speech-journal/actions/workflows/codeql.yml/badge.svg"></a>
+  <a href="https://github.com/benny7431/auto-speech-journal/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/benny7431/auto-speech-journal?include_prereleases"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green.svg"></a>
+  <img alt="Python 3.11" src="https://img.shields.io/badge/python-3.11-blue.svg">
+  <img alt="Windows 10/11" src="https://img.shields.io/badge/platform-Windows%2010%2F11-0078D4.svg">
+</p>
+
+![聲跡日記合成操作示範：錄音、即時預覽、修正與 Markdown 同步](docs/images/auto-speech-journal-demo.gif)
+
+<details>
+<summary>查看靜態工作台畫面</summary>
+
 ![聲跡日記的今日聲音時間軸](docs/images/speech-journal-workspace.png)
+
+</details>
 
 **聲跡日記（Auto Speech Journal）** 是一套 Windows 本機常駐語音日誌。它在登入後
 自動啟動，持續監聽你選定的麥克風，先顯示低延遲逐字預覽，再以 Whisper 產生較準確的
@@ -36,6 +56,7 @@
 - [資料、隱私與檔案位置](#資料隱私與檔案位置)
 - [診斷與修復](#診斷與修復)
 - [解除安裝](#解除安裝)
+- [文件、政策與參與](#文件政策與參與)
 - [開發與驗證](#開發與驗證)
 - [目前限制](#目前限制)
 - [使用 Codex 與 GPT-5.6](#使用-codex-與-gpt-56)
@@ -270,24 +291,42 @@ $App = "$env:LOCALAPPDATA\AutoSpeechJournal\app"
 
 因此之後重新安裝仍可沿用設定，並恢復尚未完成的片段。
 
+## 文件、政策與參與
+
+| 入口 | 內容 |
+| --- | --- |
+| [架構](docs/ARCHITECTURE.md) | 收音、佇列、復原、匯出與刪除邊界 |
+| [疑難排解](docs/TROUBLESHOOTING.md) | WASAPI、CUDA/CPU、模型、工作排程、SQLite/WAL 與 spool |
+| [建置](docs/BUILDING.md) | 開發環境、品質門檻、wheel 與合成 Demo |
+| [發布](docs/RELEASING.md) | tag、pre-release、checksum 與發布後驗證 |
+| [隱私政策](PRIVACY.md) | 收音條件、資料位置、連網時機、保存與刪除方式 |
+| [第三方聲明](THIRD_PARTY_NOTICES.md) | runtime、CUDA、建模套件與下載模型的授權來源 |
+| [安全政策](SECURITY.md) | 支援版本、安全聯絡方式與禁止公開附加的敏感資料 |
+| [貢獻指南](CONTRIBUTING.md) | Issue、PR、診斷資料去識別化與本機驗證流程 |
+| [版本歷程](CHANGELOG.md) | Keep a Changelog 格式的版本變更 |
+
 ## 開發與驗證
 
 在 PowerShell、Python 3.11 與 `uv` 環境下執行：
 
 ```powershell
-uv sync --no-editable --extra dev
+uv sync --frozen --no-editable --extra dev
 $env:PYTHONPATH = (Join-Path $PWD "src")
 
-uv run --no-sync pytest
-uv run --no-sync ruff check src tests
+uv run --no-sync pytest --cov=auto_speech_journal --cov-report=term-missing `
+  --cov-report=xml
+uv run --no-sync ruff check src tests tools
 uv run --no-sync python -m auto_speech_journal self-test `
   --no-model-check --no-microphone-check
 uv run --no-sync python tools/validate_scene_assets.py --strict
 uv build
 uv run --no-sync python tools/verify_wheel_contents.py
+uv run --no-sync pre-commit run --all-files
+uv run --no-sync python tools/render_readme_demo.py
 ```
 
-`tools/replay_fault_recovery.py` 可重播當機邊界；場景與打包 QA 工具集中在 `tools/`。
+完整說明請見 [建置文件](docs/BUILDING.md)。`tools/replay_fault_recovery.py` 可重播當機
+邊界；場景、Demo 與打包 QA 工具集中在 `tools/`。
 
 <details>
 <summary><strong>專案結構</strong></summary>
@@ -324,7 +363,8 @@ uninstall.ps1                  # 保留資料的解除安裝
 ## 授權
 
 本專案原始碼與專案自有發行資產採 [MIT License](LICENSE)。第三方套件、模型、字體與其他
-外部內容仍受各自的授權條款約束。
+外部內容仍受各自的授權條款約束；完整清單請見
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 ## 使用 Codex 與 GPT-5.6
 

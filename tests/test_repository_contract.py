@@ -52,13 +52,28 @@ def test_powershell_scripts_keep_utf8_bom_and_crlf(name: str) -> None:
 
 def test_public_repository_documents_and_templates_exist() -> None:
     expected = (
+        "README.en.md",
         "PRIVACY.md",
         "THIRD_PARTY_NOTICES.md",
         "SECURITY.md",
         "CONTRIBUTING.md",
         "CHANGELOG.md",
+        "docs/ARCHITECTURE.md",
+        "docs/TROUBLESHOOTING.md",
+        "docs/BUILDING.md",
+        "docs/RELEASING.md",
+        ".pre-commit-config.yaml",
+        ".github/dependabot.yml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/codeql.yml",
+        ".github/workflows/release.yml",
         ".github/ISSUE_TEMPLATE/bug_report.yml",
         ".github/ISSUE_TEMPLATE/feature_request.yml",
         ".github/pull_request_template.md",
     )
     assert [path for path in expected if not (ROOT / path).is_file()] == []
+
+
+def test_project_enforces_public_release_coverage_threshold() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert project["tool"]["coverage"]["report"]["fail_under"] == 75

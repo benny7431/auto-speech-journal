@@ -20,6 +20,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     env:
+      PYTHONUTF8: "1"
       PYTHONPATH: ${{ github.workspace }}\src
       QT_QPA_PLATFORM: offscreen
       QT_QUICK_BACKEND: software
@@ -45,6 +46,9 @@ jobs:
 
       - name: Ruff
         run: uv run --no-sync ruff check src tests tools
+
+      - name: Pre-commit repository checks
+        run: uv run --no-sync pre-commit run --all-files
 
       - name: Pytest and coverage
         run: >-
