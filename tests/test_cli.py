@@ -8,7 +8,7 @@ from auto_speech_journal import __version__, cli
 from auto_speech_journal.config import AppConfig
 from auto_speech_journal.gpu_runtime import GpuDetection, GpuInstallResult
 from auto_speech_journal.paths import AppPaths
-from auto_speech_journal.provisioning import ProvisionEvent
+from auto_speech_journal.provisioning import ProvisionEvent, ProvisionResult
 
 
 def test_parser_exposes_model_download_and_microphone_skip() -> None:
@@ -22,7 +22,7 @@ def test_parser_exposes_model_download_and_microphone_skip() -> None:
         [
             "provision",
             "--manifest",
-            "models-v1.json",
+            "runtime-models-v1.json",
             "--progress-json",
             "progress.json",
         ]
@@ -35,7 +35,7 @@ def test_parser_exposes_model_download_and_microphone_skip() -> None:
     assert self_test.no_microphone_check is True
     assert setup.system_default is True
     assert probe.isolated is True
-    assert provision.manifest.name == "models-v1.json"
+    assert provision.manifest.name == "runtime-models-v1.json"
     assert provision.progress_json.name == "progress.json"
     assert shutdown.timeout == 12
     assert startup.startup_action == "status"
@@ -104,13 +104,27 @@ def test_invalid_version_disables_update_service_without_raising(tmp_path, caplo
     assert "Update checks disabled" in caplog.text
 
 
-def test_repair_models_reports_console_progress_without_progress_file(tmp_path, capsys) -> None:
-    manifest = tmp_path / "models-v1.json"
-    manifest.write_text(
-        json.dumps({"schema_version": 1, "release": "models-v1", "assets": []}),
-        encoding="utf-8",
-    )
+def test_repair_models_reports_console_progress_without_progress_file(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    from auto_speech_journal import runtime_models
+
+    manifest = tmp_path / "runtime-models-v1.json"
+    manifest.write_text("{}\n", encoding="utf-8")
     paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
+
+    class FakeManifest:
+        release = "runtime-models-v1"
+
+    def provision(_manifest, _models_dir, *, progress):
+        progress(ProvisionEvent("preflight", "runtime-models-v1", None, 0, 10))
+        progress(ProvisionEvent("complete", "runtime-models-v1", None, 10, 10))
+        return ProvisionResult("runtime-models-v1", ("models",), (), 12)
+
+    monkeypatch.setattr(runtime_models, "load_runtime_model_manifest", lambda _path: FakeManifest())
+    monkeypatch.setattr(runtime_models, "provision_runtime_models", provision)
 
     result = cli.run_repair_command(
         paths,
@@ -128,7 +142,7 @@ def test_repair_models_reports_console_progress_without_progress_file(tmp_path, 
 
 def test_console_progress_is_percent_and_eta_throttled(capsys) -> None:
     reporter = cli._CliProgressReporter()
-    event = ProvisionEvent("downloading", "models-v1", "preview", 10, 100, 9)
+    event = ProvisionEvent("downloading", "runtime-models-v1", "preview", 10, 100, 9)
 
     reporter(event)
     reporter(event)

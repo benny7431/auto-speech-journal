@@ -1,24 +1,13 @@
 from __future__ import annotations
 
-import hashlib
-import io
-import json
-import tarfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
-import pytest
 
-from auto_speech_journal import model_download
 from auto_speech_journal.finalizer_engine import FasterWhisperFinalizer
-from auto_speech_journal.model_download import (
-    FINAL_SPEC,
-    PREVIEW_SPEC,
-    DirectModelSpec,
-    HuggingFaceModelSpec,
-)
+from auto_speech_journal.model_download import FINAL_SPEC, PREVIEW_SPEC, VAD_SPEC
 from auto_speech_journal.preview_engine import SherpaPreviewEngine
 from auto_speech_journal.types import CapturedSegment
 
@@ -335,125 +324,28 @@ def test_finalizer_probe_runs_real_decode_path_and_reports_profile(tmp_path):
     assert probe.text == ""
 
 
-def test_official_whisper_manifest_is_pinned_to_openai_source():
-    assert FINAL_SPEC.repo_id == "openai/whisper-large-v3-turbo"
-    assert FINAL_SPEC.revision == "41f01f3fe87f28c78e2fbf8b568835947dd65ed9"
-    assert FINAL_SPEC.source_model_file == "model.safetensors"
-    assert FINAL_SPEC.source_model_sha256 == (
-        "542566a422ae4f3fd23f1ba11add198fca01bbf82e66e6a2857b3f608b1eb9d1"
+def test_runtime_engine_model_contract_uses_ready_to_run_formats():
+    assert PREVIEW_SPEC.key == (
+        "csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en"
     )
-    assert PREVIEW_SPEC.digest_algorithm == "sha256"
-    assert PREVIEW_SPEC.digest == (
-        "5462a1fce42693deae572af1e8c4687124b12aa85fe61ff4d3168bb5280e205f"
+    assert PREVIEW_SPEC.revision == "8e40c43232a1c5c66c82111efc5820d3accca11b"
+    assert VAD_SPEC.key == "R4kSo1997/sherpa-onnx-silero-vad-v5"
+    assert VAD_SPEC.revision == "4a6e5a75370a3ca741c950f8feda0dbed11c18ac"
+    assert FINAL_SPEC.key == "mobiuslabsgmbh/faster-whisper-large-v3-turbo"
+    assert FINAL_SPEC.revision == "0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf"
+    assert FINAL_SPEC.runtime_format == "ctranslate2-float16"
+    assert FINAL_SPEC.required_files == (
+        "config.json",
+        "model.bin",
+        "preprocessor_config.json",
+        "tokenizer.json",
+        "vocabulary.json",
     )
-
-
-def test_huggingface_source_is_verified_before_injected_conversion(tmp_path):
-    source_bytes = b"official-openai-weights"
-    spec = HuggingFaceModelSpec(
-        key="test-whisper",
-        revision="fixed-revision",
-        repo_id="openai/test-whisper",
-        install_path="converted",
-        source_files=("config.json", "model.safetensors", "tokenizer.json"),
-        source_model_file="model.safetensors",
-        source_model_size=len(source_bytes),
-        source_model_sha256=hashlib.sha256(source_bytes).hexdigest(),
-        converted_files=("config.json", "model.bin", "tokenizer.json"),
-        quantization="float16",
+    assert PREVIEW_SPEC.runtime_format == "sherpa-onnx-paraformer-int8"
+    assert PREVIEW_SPEC.required_files == (
+        "encoder.int8.onnx",
+        "decoder.int8.onnx",
+        "tokens.txt",
     )
-    calls = []
-
-    def snapshot_download(**kwargs):
-        calls.append((kwargs["repo_id"], kwargs["revision"]))
-        local = Path(kwargs["local_dir"])
-        (local / "config.json").write_text("{}", encoding="utf-8")
-        (local / "tokenizer.json").write_text("{}", encoding="utf-8")
-        (local / "model.safetensors").write_bytes(source_bytes)
-        return str(local)
-
-    def convert(source, destination, received_spec):
-        assert (source / "model.safetensors").read_bytes() == source_bytes
-        assert received_spec is spec
-        destination.mkdir()
-        (destination / "config.json").write_text("{}", encoding="utf-8")
-        (destination / "tokenizer.json").write_text("{}", encoding="utf-8")
-        (destination / "model.bin").write_bytes(b"ct2")
-
-    model_download._ensure_huggingface_model(
-        tmp_path,
-        spec,
-        progress=None,
-        snapshot_download=snapshot_download,
-        convert_model=convert,
-    )
-
-    assert calls == [("openai/test-whisper", "fixed-revision")]
-    assert (tmp_path / "converted" / "model.bin").read_bytes() == b"ct2"
-    marker = json.loads(
-        (tmp_path / "converted" / ".model-manifest.json").read_text(encoding="utf-8")
-    )
-    assert marker["files"]["model.bin"]["sha256"] == hashlib.sha256(b"ct2").hexdigest()
-    model_download._verify_marker_files(tmp_path / "converted", spec)
-    (tmp_path / "converted" / "model.bin").write_bytes(b"corrupt")
-    with pytest.raises(model_download.ModelVerificationError):
-        model_download._verify_marker_files(tmp_path / "converted", spec)
-    model_download._ensure_huggingface_model(
-        tmp_path,
-        spec,
-        progress=None,
-        snapshot_download=snapshot_download,
-        convert_model=convert,
-    )
-    assert len(calls) == 2
-    assert (tmp_path / "converted" / "model.bin").read_bytes() == b"ct2"
-
-
-def test_corrupt_existing_preview_model_is_redownloaded(tmp_path):
-    contents = {
-        "encoder.int8.onnx": b"encoder",
-        "decoder.int8.onnx": b"decoder",
-        "tokens.txt": b"tokens",
-    }
-    archive_buffer = io.BytesIO()
-    with tarfile.open(fileobj=archive_buffer, mode="w:bz2") as archive:
-        for name, data in contents.items():
-            info = tarfile.TarInfo(f"preview/{name}")
-            info.size = len(data)
-            archive.addfile(info, io.BytesIO(data))
-    archive_bytes = archive_buffer.getvalue()
-    spec = DirectModelSpec(
-        key="test-preview",
-        revision="fixed",
-        url="https://example.invalid/preview.tar.bz2",
-        size=len(archive_bytes),
-        digest_algorithm="sha256",
-        digest=hashlib.sha256(archive_bytes).hexdigest(),
-        install_path="preview",
-        archive=True,
-        required_files=tuple(contents),
-    )
-    downloads = []
-
-    def download(_url, destination, _progress):
-        downloads.append(destination)
-        destination.write_bytes(archive_bytes)
-
-    model_download._ensure_direct_model(
-        tmp_path,
-        spec,
-        progress=None,
-        download_file=download,
-    )
-    assert len(downloads) == 1
-    (tmp_path / "preview" / "encoder.int8.onnx").write_bytes(b"corrupt")
-
-    model_download._ensure_direct_model(
-        tmp_path,
-        spec,
-        progress=None,
-        download_file=download,
-    )
-
-    assert len(downloads) == 2
-    assert (tmp_path / "preview" / "encoder.int8.onnx").read_bytes() == b"encoder"
+    assert VAD_SPEC.runtime_format == "sherpa-onnx-silero-vad-v4"
+    assert VAD_SPEC.required_files == ("silero_vad.onnx",)

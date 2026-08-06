@@ -41,9 +41,9 @@ sign-in, listens continuously to the microphone you explicitly select, shows a l
 preview, produces a more accurate final transcript with Whisper, and organizes the result into one
 Markdown file per hour in the Asia/Taipei timezone.
 
-Recognition, storage, and the interface all run locally. The application uses the network only
-during installation or model repair; routine recording does not send audio or transcripts to a
-cloud service.
+Recognition, storage, and the interface all run locally. The application connects to Hugging Face
+only during installation, first-run model completion, or explicit model repair; routine recording
+does not send audio or transcripts to a cloud service.
 
 > [!IMPORTANT]
 > Version `0.2.0` is a pre-release. It supports Windows WASAPI, Chinese
@@ -83,16 +83,18 @@ cloud service.
 
 - Windows 10/11 x64
 - A working WASAPI microphone and Windows microphone permission when recording
-- A network connection for the first model download; Setup reports the calculated space required
+- A connection to Hugging Face for the first model download; Setup reports the calculated space required
 - An NVIDIA GPU is optional; failed detection or CUDA probing falls back to CPU
 
 ### 2. Download and install
 
-Download the signed `AutoSpeechJournal-Setup-0.2.0-x64.exe` from
-[GitHub Releases](https://github.com/benny7431/auto-speech-journal/releases), then double-click it.
-Python, `uv`, Git, PowerShell, and administrator access are not required.
+The `v0.2.0` Setup is not public yet; SignPath signing and the physical Windows test matrix must
+pass first. After those gates, download only the signed `AutoSpeechJournal-Setup-0.2.0-x64.exe`
+from [GitHub Releases](https://github.com/benny7431/auto-speech-journal/releases), not an unsigned
+PR artifact. The final Setup does not require Python, `uv`, Git, PowerShell, or administrator access.
 
-Setup downloads pinned models by default with visible progress, ETA, cancellation, and resume.
+Setup downloads ready-to-run models directly from pinned Hugging Face commit revisions, with visible
+progress, ETA, cancellation, and resume.
 It auto-detects NVIDIA support, allows an override, and always retains CPU fallback. The stable
 launcher is installed at `%LOCALAPPDATA%\Programs\AutoSpeechJournal\AutoSpeechJournal.exe`;
 versioned payloads live under `versions\<version>`. The default journal location is:
@@ -114,6 +116,9 @@ Also choose a journal folder, optional sign-in startup (off by default), and opt
 notifications (off by default). Recording starts only after **Start recording** is pressed. The
 selection is written to
 `%LOCALAPPDATA%\AutoSpeechJournal\config.json` and survives reinstallations.
+The wizard also verifies speech models in the background. If Setup was interrupted, use
+**Resume/repair models** there. **Start recording** remains disabled until models are ready, while
+**Configure later** is always available and never opens the microphone.
 
 <details>
 <summary><strong>What does the installer do?</strong></summary>
@@ -121,7 +126,8 @@ selection is written to
 1. Stage the self-contained CPU application in `versions\<version>`.
 2. Run the actual frozen Qt/QML readiness probe before switching versions.
 3. Atomically replace `current.json`; failure leaves the previous version active.
-4. Download model assets with size, SHA-256, extracted-file, and path-safety checks.
+4. Use `runtime-models-v1.json` to download ONNX/CTranslate2 files from 40-character Hugging Face
+   commit revisions, with `.part` staging, Range fallback, retries, size/SHA-256 checks, and atomic replacement.
 5. Optionally download only pinned NVIDIA runtime wheels and run a real CUDA probe.
 6. Keep the usable CPU app when model/GPU provisioning fails; Start-menu Repair resumes it.
 7. Reuse legacy state and migrate the old sign-in task only after verifying its exact action.
@@ -187,9 +193,24 @@ flowchart LR
 
 ## Data, privacy, and file locations
 
-Routine operation does not upload audio or transcripts. Pinned models are downloaded only during
-installation or explicit repair. Once present, recording, VAD, preview, final recognition,
-Traditional Chinese conversion, and export all work offline.
+Routine operation does not upload audio or transcripts. Pinned models are downloaded directly from
+Hugging Face only during installation, first-run completion, or `repair models`. Once present,
+recording, VAD, preview, final recognition, Traditional Chinese conversion, and export all work
+offline. The versioned inventory is `packaging/manifests/runtime-models-v1.json`:
+
+- Paraformer: `csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en` at
+  `8e40c43232a1c5c66c82111efc5820d3accca11b`, using three ready-to-run INT8 ONNX/token files.
+- Whisper large-v3-turbo: `mobiuslabsgmbh/faster-whisper-large-v3-turbo` at
+  `0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf`, using five ready-to-run CTranslate2 float16 files.
+- VAD: `R4kSo1997/sherpa-onnx-silero-vad-v5` at
+  `4a6e5a75370a3ca741c950f8feda0dbed11c18ac`, using the Sherpa Silero VAD ONNX file.
+
+The current manifest contains 9 files totaling `1,859,512,338` bytes (about 1.73 GiB). Setup shows
+overall progress and ETA, supports cancellation while retaining `.part`, and computes disk space
+from remaining bytes, rollback state, and 20% headroom instead of a vague fixed estimate.
+
+Setup and repair never install Torch, Transformers, or Safetensors and never convert models on the
+user's computer. The optional NVIDIA CUDA runtime remains a separate, pinned PyPI-wheel flow.
 
 | Data | Default location |
 | --- | --- |
@@ -272,7 +293,7 @@ state. External Markdown journal folders are never deleted automatically.
 | [Building](docs/BUILDING.md) | Development environment, quality gates, wheel, and synthetic demo |
 | [Releasing](docs/RELEASING.md) | Tags, pre-releases, checksums, and post-release verification |
 | [Privacy](PRIVACY.md) | Recording conditions, data locations, network use, retention, and deletion |
-| [Third-party notices](THIRD_PARTY_NOTICES.md) | License sources for runtime, CUDA, model-build packages, and downloaded models |
+| [Third-party notices](THIRD_PARTY_NOTICES.md) | License sources for runtime, CUDA, and Hugging Face models |
 | [Security](SECURITY.md) | Supported versions, contact procedure, and sensitive data that must not be posted publicly |
 | [Contributing](CONTRIBUTING.md) | Issues, pull requests, diagnostic redaction, and local validation |
 | [Changelog](CHANGELOG.md) | Version history in Keep a Changelog format |

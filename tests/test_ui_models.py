@@ -192,6 +192,139 @@ def test_onboarding_selection_does_not_save_or_start_before_explicit_confirmatio
     assert view_model.microphoneSetupPending is True
 
 
+def test_onboarding_model_repair_is_background_and_gates_recording(
+    qapp,
+    tmp_path,
+    monkeypatch,
+):
+    controller = _TimelineController()
+    controller.config = replace(
+        controller.config,
+        microphone=MicrophoneSelection(mode=MicrophoneMode.PENDING),
+        onboarding_completed=False,
+    )
+    provision_started = threading.Event()
+    release_provision = threading.Event()
+    microphone_opened = threading.Event()
+
+    def provision(progress):
+        progress(
+            {
+                "state": "provisioning",
+                "ready": False,
+                "message": "正在續傳模型",
+                "completed": 50,
+                "total": 100,
+                "asset": "whisper/model.bin",
+            }
+        )
+        provision_started.set()
+        assert release_provision.wait(timeout=2)
+        return {
+            "state": "ready",
+            "ready": True,
+            "message": "模型修復完成",
+            "completed": 100,
+            "total": 100,
+        }
+
+    def measure(*_args, **_kwargs):
+        microphone_opened.set()
+        return SimpleNamespace(peak=0.2, rms=0.1)
+
+    monkeypatch.setattr("auto_speech_journal.audio.measure_input_level", measure)
+    view_model = JournalViewModel(
+        controller,
+        qapp,
+        settings=QSettings(str(tmp_path / "window.ini"), QSettings.Format.IniFormat),
+        microphone_device_provider=lambda: [
+            _input_device("Built-in Mic", 2, is_default=True)
+        ],
+        model_status_callback=lambda: {
+            "state": "not_ready",
+            "ready": False,
+            "message": "模型尚未就緒",
+        },
+        model_provision_callback=provision,
+    )
+    assert view_model.checkOnboardingModels() is True
+    deadline = time.monotonic() + 1
+    while view_model.onboardingModelBusy and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+    assert view_model.onboardingModelsReady is False
+
+    records_root = str(tmp_path / "journal")
+    for _ in range(3):
+        assert view_model.advanceOnboarding(records_root, False, False) is True
+    assert view_model.selectMicrophone("system_default") is True
+    assert view_model.advanceOnboarding(records_root, False, False) is True
+
+    assert view_model.startOnboardingRecording() is False
+    assert controller.saved_configs == []
+    assert controller.started is False
+    assert microphone_opened.is_set() is False
+
+    started_at = time.monotonic()
+    assert view_model.repairOnboardingModels() is True
+    assert time.monotonic() - started_at < 0.2
+    assert provision_started.wait(timeout=1)
+    assert view_model.onboardingModelBusy is True
+    release_provision.set()
+    deadline = time.monotonic() + 1
+    while not view_model.onboardingModelsReady and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+
+    assert view_model.onboardingModelsReady is True
+    assert view_model.onboardingModelProgress == 1.0
+    assert view_model.startOnboardingRecording() is True
+    deadline = time.monotonic() + 1
+    while not controller.started and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+    assert microphone_opened.is_set() is True
+    assert controller.started is True
+
+
+def test_onboarding_can_defer_while_model_repair_is_running(qapp, tmp_path):
+    controller = _TimelineController()
+    controller.config = replace(
+        controller.config,
+        microphone=MicrophoneSelection(mode=MicrophoneMode.PENDING),
+        onboarding_completed=False,
+    )
+    provision_started = threading.Event()
+    release_provision = threading.Event()
+
+    def provision(_progress):
+        provision_started.set()
+        assert release_provision.wait(timeout=2)
+        return {"state": "ready", "ready": True, "message": "模型修復完成"}
+
+    view_model = JournalViewModel(
+        controller,
+        qapp,
+        settings=QSettings(str(tmp_path / "window.ini"), QSettings.Format.IniFormat),
+        model_status_callback=lambda: False,
+        model_provision_callback=provision,
+    )
+
+    assert view_model.repairOnboardingModels() is True
+    assert provision_started.wait(timeout=1)
+    assert view_model.deferOnboarding() is True
+    assert view_model.onboardingPending is False
+    assert controller.config.onboarding_completed is False
+    assert controller.started is False
+
+    release_provision.set()
+    deadline = time.monotonic() + 1
+    while view_model.onboardingModelBusy and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+    assert controller.started is False
+
+
 def test_onboarding_commits_once_then_starts_and_invokes_opt_in_services(
     qapp,
     tmp_path,

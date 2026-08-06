@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "release": "runtime-models-v1",
+  "provider": "huggingface",
+  "models": [
+    {
+      "name": "paraformer-preview",
+      "repository": "csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en",
+      "revision": "8e40c43232a1c5c66c82111efc5820d3accca11b",
+      "format": "sherpa-onnx-paraformer-int8",
+      "destination": "sherpa-onnx-streaming-paraformer-bilingual-zh-en",
+      "license": {
+        "spdx": "Apache-2.0",
+        "url": "https://www.apache.org/licenses/LICENSE-2.0"
+      },
+      "source": {
+        "url": "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en/tree/8e40c43232a1c5c66c82111efc5820d3accca11b",
+        "description": "Pinned sherpa-onnx INT8 export of the ModelScope streaming bilingual Paraformer model."
+      },
+      "files": [
+        {
+          "path": "encoder.int8.onnx",
+          "size": 165462184,
+          "sha256": "81a70226a8934e6ed92aa1d4fc486b428b5398e2f2619ed4897b7294cab90e9a"
+        },
+        {
+          "path": "decoder.int8.onnx",
+          "size": 71664561,
+          "sha256": "f3cca9f77bb9d93c8fcbfb63ae617b6b1ee96818df3aa3b151c40658fe38594f"
+        },
+        {
+          "path": "tokens.txt",
+          "size": 75756,
+          "sha256": "59aba8873a2ed1e122c25fee421e25f283b63290efbde85c1f01a853d83cb6e6"
+        }
+      ]
+    },
+    {
+      "name": "silero-vad",
+      "repository": "R4kSo1997/sherpa-onnx-silero-vad-v5",
+      "revision": "4a6e5a75370a3ca741c950f8feda0dbed11c18ac",
+      "format": "sherpa-onnx-silero-vad-v4",
+      "destination": "silero-vad",
+      "license": {
+        "spdx": "MIT",
+        "url": "https://raw.githubusercontent.com/snakers4/silero-vad/be95df9152c0d7618fa1edfeb296fc3dae32376f/LICENSE"
+      },
+      "source": {
+        "url": "https://huggingface.co/R4kSo1997/sherpa-onnx-silero-vad-v5/tree/4a6e5a75370a3ca741c950f8feda0dbed11c18ac",
+        "description": "Byte-identical Hugging Face mirror of the pinned sherpa-onnx Silero VAD artifact."
+      },
+      "files": [
+        {
+          "path": "silero_vad.onnx",
+          "size": 643854,
+          "sha256": "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6"
+        }
+      ]
+    },
+    {
+      "name": "whisper-large-v3-turbo",
+      "repository": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+      "revision": "0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf",
+      "format": "ctranslate2-float16",
+      "destination": "faster-whisper-large-v3-turbo",
+      "license": {
+        "spdx": "MIT",
+        "url": "https://huggingface.co/openai/whisper-large-v3-turbo/raw/41f01f3fe87f28c78e2fbf8b568835947dd65ed9/LICENSE"
+      },
+      "source": {
+        "url": "https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo/tree/0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf",
+        "description": "Pinned, ready-to-run CTranslate2 float16 conversion of OpenAI Whisper large-v3-turbo; no client-side conversion is performed."
+      },
+      "files": [
+        {
+          "path": "config.json",
+          "size": 2263,
+          "sha256": "b0253ea6c0d3bea6b1e19e91a02acfd3b53f4467362efcb5a3e6b16c9b3a9b7e"
+        },
+        {
+          "path": "model.bin",
+          "size": 1617884929,
+          "sha256": "e76620f83d5f5b69efd3d87e3dc180c1bd21df9fbebacfd4335e5e1efcc018da"
+        },
+        {
+          "path": "preprocessor_config.json",
+          "size": 340,
+          "sha256": "7ccc62c6f2765af1f3b46c00c9b5894426835a05021c8b9c01eecb6dfb542711"
+        },
+        {
+          "path": "tokenizer.json",
+          "size": 2710337,
+          "sha256": "297b13372ac43916285644fb9687add3cc62ee2a1adb60da3dc25cc94c1871fd"
+        },
+        {
+          "path": "vocabulary.json",
+          "size": 1068114,
+          "sha256": "c69260f2ab26d659b7c398f9a2b2b48ed0df16c3b47d7326782fd9cba71690c1"
+        }
+      ]
+    }
+  ]
+}

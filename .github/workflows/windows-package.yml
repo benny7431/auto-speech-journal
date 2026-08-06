@@ -56,16 +56,19 @@ jobs:
         run: |
           uv run --no-sync ruff check packaging `
             tests/test_windows_packaging_contract.py `
-            tests/test_model_bundle_packaging.py `
+            tests/test_runtime_models.py `
             tests/test_release_artifact_validators.py `
             tests/test_model_release_gate.py
           if ($LASTEXITCODE -ne 0) { throw "Windows packaging lint failed" }
           uv run --no-sync pytest -q `
             tests/test_windows_packaging_contract.py `
-            tests/test_model_bundle_packaging.py `
+            tests/test_runtime_models.py `
             tests/test_release_artifact_validators.py `
             tests/test_model_release_gate.py
           if ($LASTEXITCODE -ne 0) { throw "Windows packaging contract tests failed" }
+          uv run --no-sync python packaging/models/validate_runtime_model_manifest.py `
+            --manifest packaging/manifests/runtime-models-v1.json
+          if ($LASTEXITCODE -ne 0) { throw "Pinned Hugging Face model manifest validation failed" }
           uv run --no-sync python packaging/manifests/validate_cuda_manifest.py `
             --manifest packaging/manifests/cuda-runtime-v1.json `
             --lock uv.lock
@@ -154,6 +157,163 @@ jobs:
 
           $runtime = Join-Path $env:LOCALAPPDATA "AutoSpeechJournal"
           New-Item -ItemType Directory -Force -Path $runtime | Out-Null
+          $currentManifest = Join-Path $target 'current.json'
+          if (-not (Test-Path -LiteralPath $currentManifest -PathType Leaf)) {
+            throw "Setup did not activate current.json"
+          }
+          $currentManifestHash = (Get-FileHash -LiteralPath $currentManifest -Algorithm SHA256).Hash
+
+          function Copy-JsonObject([object]$Value) {
+            return ($Value | ConvertTo-Json -Depth 12 | ConvertFrom-Json)
+          }
+
+          function Write-JsonNoBom([string]$Path, [object]$Value) {
+            $json = ($Value | ConvertTo-Json -Depth 12) + "`n"
+            [IO.File]::WriteAllText($Path, $json, (New-Object Text.UTF8Encoding($false)))
+          }
+
+          function New-VadManifest(
+            [object]$Canonical,
+            [string]$Release,
+            [string]$Destination,
+            [string]$Sha256
+          ) {
+            $model = Copy-JsonObject (@($Canonical.models | Where-Object name -eq 'silero-vad')[0])
+            $model.destination = $Destination
+            $model.files[0].sha256 = $Sha256
+            return [ordered]@{
+              schema_version = 1
+              release = $Release
+              provider = 'huggingface'
+              models = @($model)
+            }
+          }
+
+          $canonical = Get-Content packaging/manifests/runtime-models-v1.json `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+          $vad = @($canonical.models | Where-Object name -eq 'silero-vad')[0]
+          $vadFile = $vad.files[0]
+          $expectedVadHash = [string]$vadFile.sha256
+          $resumeRelease = 'runtime-models-v1-e2e-resume'
+          $resumeDestination = 'e2e-hf-vad-resume'
+          $resumeManifest = Join-Path $e2eLogs 'runtime-models-v1-e2e-resume.json'
+          Write-JsonNoBom $resumeManifest (
+            New-VadManifest $canonical $resumeRelease $resumeDestination $expectedVadHash
+          )
+
+          $resumePart = Join-Path $runtime `
+            "models\.downloads\$resumeRelease\$resumeDestination\silero_vad.onnx.part"
+          New-Item -ItemType Directory -Force -Path (Split-Path -Parent $resumePart) | Out-Null
+          $vadUrl = "https://huggingface.co/$($vad.repository)/resolve/$($vad.revision)/$($vadFile.path)"
+          & curl.exe --fail --location --retry 3 --range 0-65535 --output $resumePart $vadUrl
+          if ($LASTEXITCODE -ne 0) { throw "Cannot seed the Hugging Face resume E2E" }
+          $partStream = [IO.File]::Open(
+            $resumePart,
+            [IO.FileMode]::Open,
+            [IO.FileAccess]::Write,
+            [IO.FileShare]::None
+          )
+          try {
+            if ($partStream.Length -ge [int64]$vadFile.size) {
+              $partStream.SetLength(65536)
+            }
+          }
+          finally {
+            $partStream.Dispose()
+          }
+          $partialSize = (Get-Item -LiteralPath $resumePart).Length
+          if ($partialSize -le 0 -or $partialSize -ge [int64]$vadFile.size) {
+            throw "Resume fixture is not a proper partial file: $partialSize"
+          }
+
+          $resumeProgress = Join-Path $e2eLogs 'hf-resume-progress.json'
+          & $installedCli provision --manifest $resumeManifest --progress-json $resumeProgress
+          if ($LASTEXITCODE -ne 0) { throw "Pinned Hugging Face Range/resume E2E failed" }
+          $resumeVad = Join-Path $runtime "models\$resumeDestination\silero_vad.onnx"
+          if ((Get-FileHash -LiteralPath $resumeVad -Algorithm SHA256).Hash.ToLowerInvariant() `
+              -ne $expectedVadHash) {
+            throw "Resumed Hugging Face VAD hash mismatch"
+          }
+
+          & $installedCli repair models --manifest $resumeManifest --progress-json $resumeProgress
+          if ($LASTEXITCODE -ne 0) { throw "Repair models could not reuse the verified VAD" }
+
+          $retryRelease = 'runtime-models-v1-e2e-retry'
+          $retryDestination = 'e2e-hf-vad-retry'
+          $retryManifest = Join-Path $e2eLogs 'runtime-models-v1-e2e-retry.json'
+          Write-JsonNoBom $retryManifest (
+            New-VadManifest $canonical $retryRelease $retryDestination $expectedVadHash
+          )
+          $retryPart = Join-Path $runtime `
+            "models\.downloads\$retryRelease\$retryDestination\silero_vad.onnx.part"
+          New-Item -ItemType Directory -Force -Path (Split-Path -Parent $retryPart) | Out-Null
+          $retryStream = [IO.File]::Open(
+            $retryPart,
+            [IO.FileMode]::Create,
+            [IO.FileAccess]::Write,
+            [IO.FileShare]::None
+          )
+          try {
+            $retryStream.SetLength([int64]$vadFile.size)
+          }
+          finally {
+            $retryStream.Dispose()
+          }
+          $retryProgress = Join-Path $e2eLogs 'hf-corrupt-part-retry-progress.json'
+          & $installedCli provision --manifest $retryManifest --progress-json $retryProgress
+          if ($LASTEXITCODE -ne 0) { throw "Corrupt .part discard/retry E2E failed" }
+          $retryVad = Join-Path $runtime "models\$retryDestination\silero_vad.onnx"
+          if ((Get-FileHash -LiteralPath $retryVad -Algorithm SHA256).Hash.ToLowerInvariant() `
+              -ne $expectedVadHash) {
+            throw "Retried Hugging Face VAD hash mismatch"
+          }
+
+          $corruptStream = [IO.File]::Open(
+            $resumeVad,
+            [IO.FileMode]::Open,
+            [IO.FileAccess]::ReadWrite,
+            [IO.FileShare]::None
+          )
+          try {
+            $firstByte = $corruptStream.ReadByte()
+            $corruptStream.Position = 0
+            $corruptStream.WriteByte([byte]($firstByte -bxor 255))
+          }
+          finally {
+            $corruptStream.Dispose()
+          }
+          & $installedCli repair models --manifest $resumeManifest --progress-json $resumeProgress
+          if ($LASTEXITCODE -ne 0) { throw "Repair models did not repair installed corruption" }
+          if ((Get-FileHash -LiteralPath $resumeVad -Algorithm SHA256).Hash.ToLowerInvariant() `
+              -ne $expectedVadHash) {
+            throw "Repair models retained corrupt model bytes"
+          }
+
+          $badManifest = Join-Path $e2eLogs 'runtime-models-v1-e2e-bad-hash.json'
+          Write-JsonNoBom $badManifest (
+            New-VadManifest $canonical 'runtime-models-v1-e2e-bad-hash' `
+              $resumeDestination ('a' * 64)
+          )
+          $goodModelHash = (Get-FileHash -LiteralPath $resumeVad -Algorithm SHA256).Hash
+          $badProgress = Join-Path $e2eLogs 'hf-bad-hash-progress.json'
+          & $installedCli repair models --manifest $badManifest --progress-json $badProgress
+          $badExit = $LASTEXITCODE
+          if ($badExit -eq 0) { throw "A wrong Hugging Face SHA-256 unexpectedly succeeded" }
+          if (-not (Test-Path -LiteralPath $installedCli -PathType Leaf)) {
+            throw "Model failure rolled back the installed program"
+          }
+          if ((Get-FileHash -LiteralPath $currentManifest -Algorithm SHA256).Hash `
+              -ne $currentManifestHash) {
+            throw "Model failure changed the active application manifest"
+          }
+          if ((Get-FileHash -LiteralPath $resumeVad -Algorithm SHA256).Hash -ne $goodModelHash) {
+            throw "Failed model repair replaced the previously verified model"
+          }
+          & $installedCli installer-probe --isolated
+          if ($LASTEXITCODE -ne 0) {
+            throw "Application was not usable after expected model failure"
+          }
+
           $preserved = @(
             (Join-Path $runtime "config.json"),
             (Join-Path $runtime "state.db"),
@@ -182,6 +342,11 @@ jobs:
               throw "Uninstall removed runtime data: $path"
             }
           }
+          foreach ($path in @($resumeVad, $retryVad)) {
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Uninstall removed a downloaded Hugging Face model: $path"
+            }
+          }
 
       - name: Upload internal unsigned artifacts
         if: always()
@@ -193,7 +358,7 @@ jobs:
             artifacts/windows/setup/*.exe
             artifacts/windows/build-metadata.json
             artifacts/windows/WINDOWS-VERIFICATION.json
-            artifacts/windows/e2e/*.log
+            artifacts/windows/e2e/
             dist/*.whl
             dist/*.tar.gz
           if-no-files-found: error

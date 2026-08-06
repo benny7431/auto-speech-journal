@@ -16,6 +16,13 @@ $ErrorActionPreference = "Stop"
 $env:PYTHONUTF8 = "1"
 
 $RepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+$SourceRoot = Join-Path $RepositoryRoot "src"
+if ([string]::IsNullOrWhiteSpace($env:PYTHONPATH)) {
+    $env:PYTHONPATH = $SourceRoot
+}
+else {
+    $env:PYTHONPATH = $SourceRoot + [IO.Path]::PathSeparator + $env:PYTHONPATH
+}
 if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
     $OutputRoot = Join-Path $RepositoryRoot "artifacts\windows"
 }
@@ -94,9 +101,24 @@ function Get-ManifestTotal([string]$Path, [string]$Property) {
     }
     $Manifest = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
     $Total = [Int64]0
-    foreach ($Asset in @($Manifest.assets)) {
-        if ($null -ne $Asset.$Property) {
-            $Total += [Int64]$Asset.$Property
+    $ModelsProperty = $Manifest.PSObject.Properties["models"]
+    if ($null -ne $ModelsProperty) {
+        foreach ($Model in @($ModelsProperty.Value)) {
+            foreach ($File in @($Model.files)) {
+                $ValueProperty = $File.PSObject.Properties[$Property]
+                $Value = if ($null -ne $ValueProperty) { $ValueProperty.Value } else { $null }
+                if ($null -ne $Value) {
+                    $Total += [Int64]$Value
+                }
+            }
+        }
+    }
+    else {
+        foreach ($Asset in @($Manifest.assets)) {
+            $ValueProperty = $Asset.PSObject.Properties[$Property]
+            if ($null -ne $ValueProperty) {
+                $Total += [Int64]$ValueProperty.Value
+            }
         }
     }
     return $Total
@@ -310,8 +332,7 @@ $ApplicationRoot = Join-Path $OutputRoot "application"
 $DefaultPayload = Join-Path $ApplicationRoot "payload"
 $DefaultLaunchers = Join-Path $ApplicationRoot "launchers"
 $GeneratedIcon = Join-Path $BuildRoot "AutoSpeechJournal.ico"
-$DefaultModelManifest = Join-Path $RepositoryRoot "packaging\manifests\models-v1.json"
-$PinnedModelManifestHash = Join-Path $RepositoryRoot "packaging\manifests\models-v1.sha256"
+$DefaultModelManifest = Join-Path $RepositoryRoot "packaging\manifests\runtime-models-v1.json"
 $CudaManifest = Join-Path $RepositoryRoot "packaging\manifests\cuda-runtime-v1.json"
 $PinnedInnoVersion = "6.7.3"
 $DetectedInnoVersion = $null
@@ -333,25 +354,18 @@ if ([string]::IsNullOrWhiteSpace($ModelManifestPath)) {
 }
 $ModelManifestPath = [IO.Path]::GetFullPath($ModelManifestPath)
 
-if ($ReleaseBuild) {
-    $ModelManifestText = Get-Content -LiteralPath $ModelManifestPath -Raw -Encoding UTF8
-    if (
-        $ModelManifestText.Contains("example.invalid") -or
-        $ModelManifestText.Contains("MODELS_V1_MANIFEST_NOT_PUBLISHED") -or
-        $ModelManifestText.Contains(('0' * 64))
-    ) {
-        throw "Release builds require the immutable, published models-v1 manifest; placeholders are forbidden"
-    }
-    & uv run --no-sync python `
-        (Join-Path $RepositoryRoot "packaging\models\validate_model_manifest.py") `
-        --manifest $ModelManifestPath `
-        --expected-sha256-file $PinnedModelManifestHash
-    if ($LASTEXITCODE -ne 0) {
-        throw "Release builds require a semantically valid, source-pinned models-v1 manifest"
-    }
+& uv run --no-sync python `
+    (Join-Path $RepositoryRoot "packaging\models\validate_runtime_model_manifest.py") `
+    --manifest $ModelManifestPath
+if ($LASTEXITCODE -ne 0) {
+    throw "Runtime models must match the reviewed, commit-pinned Hugging Face manifest"
 }
 
 if ($Stage -eq "All" -or $Stage -eq "Application") {
+    & uv sync --frozen --no-editable --extra dev --reinstall-package auto-speech-journal
+    if ($LASTEXITCODE -ne 0) {
+        throw "Locked build environment or current project metadata installation failed"
+    }
     Reset-OutputDirectory $BuildRoot
     Reset-OutputDirectory $ApplicationRoot
     New-Item -ItemType Directory -Force -Path $DefaultPayload | Out-Null
@@ -402,7 +416,8 @@ if ($Stage -eq "All" -or $Stage -eq "Application") {
     Build-StableLaunchers $DefaultLaunchers $Version $NumericVersion $GeneratedIcon $BuildRoot
 
     Copy-Item -LiteralPath $GeneratedIcon -Destination (Join-Path $ApplicationRoot "AutoSpeechJournal.ico")
-    Copy-Item -LiteralPath $ModelManifestPath -Destination (Join-Path $ApplicationRoot "models-v1.json")
+    Copy-Item -LiteralPath $ModelManifestPath `
+        -Destination (Join-Path $ApplicationRoot "runtime-models-v1.json")
     Copy-Item -LiteralPath $CudaManifest -Destination (Join-Path $ApplicationRoot "cuda-runtime-v1.json")
 
     if (-not $SkipSbom) {
@@ -456,14 +471,16 @@ if ($Stage -eq "All" -or $Stage -eq "Installer") {
     }
     $ManifestStage = Join-Path $BuildRoot "installer-manifests"
     Reset-OutputDirectory $ManifestStage
-    Copy-Item -LiteralPath $ModelManifestPath -Destination (Join-Path $ManifestStage "models-v1.json")
+    Copy-Item -LiteralPath $ModelManifestPath `
+        -Destination (Join-Path $ManifestStage "runtime-models-v1.json")
     Copy-Item -LiteralPath $CudaManifest -Destination (Join-Path $ManifestStage "cuda-runtime-v1.json")
 
     $SetupOutput = Join-Path $OutputRoot "setup"
     Reset-OutputDirectory $SetupOutput
     $PayloadBytes = Get-DirectoryBytes $AppPayloadPath
     $ModelDownloadBytes = Get-ManifestTotal $ModelManifestPath "size"
-    $ModelInstalledBytes = Get-ManifestTotal $ModelManifestPath "installed_size"
+    # Direct files are atomically moved from .part staging; no extracted second copy is created.
+    $ModelInstalledBytes = [Int64]0
     $GpuDownloadBytes = Get-ManifestTotal $CudaManifest "size"
     $GpuInstalledBytes = Get-ManifestTotal $CudaManifest "installed_size"
     $Inno = Resolve-InnoCompiler $InnoCompilerPath

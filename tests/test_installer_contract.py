@@ -112,8 +112,22 @@ def test_installer_defers_microphone_choice_to_first_app_launch() -> None:
     assert '"auto_speech_journal", "setup"' not in source
     assert "--non-interactive" not in source
     assert "--test-microphone" not in source
-    assert "-m auto_speech_journal download-models" in source
+    assert "runtime-models-v1.json" in source
+    assert "-m auto_speech_journal repair models" in source
     assert '"--deep-model-check", "--no-microphone-check"' in source
+
+
+def test_model_download_failure_keeps_program_and_enables_later_repair() -> None:
+    source = _source(INSTALLER)
+    provision = source.index("-m auto_speech_journal repair models")
+    failure_branch = source.index("if ($LASTEXITCODE -eq 0)", provision)
+    self_test = source.index("$SelfTestArguments", failure_branch)
+
+    failure_path = source[failure_branch:self_test]
+    assert "throw" not in failure_path
+    assert "程式安裝已保留" in failure_path
+    assert ".part 續傳" in failure_path
+    assert '$SelfTestArguments += "--no-model-check"' in source
 
 
 def test_local_fonts_and_notices_are_excluded_from_distribution() -> None:

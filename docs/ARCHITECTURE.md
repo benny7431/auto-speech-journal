@@ -78,9 +78,12 @@ The uninstaller deliberately does not call this path and therefore preserves use
 
 ## Network and packaging boundaries
 
-The normal `run` path has no HTTP client or cloud transcription integration. Network access exists
-only in dependency installation and explicit model download/repair. Model identifiers, revisions,
-sizes and SHA-256 digests are pinned in `model_download.py`.
+Recording and transcription have no cloud API dependency. Network access is limited to dependency
+installation, explicit model download/repair, optional CUDA provisioning, and the opt-in release
+metadata check. `packaging/manifests/runtime-models-v1.json` is the supply-chain authority for each
+Hugging Face repository, full commit revision, file path, size, SHA-256, license and source.
+`model_download.py` separately defines the application runtime contract and rejects a manifest whose
+model identities, formats or required file inventory do not match the engines.
 
 The wheel contains Python, QML and 192 offline scene assets. It excludes models, recordings,
 databases, logs, settings, local fonts and machine-local generation paths. See

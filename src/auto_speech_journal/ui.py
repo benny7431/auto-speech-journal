@@ -8,6 +8,11 @@ from pathlib import Path
 from typing import Any
 
 from .controller import JournalController
+from .paths import AppPaths
+from .setup_wizard import (
+    check_runtime_models_for_setup,
+    repair_runtime_models_for_setup,
+)
 from .ui_models import (
     COMPACT_HEIGHT,
     COMPACT_WIDTH,
@@ -205,6 +210,8 @@ def _create_main_window(
     font_directories: Sequence[Path] | None = None,
     startup_setting_callback: Callable[[bool], Any] | None = None,
     update_check_callback: Callable[[bool, Callable[[Any], None]], Any] | None = None,
+    model_status_callback: Callable[[], Any] | None = None,
+    model_provision_callback: Callable[[Callable[[Any], None]], Any] | None = None,
 ) -> Any:
     """Create the QML window without entering Qt's event loop."""
     try:
@@ -216,6 +223,31 @@ def _create_main_window(
 
     engine = QQmlApplicationEngine()
     settings = window_settings or QSettings("AutoSpeechJournal", "Desktop")
+    model_paths: AppPaths | None = None
+
+    def runtime_model_paths() -> AppPaths:
+        nonlocal model_paths
+        if model_paths is None:
+            model_paths = AppPaths.defaults()
+        return model_paths
+
+    if model_status_callback is None:
+        def default_model_status() -> object:
+            return check_runtime_models_for_setup(
+                controller.config.model,
+                paths=runtime_model_paths(),
+            )
+
+        model_status_callback = default_model_status
+    if model_provision_callback is None:
+        def default_model_provision(progress: Callable[[object], None]) -> object:
+            return repair_runtime_models_for_setup(
+                controller.config.model,
+                paths=runtime_model_paths(),
+                progress=progress,
+            )
+
+        model_provision_callback = default_model_provision
     view_model = JournalViewModel(
         controller,
         application,
@@ -225,6 +257,8 @@ def _create_main_window(
         microphone_device_provider=microphone_device_provider,
         startup_setting_callback=startup_setting_callback,
         update_check_callback=update_check_callback,
+        model_status_callback=model_status_callback,
+        model_provision_callback=model_provision_callback,
     )
     engine.rootContext().setContextProperty("journal", view_model)
     qml_path = Path(__file__).resolve().parent / "qml" / "JournalWindow.qml"

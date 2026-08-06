@@ -79,7 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     provision = commands.add_parser(
         "provision",
-        help="install versioned model assets from a signed release manifest",
+        help="install pinned runtime models directly from Hugging Face",
     )
     provision.add_argument("--manifest", type=Path, required=True)
     provision.add_argument("--progress-json", type=Path, required=True)
@@ -542,15 +542,16 @@ def run_provision_command(
     manifest_path: Path,
     progress_path: Path,
 ) -> int:
-    from .provisioning import ProgressFile, ProvisioningError, load_manifest, provision
+    from .provisioning import ProgressFile, ProvisioningError
+    from .runtime_models import load_runtime_model_manifest, provision_runtime_models
 
     writer = ProgressFile(progress_path)
     reporter = _CliProgressReporter(writer)
     release = manifest_path.stem
     try:
-        manifest = load_manifest(manifest_path)
+        manifest = load_runtime_model_manifest(manifest_path)
         release = manifest.release
-        result = provision(manifest, paths.models_dir, progress=reporter)
+        result = provision_runtime_models(manifest, paths.models_dir, progress=reporter)
     except (OSError, ValueError, ProvisioningError) as error:
         writer.failed(release, error)
         print(f"Provisioning failed: {error}", file=sys.stderr)
@@ -617,7 +618,7 @@ def run_repair_command(
     if target == "runtime":
         return run_installer_probe(isolated=True)
 
-    filename = "models-v1.json" if target == "models" else "cuda-runtime-v1.json"
+    filename = "runtime-models-v1.json" if target == "models" else "cuda-runtime-v1.json"
     selected_manifest = manifest_path or _default_repair_manifest(paths, filename)
     writer = ProgressFile(progress_path) if progress_path is not None else None
     reporter = _CliProgressReporter(writer)
@@ -628,13 +629,16 @@ def run_repair_command(
     )
     try:
         if target == "models":
-            from .provisioning import load_manifest, provision
+            from .runtime_models import (
+                load_runtime_model_manifest,
+                provision_runtime_models,
+            )
 
             if selected_manifest is None:
                 raise ProvisioningError(f"unable to find {filename}; pass --manifest")
-            manifest = load_manifest(selected_manifest)
+            manifest = load_runtime_model_manifest(selected_manifest)
             release = manifest.release
-            result = provision(manifest, paths.models_dir, progress=reporter)
+            result = provision_runtime_models(manifest, paths.models_dir, progress=reporter)
         elif target == "gpu":
             from .gpu_runtime import (
                 PINNED_GPU_MANIFEST,

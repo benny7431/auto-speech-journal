@@ -89,7 +89,7 @@ Name: "gpu\force"; Description: "{cm:ForceGpu}"; Flags: unchecked
 Source: "{#AppPayloadRoot}\*"; DestDir: "{app}\versions\{#AppVersion}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#LauncherRoot}\{#AppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#LauncherRoot}\{#CliExeName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#ManifestRoot}\models-v1.json"; DestDir: "{app}\manifests"; Flags: ignoreversion
+Source: "{#ManifestRoot}\runtime-models-v1.json"; DestDir: "{app}\manifests"; Flags: ignoreversion
 Source: "{#ManifestRoot}\cuda-runtime-v1.json"; DestDir: "{app}\manifests"; Flags: ignoreversion
 Source: "provision_runner.ps1"; Flags: dontcopy
 Source: "migrate_legacy_task.ps1"; Flags: dontcopy
@@ -97,7 +97,7 @@ Source: "migrate_legacy_task.ps1"; Flags: dontcopy
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
 Name: "{group}\Repair or reinstall {#AppName}"; Filename: "{app}\AutoSpeechJournal-Maintenance.exe"
-Name: "{group}\Repair models"; Filename: "{app}\{#CliExeName}"; Parameters: "repair models --manifest ""{app}\manifests\models-v1.json"""
+Name: "{group}\Repair models"; Filename: "{app}\{#CliExeName}"; Parameters: "repair models --manifest ""{app}\manifests\runtime-models-v1.json"""
 Name: "{group}\Repair GPU acceleration"; Filename: "{app}\{#CliExeName}"; Parameters: "repair gpu --manifest ""{app}\manifests\cuda-runtime-v1.json"""
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 
@@ -121,7 +121,7 @@ english.ForceGpu=Force the GPU attempt even if the driver recommendation is not 
 english.ModelIncomplete=The application was installed, but recognition models are not ready. Use "Repair models" from the Start menu after reconnecting.
 english.GpuFallback=GPU acceleration could not be activated. The application will continue with the CPU fallback; diagnostics are in the application log.
 english.ProvisionTitle=Download local recognition components
-english.ProvisionDescription=Setup downloads verified, pinned assets. Downloads can resume after cancellation.
+english.ProvisionDescription=Setup downloads verified, commit-pinned runtime models directly from Hugging Face. Downloads can resume after cancellation.
 english.ProvisionWaiting=Preparing download...
 english.ProvisionCancel=Cancel download
 english.ProvisionCancelled=Download cancelled. The installed application is kept; use Repair to resume later.
@@ -136,7 +136,7 @@ chinesetraditional.ForceGpu=即使驅動條件不符建議，仍強制嘗試 GPU
 chinesetraditional.ModelIncomplete=程式已安裝，但辨識模型尚未就緒。連線後請從開始選單執行「Repair models」。
 chinesetraditional.GpuFallback=GPU 加速無法啟用，程式會繼續使用 CPU fallback；診斷資料已寫入應用程式日誌。
 chinesetraditional.ProvisionTitle=下載本機辨識元件
-chinesetraditional.ProvisionDescription=Setup 會下載經雜湊驗證的固定版本資產；取消後可從 Repair 繼續。
+chinesetraditional.ProvisionDescription=Setup 會直接從 Hugging Face 下載固定 commit 且經雜湊驗證的執行模型；取消後可從 Repair 繼續。
 chinesetraditional.ProvisionWaiting=正在準備下載…
 chinesetraditional.ProvisionCancel=取消下載
 chinesetraditional.ProvisionCancelled=下載已取消。已安裝程式會保留，之後可使用 Repair 繼續。
@@ -432,23 +432,6 @@ begin
   end;
 end;
 
-function RollbackCurrentManifest(): Boolean;
-var
-  CurrentPath: String;
-  PreviousPath: String;
-begin
-  Result := False;
-  CurrentPath := ExpandConstant('{app}\current.json');
-  PreviousPath := ExpandConstant('{app}\current.previous.json');
-  if FileExists(CurrentPath) and not DeleteFile(CurrentPath) then
-    exit;
-  if FileExists(PreviousPath) then
-  begin
-    Result := RenameFile(PreviousPath, CurrentPath) and
-      (VersionedCliFromManifest(CurrentPath) <> '');
-  end;
-end;
-
 procedure CleanupOldVersions();
 var
   VersionsRoot: String;
@@ -504,6 +487,7 @@ var
   RunnerPath: String;
   MarkerPath: String;
   Arguments: String;
+  FallbackMarker: String;
   ResultCode: Integer;
 begin
   LegacyAppRoot := ExpandConstant('{localappdata}\AutoSpeechJournal\app');
@@ -515,6 +499,7 @@ begin
   Arguments := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' +
     RunnerPath + '" -LegacyAppRoot "' + LegacyAppRoot + '" -StableCli "' +
     ExpandConstant('{app}\{#CliExeName}') + '" -MarkerPath "' + MarkerPath + '"';
+  ResultCode := -1;
   if not Exec(
     ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
     Arguments,
@@ -523,14 +508,14 @@ begin
     ewWaitUntilTerminated,
     ResultCode) or (ResultCode <> 0) then
   begin
-    if RollbackCurrentManifest() then
-      RaiseException(
-        'Legacy app state was preserved, but its sign-in task could not be migrated safely. ' +
-        'The previous version was restored.')
-    else
-      RaiseException(
-        'Legacy task migration failed, and current.json could not be restored. ' +
-        'Run Setup again to repair the installation.');
+    Log(Format(
+      'Legacy task migration helper failed with exit code %d. ' +
+      'The verified new version remains active; legacy state and tasks are preserved.', [ResultCode]));
+    FallbackMarker :=
+      '{"schema_version":1,"legacy_app_retained":true,' +
+      '"legacy_task_status":"manual_start_migration_helper_failed",' +
+      '"manual_start_required":true}' + #13 + #10;
+    SaveStringToFile(MarkerPath, AnsiString(FallbackMarker), False);
   end;
 end;
 
@@ -558,7 +543,7 @@ begin
   if not CmdLineParamExists('NOMODELS') then
   begin
     Arguments := 'provision --manifest "' +
-      ExpandConstant('{app}\manifests\models-v1.json') + '" --progress-json "' +
+      ExpandConstant('{app}\manifests\runtime-models-v1.json') + '" --progress-json "' +
       ProgressPath + '"';
     if not Exec(CliPath, Arguments, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or
        (ResultCode <> 0) then
@@ -693,7 +678,7 @@ begin
 
   if Phase = 1 then
   begin
-    ManifestPath := ExpandConstant('{app}\manifests\models-v1.json');
+    ManifestPath := ExpandConstant('{app}\manifests\runtime-models-v1.json');
     ProvisionStatusLabel.Caption := 'Recognition models';
     Arguments := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' +
       RunnerPath + '" -Executable "' + CliPath + '" -Mode models -Manifest "' +

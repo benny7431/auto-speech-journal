@@ -24,6 +24,8 @@ uv run --no-sync pytest `
 uv run --no-sync python -m auto_speech_journal self-test `
   --no-model-check --no-microphone-check
 uv run --no-sync python tools/validate_scene_assets.py --strict
+uv run --no-sync python packaging/models/validate_runtime_model_manifest.py `
+  --manifest packaging/manifests/runtime-models-v1.json
 uv run --no-sync pre-commit run --all-files
 ```
 
@@ -55,7 +57,7 @@ winget install --id JRSoftware.InnoSetup -e --version 6.7.3
   驗證版本相對路徑，並依 Windows quoting 規則轉發 argv。
 
 輸出在 `artifacts/windows/`。`verify_windows_installer.ps1` 會拒絕 Torch、Transformers、
-NVIDIA runtime、模型、使用者狀態或本機字體混入 frozen payload，並執行真正的
+Safetensors、NVIDIA runtime、模型、使用者狀態或本機字體混入 frozen payload，並執行真正的
 `installer-probe --isolated` 以載入凍結後的 Qt/QML。`-AllowUnsigned` 只允許 PR 的內部
 artifact；公開發行不可帶這個參數。
 
@@ -64,30 +66,42 @@ artifact；公開發行不可帶這個參數。
 ```powershell
 # 先產生內層程式，交由 SignPath 簽章
 .\tools\build_windows_installer.ps1 -Stage Application `
-  -ReleaseBuild -ModelManifestPath .\models-v1.json
+  -ReleaseBuild `
+  -ModelManifestPath .\packaging\manifests\runtime-models-v1.json
 
 # 以簽章後 payload/launcher 建外層 Setup
 .\tools\build_windows_installer.ps1 -Stage Installer `
   -ReleaseBuild `
   -AppPayloadPath .\signed\payload `
   -LauncherPath .\signed\launchers `
-  -ModelManifestPath .\models-v1.json
+  -ModelManifestPath .\packaging\manifests\runtime-models-v1.json
 ```
 
-`-ReleaseBuild` 會拒絕 repository 內的 model placeholder；必須使用不可變 `models-v1`
-Release 所附、通過 GitHub attestation 且 SHA-256 已提交到 source 的正式 manifest。
+`packaging/manifests/runtime-models-v1.json` 是 repository 內版本化的 runtime 供應清單。
+`-ReleaseBuild` 會要求每個 Hugging Face 來源使用完整 40 位 commit revision，並檢查允許的
+ONNX／CTranslate2 檔案清單、精確 byte size、SHA-256、授權與來源欄位。不得使用
+`main`、`latest`、branch/tag 或 redirect 後未綁定 revision 的 URL。
+
+Setup 與 `repair models` 只下載 manifest 內可直接執行的檔案，不安裝 Torch、Transformers
+或 Safetensors，也不呼叫模型轉換器。`.part` 續傳、Range fallback、重試、磁碟 preflight、
+逐檔 SHA-256 與原子替換都屬於 installer/provisioner 測試契約。CUDA runtime 另由
+`packaging/manifests/cuda-runtime-v1.json` 管理，不得混入 runtime model manifest。
 
 ## Installer test matrix
 
-PR workflow 執行 unsigned、非管理員、`/NOMODELS /NOGPU` 的安裝→frozen probe→解除安裝，
-並驗證 config、SQLite/WAL、spool、models dummy state 全部保留。版本 pre-release 前另需完成：
+PR workflow 執行 unsigned、非管理員、`/NOMODELS /NOGPU` 的安裝→frozen probe，接著用
+固定 Hugging Face VAD 實際驗證 Range 續傳、損壞 `.part` 重試、已安裝檔修復、錯誤 hash
+不回滾程式，再解除安裝並確認 config、SQLite/WAL、spool 與 models 全部保留。版本
+pre-release 前另需完成：
 
 1. Windows 10 x64 CPU。
 2. Windows 11 x64 CPU。
 3. Windows 11 x64 NVIDIA：自動偵測、wheel hash、DLL extraction、CTranslate2 CUDA probe。
 4. v0.1 legacy app/task 遷移與故障注入 rollback。
-5. 已授權、可重現的參考音訊轉錄 fixture（記錄來源、SHA-256 與預期文字）。Repository
-   目前不含個人錄音，因此這是建立 `models-v1` 及實機 release sign-off 的人工硬門檻。
+5. 已授權、可重現的參考音訊轉錄 fixture：目前固定為 Paraformer Hugging Face repository
+   `8e40c43232a1c5c66c82111efc5820d3accca11b` 的 Apache-2.0 `test_wavs/2.wav`，並鎖定來源、
+   音訊 SHA-256、預期文字及文字 SHA-256。每個 release commit 仍須人工核准，且不得刪除或
+   弱化實際 Preview、VAD、CPU Whisper 推論來讓 release 通過。
 
 ## Text and generated artifacts
 

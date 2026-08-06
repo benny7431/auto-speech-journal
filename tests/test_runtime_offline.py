@@ -75,8 +75,8 @@ def test_network_capable_imports_are_confined_to_explicit_download_services() ->
 
     assert imports == {
         "gpu_runtime.py": {"urllib.parse"},
-        "model_download.py": {"huggingface_hub", "urllib.request"},
         "provisioning.py": {"urllib.error", "urllib.parse", "urllib.request"},
+        "runtime_models.py": {"urllib.parse"},
         "update_check.py": {
             "urllib.error",
             "urllib.parse",
@@ -91,7 +91,9 @@ def test_runtime_uses_only_offline_model_path_resolution() -> None:
         "resolve_model_paths"
     }
     assert _relative_imports(PACKAGE_ROOT / "setup_wizard.py", "model_download") == {
-        "ensure_models"
+        "ModelDownloadError",
+        "ensure_models",
+        "verify_models",
     }
     assert _relative_imports(PACKAGE_ROOT / "workers.py", "provisioning") == set()
     assert _relative_imports(PACKAGE_ROOT / "workers.py", "update_check") == set()

@@ -115,6 +115,57 @@ Item {
                                 font.pixelSize: hostWindow.fontPx(15)
                             }
                         }
+                        Rectangle {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: modelStatusColumn.implicitHeight + 20
+                            radius: 9
+                            color: viewModel.onboardingModelsReady ? "#E6F0E5" : "#FFF0D8"
+                            border.width: 1
+                            border.color: viewModel.onboardingModelsReady ? "#A8C4A8" : "#D6B77E"
+                            ColumnLayout {
+                                id: modelStatusColumn
+                                anchors.fill: parent
+                                anchors.margins: 10
+                                spacing: 6
+                                Text {
+                                    objectName: "onboardingModelStatus"
+                                    Layout.fillWidth: true
+                                    text: viewModel.onboardingModelStatusText
+                                    wrapMode: Text.Wrap
+                                    color: viewModel.onboardingModelsReady ? "#4E6754" : "#815F2C"
+                                    font.family: hostWindow.systemFontFamily
+                                    font.pixelSize: hostWindow.fontPx(13)
+                                }
+                                ProgressBar {
+                                    objectName: "onboardingModelProgress"
+                                    Layout.fillWidth: true
+                                    visible: viewModel.onboardingModelBusy
+                                    indeterminate: viewModel.onboardingModelProgress <= 0
+                                    from: 0
+                                    to: 1
+                                    value: viewModel.onboardingModelProgress
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    visible: !viewModel.onboardingModelsReady
+                                    Text {
+                                        Layout.fillWidth: true
+                                        visible: viewModel.onboardingModelProgressText !== ""
+                                        text: viewModel.onboardingModelProgressText
+                                        color: "#86796B"
+                                        font.family: hostWindow.systemFontFamily
+                                        font.pixelSize: hostWindow.fontPx(12)
+                                    }
+                                    Button {
+                                        objectName: "onboardingModelRepairButton"
+                                        enabled: !viewModel.onboardingModelBusy
+                                        text: viewModel.onboardingModelState === "error"
+                                              ? "重試修復" : "續傳／修復模型"
+                                        onClicked: viewModel.repairOnboardingModels()
+                                    }
+                                }
+                            }
+                        }
                         Item { Layout.fillHeight: true }
                     }
                 }
@@ -282,7 +333,8 @@ Item {
                             text: "日記資料夾\n" + viewModel.onboardingRecordsRoot +
                                   "\n\n登入自啟：" + (viewModel.onboardingStartupEnabled ? "開啟" : "關閉") +
                                   "\n版本提示：" + (viewModel.onboardingUpdateCheckEnabled ? "開啟" : "關閉") +
-                                  "\n麥克風：" + viewModel.selectedMicrophoneLabel
+                                  "\n麥克風：" + viewModel.selectedMicrophoneLabel +
+                                  "\n語音模型：" + (viewModel.onboardingModelsReady ? "已就緒" : "尚未就緒")
                             wrapMode: Text.WrapAnywhere
                             color: "#6F6255"
                             font.family: hostWindow.systemFontFamily
@@ -303,6 +355,15 @@ Item {
                                 font.pixelSize: hostWindow.fontPx(14)
                             }
                         }
+                        Button {
+                            objectName: "onboardingSummaryModelRepairButton"
+                            Layout.fillWidth: true
+                            visible: !viewModel.onboardingModelsReady
+                            enabled: !viewModel.onboardingModelBusy
+                            text: viewModel.onboardingModelState === "error"
+                                  ? "重新嘗試模型修復" : "續傳／修復語音模型"
+                            onClicked: viewModel.repairOnboardingModels()
+                        }
                         Item { Layout.fillHeight: true }
                     }
                 }
@@ -319,6 +380,7 @@ Item {
                 Item { Layout.fillWidth: true }
                 Button {
                     objectName: "onboardingDeferButton"
+                    enabled: true
                     text: "稍後設定"
                     onClicked: viewModel.deferOnboarding()
                 }
@@ -339,7 +401,9 @@ Item {
                     objectName: "onboardingStartButton"
                     visible: viewModel.onboardingStep === 4
                     enabled: viewModel.onboardingRecordsTested &&
-                             viewModel.onboardingMicrophoneReady
+                             viewModel.onboardingMicrophoneReady &&
+                             viewModel.onboardingModelsReady &&
+                             !viewModel.onboardingModelBusy
                     text: "開始錄音"
                     onClicked: viewModel.startOnboardingRecording()
                 }

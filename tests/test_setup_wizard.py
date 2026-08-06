@@ -3,9 +3,15 @@ from __future__ import annotations
 import pytest
 
 from auto_speech_journal.audio import InputDevice
-from auto_speech_journal.config import MicrophoneMode, load_config
+from auto_speech_journal.config import AppConfig, MicrophoneMode, load_config
+from auto_speech_journal.model_download import ModelDownloadError
 from auto_speech_journal.paths import AppPaths
-from auto_speech_journal.setup_wizard import SetupError, run_setup
+from auto_speech_journal.setup_wizard import (
+    SetupError,
+    check_runtime_models_for_setup,
+    repair_runtime_models_for_setup,
+    run_setup,
+)
 
 
 def _device(
@@ -91,3 +97,40 @@ def test_interactive_setup_empty_choice_follows_windows_default(tmp_path) -> Non
     )
 
     assert configured.microphone.mode is MicrophoneMode.SYSTEM_DEFAULT
+
+
+def test_model_setup_check_reports_missing_without_network(tmp_path, monkeypatch) -> None:
+    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
+
+    def missing(*_args, **_kwargs):
+        raise ModelDownloadError("required model files are missing")
+
+    monkeypatch.setattr("auto_speech_journal.setup_wizard.verify_models", missing)
+
+    status = check_runtime_models_for_setup(AppConfig().model, paths=paths)
+
+    assert status.ready is False
+    assert status.state == "not_ready"
+    assert "尚未就緒" in status.message
+
+
+def test_model_setup_repair_forwards_progress_and_returns_ready(tmp_path, monkeypatch) -> None:
+    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
+    updates = []
+
+    def provision(_config, models_dir, progress, **_kwargs):
+        assert models_dir == paths.models_dir
+        progress("whisper/model.bin", 25, 100)
+        progress("whisper/model.bin", 100, 100)
+
+    monkeypatch.setattr("auto_speech_journal.setup_wizard.ensure_models", provision)
+
+    status = repair_runtime_models_for_setup(
+        AppConfig().model,
+        paths=paths,
+        progress=updates.append,
+    )
+
+    assert status.ready is True
+    assert status.state == "ready"
+    assert [(item.completed, item.total) for item in updates] == [(25, 100), (100, 100)]

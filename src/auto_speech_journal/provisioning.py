@@ -305,6 +305,28 @@ def download_resumable(
             with opener(request, timeout) as response:
                 status = response.getcode()
                 append = offset > 0 and status == 206
+                if append:
+                    content_range = response.headers.get("Content-Range", "")
+                    match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+|\*)", content_range)
+                    start = int(match.group(1)) if match is not None else -1
+                    end = int(match.group(2)) if match is not None else -1
+                    total = (
+                        int(match.group(3))
+                        if match is not None and match.group(3) != "*"
+                        else -1
+                    )
+                    if (
+                        match is None
+                        or start != offset
+                        or end < start
+                        or end != expected_size - 1
+                        or total != expected_size
+                    ):
+                        destination.unlink(missing_ok=True)
+                        raise DownloadError(
+                            f"invalid Content-Range for resumed {destination.name}: "
+                            f"{content_range!r}"
+                        )
                 if offset > 0 and not append:
                     offset = 0
                 mode = "ab" if append else "wb"
@@ -329,6 +351,8 @@ def download_resumable(
                 )
             return
         except (OSError, urllib.error.URLError, DownloadError) as error:
+            if offset and isinstance(error, urllib.error.HTTPError) and error.code == 416:
+                destination.unlink(missing_ok=True)
             last_error = error
             if attempt + 1 < retries:
                 sleep(min(2 ** attempt, 8))
