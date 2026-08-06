@@ -11,10 +11,10 @@ SQLite is the authoritative state store; generated Markdown is rebuildable outpu
 Run these from PowerShell with Python 3.11 and `uv` installed:
 
 ```powershell
-uv sync --no-editable --extra dev
+uv sync --frozen --no-editable --extra dev
 $env:PYTHONPATH = (Join-Path $PWD "src")
 uv run --no-sync pytest
-uv run --no-sync ruff check src tests
+uv run --no-sync ruff check src tests tools
 uv build
 ```
 
@@ -26,8 +26,12 @@ Use four-space indentation, type annotations, and a 100-character line limit. Ru
 
 ## Testing Guidelines
 
-Use Pytest; name files `test_<area>.py` and cases `test_<behavior>`. Add focused regression tests for storage recovery, atomic exports, worker state transitions, offline behavior, and installer rollback. No minimum coverage threshold is configured; run `pytest --cov=auto_speech_journal --cov-report=term-missing` when evaluating broader changes.
+Use Pytest; name files `test_<area>.py` and cases `test_<behavior>`. Add focused regression tests for storage recovery, atomic exports, worker state transitions, offline behavior, and installer rollback. CI enforces at least 75% coverage; run `pytest --cov=auto_speech_journal --cov-report=term-missing --cov-fail-under=75` when evaluating broader changes.
 
 ## Commit & Pull Request Guidelines
 
-The repository has no commit history yet, so use short imperative subjects, preferably Conventional Commits (for example, `fix: preserve spool recovery state`). Keep commits focused and include related tests. Pull requests should summarize behavior changes, list validation commands, note persistence or installation risks, link relevant issues, and include screenshots for UI changes.
+The canonical public repository is `https://github.com/benny7431/auto-speech-journal`, configured locally as `origin`. The project has already been published there; GitHub is the shared source of truth for completed work, while SQLite remains the runtime authority for journal data.
+
+Use short imperative subjects, preferably Conventional Commits (for example, `fix: preserve spool recovery state`). Keep commits focused and include related tests. Pull requests should summarize behavior changes, list validation commands, note persistence or installation risks, link relevant issues, and include screenshots for UI changes.
+
+Every major update MUST be committed and pushed to GitHub after its required validation passes. A major update includes a version milestone or substantial user-visible, architectural, persistence, installer, model-pipeline, or release-process change. Do not treat such work as complete while it exists only in the local worktree. Push it on a `codex/` branch, open a pull request, wait for required CI and CodeQL checks, and merge it into `main`. For a versioned release, also update the version and `CHANGELOG.md`, then create and push the corresponding release tag according to `docs/RELEASING.md`.
