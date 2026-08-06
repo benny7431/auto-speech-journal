@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import io
+from types import SimpleNamespace
 
 import pytest
 
@@ -32,6 +34,24 @@ def test_parser_exposes_only_supported_commands() -> None:
     assert parser.parse_args(["setup", "--system-default"]).system_default is True
     assert parser.parse_args(["self-test", "--no-microphone-check"]).no_microphone_check
     assert parser.parse_args(["startup", "status"]).startup_action == "status"
+
+
+def test_cli_configures_utf8_output_for_frozen_windows_console(monkeypatch) -> None:
+    stdout_bytes = io.BytesIO()
+    stderr_bytes = io.BytesIO()
+    stdout = io.TextIOWrapper(stdout_bytes, encoding="cp1252")
+    stderr = io.TextIOWrapper(stderr_bytes, encoding="cp1252")
+    monkeypatch.setattr(cli, "sys", SimpleNamespace(stdout=stdout, stderr=stderr))
+
+    cli._configure_standard_streams()
+
+    message = "[PASS] 執行資料夾: C:\\使用者\\錄音"
+    print(message, file=stdout)
+    print(message, file=stderr)
+    stdout.flush()
+    stderr.flush()
+    assert stdout_bytes.getvalue().decode("utf-8").strip() == message
+    assert stderr_bytes.getvalue().decode("utf-8").strip() == message
 
 
 @pytest.mark.parametrize(

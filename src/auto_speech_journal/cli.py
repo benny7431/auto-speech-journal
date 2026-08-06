@@ -8,6 +8,7 @@ import sys
 import tempfile
 import uuid
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,15 @@ from .setup_wizard import SetupError, discover_input_devices, run_setup
 from .single_instance import NamedMutex, SingleInstanceError
 
 LOGGER = logging.getLogger("auto_speech_journal.cli")
+
+
+def _configure_standard_streams() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        with suppress(OSError, ValueError):
+            reconfigure(encoding="utf-8", errors="backslashreplace")
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    _configure_standard_streams()
     args = build_parser().parse_args(argv)
 
     paths = AppPaths.defaults()
