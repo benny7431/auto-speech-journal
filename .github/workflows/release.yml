@@ -1,4 +1,4 @@
-name: Signed release
+name: Release
 
 on:
   push:
@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   windows-package:
-    name: Build and sign Windows release package
+    name: Build unsigned Windows release package
     runs-on: windows-latest
     timeout-minutes: 180
     permissions:
@@ -27,12 +27,6 @@ jobs:
       QT_QPA_PLATFORM: offscreen
       QT_QUICK_BACKEND: software
       QSG_RHI_BACKEND: software
-      SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
-      SIGNPATH_PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG }}
-      SIGNPATH_SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
-      SIGNPATH_PROGRAM_CONFIGURATION: ${{ vars.SIGNPATH_PROGRAM_ARTIFACT_CONFIGURATION }}
-      SIGNPATH_SETUP_CONFIGURATION: ${{ vars.SIGNPATH_SETUP_ARTIFACT_CONFIGURATION }}
-      SIGNPATH_EXPECTED_PUBLISHER: ${{ vars.SIGNPATH_EXPECTED_PUBLISHER }}
 
     steps:
       - name: Check out tagged source without persisted credentials
@@ -40,27 +34,6 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Require complete SignPath Foundation configuration
-        shell: pwsh
-        env:
-          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
-        run: |
-          $required = @{
-            SIGNPATH_API_TOKEN = $env:SIGNPATH_API_TOKEN
-            SIGNPATH_ORGANIZATION_ID = $env:SIGNPATH_ORGANIZATION_ID
-            SIGNPATH_PROJECT_SLUG = $env:SIGNPATH_PROJECT_SLUG
-            SIGNPATH_SIGNING_POLICY_SLUG = $env:SIGNPATH_SIGNING_POLICY_SLUG
-            SIGNPATH_PROGRAM_ARTIFACT_CONFIGURATION = $env:SIGNPATH_PROGRAM_CONFIGURATION
-            SIGNPATH_SETUP_ARTIFACT_CONFIGURATION = $env:SIGNPATH_SETUP_CONFIGURATION
-            SIGNPATH_EXPECTED_PUBLISHER = $env:SIGNPATH_EXPECTED_PUBLISHER
-          }
-          $missing = @($required.Keys | Where-Object {
-            [string]::IsNullOrWhiteSpace($required[$_])
-          })
-          if ($missing.Count -gt 0) {
-            throw "Unsigned public releases are forbidden. Missing SignPath configuration: $($missing -join ', ')"
-          }
 
       - name: Require completed physical Windows release matrix
         shell: pwsh
@@ -142,7 +115,7 @@ jobs:
             --jq '.[].tag_name'
           if ($LASTEXITCODE -ne 0) { throw "Cannot query existing releases" }
           if (@($tags) -contains $env:GITHUB_REF_NAME) {
-            throw "Release $env:GITHUB_REF_NAME already exists. Publish a new patch version; do not replace signed assets."
+            throw "Release $env:GITHUB_REF_NAME already exists. Publish a new patch version; do not replace published assets."
           }
 
       - name: Require successful CI, CodeQL, and unsigned installer contract
@@ -271,16 +244,16 @@ jobs:
             --silent --accept-package-agreements --accept-source-agreements
           if ($LASTEXITCODE -ne 0) { throw "Pinned Inno Setup installation failed" }
 
-      - name: Build unsigned inner application
+      - name: Build unsigned application and Setup
         shell: powershell
         run: |
           & .\tools\build_windows_installer.ps1 `
-            -Stage Application `
+            -Stage All `
             -ReleaseBuild `
             -ModelManifestPath packaging\manifests\runtime-models-v1.json
-          if (-not $?) { throw "Unsigned inner application build failed" }
+          if (-not $?) { throw "Unsigned Windows release package build failed" }
 
-      - name: Verify frozen runtime inventory and unsigned inner build
+      - name: Verify frozen runtime, SBOM, application, and Setup
         shell: powershell
         run: |
           uv run --no-sync python packaging/windows/runtime_inventory.py validate `
@@ -290,115 +263,17 @@ jobs:
             --pyproject pyproject.toml `
             --payload artifacts/windows/application/payload
           if ($LASTEXITCODE -ne 0) { throw "Frozen runtime/SBOM inventory validation failed" }
-          & .\tools\verify_windows_installer.ps1 -AllowUnsigned -SkipSetup
-          if (-not $?) { throw "Unsigned inner application verification failed" }
+          & .\tools\verify_windows_installer.ps1
+          if (-not $?) { throw "Unsigned Windows artifact verification failed" }
 
-      - name: Stage inner signing artifact
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path artifacts/signpath-program | Out-Null
-          Copy-Item -Path artifacts/windows/application/payload `
-            -Destination artifacts/signpath-program/payload -Recurse
-          Copy-Item -Path artifacts/windows/application/launchers `
-            -Destination artifacts/signpath-program/launchers -Recurse
-
-      - name: Upload unsigned inner application
-        id: upload-unsigned-program
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: signpath-program-${{ github.sha }}
-          path: artifacts/signpath-program/
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Sign inner executables with SignPath
-        uses: signpath/github-action-submit-signing-request@b9d91eadd323de506c0c81cf0c7fe7438f3360fd # v2
-        with:
-          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
-          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
-          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
-          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
-          artifact-configuration-slug: ${{ vars.SIGNPATH_PROGRAM_ARTIFACT_CONFIGURATION }}
-          github-artifact-id: ${{ steps.upload-unsigned-program.outputs.artifact-id }}
-          wait-for-completion: true
-          output-artifact-directory: artifacts/signed-program
-          parameters: |
-            version: "${{ github.ref_name }}"
-
-      - name: Verify signed inner executables
-        shell: powershell
-        run: |
-          & .\tools\verify_windows_installer.ps1 `
-            -AppPayloadPath artifacts\signed-program\payload `
-            -LauncherPath artifacts\signed-program\launchers `
-            -UnsignedAppPayloadPath artifacts\signpath-program\payload `
-            -UnsignedLauncherPath artifacts\signpath-program\launchers `
-            -ExpectedPublisher "$env:SIGNPATH_EXPECTED_PUBLISHER" `
-            -SkipSetup
-          if (-not $?) { throw "Signed inner executable verification failed" }
-
-      - name: Build installer around signed inner application
-        shell: powershell
-        run: |
-          & .\tools\build_windows_installer.ps1 `
-            -Stage Installer `
-            -ReleaseBuild `
-            -AppPayloadPath artifacts\signed-program\payload `
-            -LauncherPath artifacts\signed-program\launchers `
-            -ModelManifestPath packaging\manifests\runtime-models-v1.json
-          if (-not $?) { throw "Installer build around signed application failed" }
-
-      - name: Upload unsigned Setup
-        id: upload-unsigned-setup
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: signpath-setup-${{ github.sha }}
-          path: artifacts/windows/setup/*.exe
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Sign Setup with SignPath
-        uses: signpath/github-action-submit-signing-request@b9d91eadd323de506c0c81cf0c7fe7438f3360fd # v2
-        with:
-          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
-          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
-          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
-          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
-          artifact-configuration-slug: ${{ vars.SIGNPATH_SETUP_ARTIFACT_CONFIGURATION }}
-          github-artifact-id: ${{ steps.upload-unsigned-setup.outputs.artifact-id }}
-          wait-for-completion: true
-          output-artifact-directory: artifacts/signed-setup
-          parameters: |
-            version: "${{ github.ref_name }}"
-
-      - name: Normalize and verify all signed artifacts
-        shell: powershell
-        run: |
-          $version = $env:GITHUB_REF_NAME.Substring(1)
-          $signedSetup = @(Get-ChildItem artifacts/signed-setup -Recurse -File `
-            -Filter "AutoSpeechJournal-Setup-$version-x64.exe")
-          if ($signedSetup.Count -ne 1) { throw "Expected exactly one signed Setup" }
-          New-Item -ItemType Directory -Force -Path artifacts/release | Out-Null
-          Copy-Item -LiteralPath $signedSetup[0].FullName `
-            -Destination "artifacts/release/AutoSpeechJournal-Setup-$version-x64.exe"
-          & .\tools\verify_windows_installer.ps1 `
-            -AppPayloadPath artifacts\signed-program\payload `
-            -LauncherPath artifacts\signed-program\launchers `
-            -UnsignedAppPayloadPath artifacts\signpath-program\payload `
-            -UnsignedLauncherPath artifacts\signpath-program\launchers `
-            -SetupPath "artifacts\release\AutoSpeechJournal-Setup-$version-x64.exe" `
-            -UnsignedSetupPath "artifacts\windows\setup\AutoSpeechJournal-Setup-$version-x64.exe" `
-            -ExpectedPublisher "$env:SIGNPATH_EXPECTED_PUBLISHER"
-          if (-not $?) { throw "Signed Windows artifact verification failed" }
-
-      - name: Install signed Setup and verify embedded signed trees
+      - name: Install unsigned Setup and verify embedded application trees
         shell: pwsh
         run: |
           $version = $env:GITHUB_REF_NAME.Substring(1)
-          $setup = "artifacts\release\AutoSpeechJournal-Setup-$version-x64.exe"
-          $installRoot = Join-Path $env:RUNNER_TEMP "AutoSpeechJournal-Signed-E2E"
+          $setup = "artifacts\windows\setup\AutoSpeechJournal-Setup-$version-x64.exe"
+          $installRoot = Join-Path $env:RUNNER_TEMP "AutoSpeechJournal-Unsigned-E2E"
           & $setup /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOMODELS /NOGPU "/DIR=$installRoot"
-          if ($LASTEXITCODE -ne 0) { throw "Signed Setup failed: $LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0) { throw "Unsigned Setup failed: $LASTEXITCODE" }
 
           function Assert-TreeEqual([string]$ExpectedRoot, [string]$ActualRoot) {
             $expected = @{}
@@ -420,24 +295,28 @@ jobs:
           }
 
           Assert-TreeEqual `
-            ([IO.Path]::GetFullPath('artifacts\signed-program\payload')) `
+            ([IO.Path]::GetFullPath('artifacts\windows\application\payload')) `
             (Join-Path $installRoot "versions\$version")
           foreach ($name in @('AutoSpeechJournal.exe', 'AutoSpeechJournal.CLI.exe')) {
             $expected = Get-FileHash `
-              -LiteralPath (Join-Path 'artifacts\signed-program\launchers' $name) `
+              -LiteralPath (Join-Path 'artifacts\windows\application\launchers' $name) `
               -Algorithm SHA256
             $actual = Get-FileHash -LiteralPath (Join-Path $installRoot $name) -Algorithm SHA256
             if ($expected.Hash -ne $actual.Hash) { throw "Installed launcher differs: $name" }
           }
           & (Join-Path $installRoot 'AutoSpeechJournal.CLI.exe') installer-probe --isolated
-          if ($LASTEXITCODE -ne 0) { throw "Installed signed runtime probe failed" }
+          if ($LASTEXITCODE -ne 0) { throw "Installed unsigned runtime probe failed" }
           & (Join-Path $installRoot 'unins000.exe') /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
-          if ($LASTEXITCODE -ne 0) { throw "Signed Setup uninstall failed" }
+          if ($LASTEXITCODE -ne 0) { throw "Unsigned Setup uninstall failed" }
 
       - name: Prepare exact immutable release bundle
         shell: pwsh
         run: |
           $version = $env:GITHUB_REF_NAME.Substring(1)
+          New-Item -ItemType Directory -Force -Path artifacts/release | Out-Null
+          Copy-Item `
+            -LiteralPath "artifacts/windows/setup/AutoSpeechJournal-Setup-$version-x64.exe" `
+            -Destination artifacts/release/
           $expectedDistributions = @(
             "auto_speech_journal-$version-py3-none-any.whl",
             "auto_speech_journal-$version.tar.gz"
@@ -472,9 +351,18 @@ jobs:
           for ($i = $start + 1; $i -lt $lines.Count; $i++) {
             if ($lines[$i] -match '^## \[') { $end = $i; break }
           }
+          $releaseNotes = @(
+            "# Important Windows installer notice",
+            "",
+            "The Setup executable and bundled application executables are not currently Authenticode-signed.",
+            "Windows may therefore show an Unknown publisher message or a Microsoft Defender SmartScreen prompt.",
+            "Do not disable Microsoft Defender. Verify the published SHA-256 checksums and GitHub artifact attestations before installation.",
+            "Code signing can be added in a future release, but it is not a release gate for this version.",
+            ""
+          ) + $lines[$start..($end - 1)]
           [IO.File]::WriteAllLines(
             "artifacts/release/RELEASE-NOTES.md",
-            $lines[$start..($end - 1)],
+            $releaseNotes,
             (New-Object Text.UTF8Encoding($false))
           )
 
@@ -486,7 +374,7 @@ jobs:
             "- Ruff, coverage >= 75%, scene assets, wheel contents: passed",
             "- Pinned Hugging Face model downloads plus Preview, VAD, Whisper, CPU fallback, and reference transcript: passed",
             "- Frozen QML installer probe and runtime/SBOM inventory: passed",
-            "- Inner GUI, CLI, stable launchers, and Setup: Authenticode valid and timestamped",
+            "- Inner GUI, CLI, stable launchers, and Setup are intentionally not Authenticode-signed for this release",
             "- Hosted-runner install, isolated probe, and uninstall preservation smoke: passed",
             "- The physical Windows 10/11 CPU/NVIDIA matrix is not automated by this workflow.",
             "- Windows 10 CPU physical E2E manual gate: approved for $env:GITHUB_SHA",
@@ -533,26 +421,10 @@ jobs:
       - name: Upload verified release bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: signed-release-${{ github.ref_name }}-${{ github.sha }}
+          name: release-${{ github.ref_name }}-${{ github.sha }}
           path: artifacts/release/
           if-no-files-found: error
           retention-days: 14
-
-      - name: Upload private signed inner-program verification evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: signed-program-evidence-${{ github.ref_name }}-${{ github.sha }}
-          path: artifacts/signed-program/
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Upload private unsigned Setup verification evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: unsigned-setup-evidence-${{ github.ref_name }}-${{ github.sha }}
-          path: artifacts/windows/setup/AutoSpeechJournal-Setup-*-x64.exe
-          if-no-files-found: error
-          retention-days: 7
 
   publish:
     name: Reverify, attest, and publish release
@@ -566,7 +438,6 @@ jobs:
       id-token: write
     env:
       PYTHONUTF8: "1"
-      SIGNPATH_EXPECTED_PUBLISHER: ${{ vars.SIGNPATH_EXPECTED_PUBLISHER }}
 
     steps:
       - name: Check out the exact tag without persisted credentials
@@ -582,26 +453,8 @@ jobs:
       - name: Download verified release bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: signed-release-${{ github.ref_name }}-${{ github.sha }}
+          name: release-${{ github.ref_name }}-${{ github.sha }}
           path: artifacts/release
-
-      - name: Download private unsigned Setup verification evidence
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: unsigned-setup-evidence-${{ github.ref_name }}-${{ github.sha }}
-          path: artifacts/unsigned-setup
-
-      - name: Download private unsigned inner-program verification evidence
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: signpath-program-${{ github.sha }}
-          path: artifacts/unsigned-program
-
-      - name: Download private signed inner-program verification evidence
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: signed-program-evidence-${{ github.ref_name }}-${{ github.sha }}
-          path: artifacts/signed-program
 
       - name: Reverify lock, source version, remote tag, and release absence
         shell: pwsh
@@ -609,7 +462,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           uv lock --check
-          if ($LASTEXITCODE -ne 0) { throw "uv.lock changed after the signed build" }
+          if ($LASTEXITCODE -ne 0) { throw "uv.lock changed after the release build" }
           $tag = $env:GITHUB_REF_NAME
           $project = Get-Content pyproject.toml -Raw -Encoding UTF8
           $match = [regex]::Match($project, '(?m)^version\s*=\s*"([^"]+)"\s*$')
@@ -632,7 +485,7 @@ jobs:
           $tags = gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" `
             --jq '.[].tag_name'
           if ($LASTEXITCODE -ne 0) { throw "Cannot query existing releases" }
-          if (@($tags) -contains $tag) { throw "Release already exists; signed assets are immutable" }
+          if (@($tags) -contains $tag) { throw "Release already exists; published assets are immutable" }
 
       - name: Reverify exact release files and checksums
         shell: pwsh
@@ -660,27 +513,6 @@ jobs:
             $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
             if ($hash -ne $Matches[1]) { throw "Release checksum mismatch: $($Matches[2])" }
           }
-
-      - name: Reverify signatures and normalized signing invariants without execution
-        shell: powershell
-        run: |
-          $version = $env:GITHUB_REF_NAME.Substring(1)
-          $setup = Join-Path $PWD "artifacts\release\AutoSpeechJournal-Setup-$version-x64.exe"
-          $verifyRoot = Join-Path $PWD 'artifacts\post-build-verify'
-          New-Item -ItemType Directory -Force -Path (Join-Path $verifyRoot 'application') | Out-Null
-          Copy-Item -LiteralPath artifacts\release\AutoSpeechJournal.cdx.json `
-            -Destination (Join-Path $verifyRoot 'application\AutoSpeechJournal.cdx.json')
-          & .\tools\verify_windows_installer.ps1 `
-            -ArtifactRoot $verifyRoot `
-            -AppPayloadPath (Join-Path $PWD 'artifacts\signed-program\payload') `
-            -LauncherPath (Join-Path $PWD 'artifacts\signed-program\launchers') `
-            -UnsignedAppPayloadPath (Join-Path $PWD 'artifacts\unsigned-program\payload') `
-            -UnsignedLauncherPath (Join-Path $PWD 'artifacts\unsigned-program\launchers') `
-            -SetupPath $setup `
-            -UnsignedSetupPath (Join-Path $PWD "artifacts\unsigned-setup\AutoSpeechJournal-Setup-$version-x64.exe") `
-            -ExpectedPublisher "$env:SIGNPATH_EXPECTED_PUBLISHER" `
-            -SkipRuntimeProbe
-          if (-not $?) { throw "Post-build Authenticode/signing-invariant verification failed" }
 
       - name: Attest every release asset and release notes
         uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
@@ -767,7 +599,7 @@ jobs:
           $peeled = @($remoteLines | Where-Object { $_.EndsWith("^{}") })
           $remoteLine = if ($peeled.Count -eq 1) { $peeled[0] } else { $remoteLines[0] }
           if (($remoteLine -split '\s+')[0] -ne $env:GITHUB_SHA) {
-            throw "Remote tag moved after signed build; draft remains unpublished"
+            throw "Remote tag moved after release build; draft remains unpublished"
           }
 
       - name: Publish pre-release and perform final immutable checks

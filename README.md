@@ -85,10 +85,12 @@ Hugging Face；日常錄音不需要把音訊或文字送到雲端。
 
 ### 2. 下載並安裝
 
-`v0.2.0` Setup 尚未公開；必須先通過 SignPath 簽章與 Windows 實機矩陣。門檻完成後，
-請只從 [GitHub Releases](https://github.com/benny7431/auto-speech-journal/releases) 下載已簽章的
-`AutoSpeechJournal-Setup-0.2.0-x64.exe`，不要使用 PR 的 unsigned artifact。正式 Setup 不需要
-Python、`uv`、Git、PowerShell 或管理員權限。
+`v0.2.0` 允許正式發布未簽章的 `AutoSpeechJournal-Setup-0.2.0-x64.exe` 與內層 EXE。
+請只從 [GitHub Releases](https://github.com/benny7431/auto-speech-journal/releases) 下載正式資產，
+不要使用 PR 的內部 artifact。由於目前沒有 Authenticode 簽章，Windows 可能顯示
+「未知的發行者」或 Microsoft Defender SmartScreen 提示；請先比對 Release 提供的 SHA-256，
+並使用 GitHub artifact attestation 驗證來源。無需也不應為了安裝而停用 Windows Defender。
+正式 Setup 不需要 Python、`uv`、Git、PowerShell、管理員權限或另外安裝憑證。
 
 Setup 預設直接從 Hugging Face 的固定 commit revision 下載可執行模型，顯示進度、ETA，
 並允許取消後續傳。GPU 選項
@@ -328,7 +330,8 @@ install.ps1, uninstall.ps1     # 僅供開發／救援的舊 PowerShell 流程
 - 僅支援 Windows WASAPI、Python 3.11、中文辨識與台北時區。
 - 麥克風清單包含 WASAPI 虛擬輸入，但不支援特殊 loopback capture；無法安全區分的
   同名端點不能固定綁定，請改用 Windows 預設或停用重複端點。
-- 公開 Setup 依賴 SignPath Foundation 審核與簽章；沒有有效簽章時 release workflow 會直接失敗。
+- `v0.2.0` Setup 與內層 EXE 尚未簽章，Windows 可能顯示未知發行者或 SmartScreen 提示；
+  簽章缺失目前不阻擋正式 Release。未來取得合適憑證後可重新加入簽章流程。
 - 專案原始碼與專案自有發行資產採 MIT License；第三方內容仍受各自條款約束。
 - 個人本機字體與其聲明不屬於發行內容。
 

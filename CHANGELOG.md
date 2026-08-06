@@ -11,14 +11,14 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- Signed, per-user Windows x64 Setup built from a PyInstaller onedir application and Inno Setup.
+- Per-user Windows x64 Setup built from a PyInstaller onedir application and Inno Setup.
 - Stable native GUI/CLI launchers with atomic `current.json` version switching and rollback.
 - Resumable direct Hugging Face model provisioning from immutable commit revisions, NVIDIA
   auto-detection, and CPU fallback.
 - First-run consent flow for journal folder, startup, microphone testing, and update notifications.
 - Repair, installer readiness, graceful shutdown, and owned startup-task CLI commands.
-- CycloneDX SBOM, build provenance, a versioned runtime-model manifest, and two-stage SignPath
-  workflows.
+- CycloneDX SBOM, artifact attestations, build provenance, a versioned runtime-model manifest, and
+  fail-closed release validation for tests, CodeQL, Windows installation E2E, and checksums.
 
 ### Changed
 
@@ -28,6 +28,9 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Sign-in startup and update checks default to off and require explicit user consent.
 - Setup and `repair models` now fetch ready-to-run ONNX and CTranslate2 files directly from
   Hugging Face; they do not install Torch, Transformers, or Safetensors or convert models locally.
+- The `v0.2.0` release policy permits unsigned Setup and inner executables. Authenticode can be
+  restored after a suitable certificate becomes available, but its absence no longer blocks the
+  release.
 
 ### Fixed
 
@@ -41,8 +44,9 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
-- Public releases fail closed without timestamped SignPath signatures for inner executables and
-  Setup; signed assets are never replaced in place.
+- Release documentation identifies the unsigned installer and possible Windows Unknown publisher
+  or SmartScreen prompts. Users verify SHA-256 and GitHub artifact attestations without disabling
+  Windows Defender.
 - CUDA wheel URLs, sizes, and SHA-256 digests remain pinned in a separate manifest. Every runtime
   model file is pinned by Hugging Face repository, full commit revision, size, and SHA-256 before
   atomic installation.

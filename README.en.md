@@ -88,10 +88,14 @@ does not send audio or transcripts to a cloud service.
 
 ### 2. Download and install
 
-The `v0.2.0` Setup is not public yet; SignPath signing and the physical Windows test matrix must
-pass first. After those gates, download only the signed `AutoSpeechJournal-Setup-0.2.0-x64.exe`
-from [GitHub Releases](https://github.com/benny7431/auto-speech-journal/releases), not an unsigned
-PR artifact. The final Setup does not require Python, `uv`, Git, PowerShell, or administrator access.
+The official `v0.2.0` release may publish an unsigned
+`AutoSpeechJournal-Setup-0.2.0-x64.exe` with unsigned inner executables. Download release assets
+only from [GitHub Releases](https://github.com/benny7431/auto-speech-journal/releases), not from an
+internal PR artifact. Because the files currently have no Authenticode signature, Windows may show
+an **Unknown publisher** dialog or a Microsoft Defender SmartScreen prompt. Verify the published
+SHA-256 and GitHub artifact attestation before running Setup. You do not need to disable Windows
+Defender. The final Setup does not require Python, `uv`, Git, PowerShell, administrator access, or
+a separately installed certificate.
 
 Setup downloads ready-to-run models directly from pinned Hugging Face commit revisions, with visible
 progress, ETA, cancellation, and resume.
@@ -349,7 +353,9 @@ install.ps1, uninstall.ps1     # Legacy development/recovery path only
 - The microphone list includes WASAPI virtual inputs but does not support special loopback capture.
   Indistinguishable duplicate endpoints cannot be pinned; use the Windows default or disable the
   duplicate endpoint.
-- Public Setup publication is blocked unless SignPath returns valid timestamped signatures.
+- The `v0.2.0` Setup and inner executables are currently unsigned, so Windows may report an unknown
+  publisher or show SmartScreen. Missing signatures do not block this release; signing can be added
+  again after a suitable certificate becomes available.
 - Project source and first-party release assets use the MIT License; third-party content keeps its
   own terms.
 - Personal local fonts and their legal records are not release contents.
