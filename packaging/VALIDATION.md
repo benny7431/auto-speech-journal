@@ -1,7 +1,21 @@
 # Release Artifact Validation
 
-These checks are release gates, not informational reports. Any non-zero exit blocks the
-corresponding artifact from signing or publication.
+These checks are release gates, not informational reports. Any non-zero exit blocks publication
+of the corresponding artifact.
+
+## Unsigned Windows release policy
+
+The `v0.2.0` Setup and inner executables are intentionally allowed to ship without Authenticode.
+The Windows verifier must not fail solely because `Get-AuthenticodeSignature` reports `NotSigned`,
+and no SignPath, OV Authenticode, certificate, publisher, or timestamp secret is required. This
+exception does not weaken the remaining release gates: the full test suite, CodeQL, Windows install
+E2E, SHA-256 checksums, CycloneDX SBOM, GitHub artifact attestation, frozen runtime inventory, and
+runtime-model reference inference must all pass.
+
+README and release notes must disclose that Windows can show Unknown publisher or Microsoft
+Defender SmartScreen for the unsigned installer and direct users to verify its SHA-256 and artifact
+attestation. They must not instruct users to disable Windows Defender. A future release may add
+signing after a suitable certificate becomes available without changing these validation gates.
 
 ## CUDA manifest
 
@@ -101,7 +115,7 @@ Face revision. `reference-audio-gate.json` locks its repository, 40-character re
 source URL, license, audio SHA-256, bounded duration, reviewed non-empty Preview and Traditional
 Chinese final transcripts, and normalized transcript hashes. Release automation additionally
 requires `RUNTIME_MODELS_REFERENCE_TRANSCRIPT_APPROVED_SHA` to equal the tagged commit; changing
-the fixture or expected text without a fresh review therefore blocks signing and publication.
-5. License/provenance documentation for the recording.
+the fixture or expected text without a fresh review therefore blocks publication. License and
+provenance documentation for the recording remain mandatory.
 
 Changing the gate to `ready` without those machine-verifiable fields still fails validation.

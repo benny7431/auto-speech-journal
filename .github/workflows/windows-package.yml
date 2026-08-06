@@ -104,11 +104,11 @@ jobs:
             throw "Expected exact versioned wheel and source distribution; found: $($actual -join ', ')"
           }
 
-      - name: Build unsigned application and Setup
+      - name: Build application and Setup
         shell: powershell
         run: |
           & .\tools\build_windows_installer.ps1 -Stage All
-          if (-not $?) { throw "Unsigned Windows package build failed" }
+          if (-not $?) { throw "Windows package build failed" }
 
       - name: Verify frozen runtime inventory and SBOM
         shell: pwsh
@@ -121,11 +121,11 @@ jobs:
             --payload artifacts/windows/application/payload
           if ($LASTEXITCODE -ne 0) { throw "Frozen runtime/SBOM inventory validation failed" }
 
-      - name: Verify frozen QML and unsigned artifacts
+      - name: Verify frozen QML and Windows artifacts
         shell: powershell
         run: |
-          & .\tools\verify_windows_installer.ps1 -AllowUnsigned
-          if (-not $?) { throw "Unsigned Windows artifact verification failed" }
+          & .\tools\verify_windows_installer.ps1
+          if (-not $?) { throw "Windows artifact verification failed" }
 
       - name: Install, probe, and uninstall as the current non-elevated user
         shell: powershell

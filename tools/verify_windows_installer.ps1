@@ -3,12 +3,7 @@ param(
     [string]$ArtifactRoot,
     [string]$AppPayloadPath,
     [string]$LauncherPath,
-    [string]$UnsignedAppPayloadPath,
-    [string]$UnsignedLauncherPath,
-    [string]$UnsignedSetupPath,
     [string]$SetupPath,
-    [string]$ExpectedPublisher = "SignPath Foundation",
-    [switch]$AllowUnsigned,
     [switch]$SkipSetup,
     [switch]$SkipRuntimeProbe
 )
@@ -73,109 +68,25 @@ function Get-CertificateReceipt([Security.Cryptography.X509Certificates.X509Cert
     }
 }
 
-function Get-SignerInfoSigningTimeUtc($SignerInfo) {
-    foreach ($Attribute in @($SignerInfo.SignedAttributes)) {
-        if ($Attribute.Oid.Value -ne "1.2.840.113549.1.9.5") {
-            continue
-        }
-        foreach ($Value in @($Attribute.Values)) {
-            $SigningTime = New-Object Security.Cryptography.Pkcs.Pkcs9SigningTime(
-                ,$Value.RawData
-            )
-            return $SigningTime.SigningTime.ToUniversalTime()
-        }
-    }
-    return $null
-}
-
-function Get-EmbeddedAuthenticodeTimestampUtc([string]$Path) {
-    Add-Type -AssemblyName System.Security
-    $Bytes = [IO.File]::ReadAllBytes([IO.Path]::GetFullPath($Path))
-    $PeOffset = [int][BitConverter]::ToUInt32($Bytes, 0x3c)
-    $OptionalOffset = $PeOffset + 24
-    $Magic = [BitConverter]::ToUInt16($Bytes, $OptionalOffset)
-    $DataDirectoryOffset = $OptionalOffset + $(if ($Magic -eq 0x020b) { 112 } else { 96 })
-    $CertificateOffset = [int][BitConverter]::ToUInt32($Bytes, $DataDirectoryOffset + 32)
-    $CertificateSize = [int][BitConverter]::ToUInt32($Bytes, $DataDirectoryOffset + 36)
-    if ($CertificateOffset -le 0 -or $CertificateSize -lt 8) {
-        throw "The Authenticode signature is not embedded in $Path"
-    }
-    $Cursor = $CertificateOffset
-    $CertificateEnd = $CertificateOffset + $CertificateSize
-    while ($Cursor + 8 -le $CertificateEnd) {
-        $EntryLength = [int][BitConverter]::ToUInt32($Bytes, $Cursor)
-        $CertificateType = [BitConverter]::ToUInt16($Bytes, $Cursor + 6)
-        if ($EntryLength -lt 8 -or $Cursor + $EntryLength -gt $CertificateEnd) {
-            throw "Invalid WIN_CERTIFICATE entry in $Path"
-        }
-        if ($CertificateType -eq 2) {
-            $Pkcs7 = New-Object byte[] ($EntryLength - 8)
-            [Array]::Copy($Bytes, $Cursor + 8, $Pkcs7, 0, $EntryLength - 8)
-            $SignedCms = New-Object Security.Cryptography.Pkcs.SignedCms
-            $SignedCms.Decode($Pkcs7)
-            foreach ($SignerInfo in @($SignedCms.SignerInfos)) {
-                foreach ($CounterSigner in @($SignerInfo.CounterSignerInfos)) {
-                    $SigningTime = Get-SignerInfoSigningTimeUtc $CounterSigner
-                    if ($null -ne $SigningTime) {
-                        return $SigningTime
-                    }
-                }
-                foreach ($Attribute in @($SignerInfo.UnsignedAttributes)) {
-                    if ($Attribute.Oid.Value -ne "1.3.6.1.4.1.311.3.3.1") {
-                        continue
-                    }
-                    foreach ($Value in @($Attribute.Values)) {
-                        $TimestampCms = New-Object Security.Cryptography.Pkcs.SignedCms
-                        $TimestampCms.Decode($Value.RawData)
-                        foreach ($TimestampSigner in @($TimestampCms.SignerInfos)) {
-                            $SigningTime = Get-SignerInfoSigningTimeUtc $TimestampSigner
-                            if ($null -ne $SigningTime) {
-                                return $SigningTime
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        $Cursor += (($EntryLength + 7) -band (-bnot 7))
-    }
-    throw "The Authenticode timestamp time could not be decoded from $Path"
-}
-
-function Test-AuthenticodeFile([string]$Path) {
+function Get-AuthenticodeReceipt([string]$Path) {
     Assert-File $Path
     $Signature = Get-AuthenticodeSignature -LiteralPath $Path
-    if ($AllowUnsigned -and $Signature.Status -eq "NotSigned") {
+    if ($Signature.Status -eq "NotSigned") {
         return [ordered]@{
             status = [string]$Signature.Status
+            present = $false
             signer = $null
             timestamp = $null
         }
     }
     if ($Signature.Status -ne "Valid") {
-        throw "A public release artifact is not validly signed: $Path ($($Signature.Status))"
+        throw "Artifact contains an invalid Authenticode signature: $Path ($($Signature.Status))"
     }
-    if ($null -eq $Signature.SignerCertificate) {
-        throw "The Authenticode signature has no signer certificate: $Path"
-    }
-    $SignerSimpleName = $Signature.SignerCertificate.GetNameInfo(
-        [Security.Cryptography.X509Certificates.X509NameType]::SimpleName,
-        $false
-    )
-    if (-not $SignerSimpleName.Equals($ExpectedPublisher, [StringComparison]::Ordinal)) {
-        throw "Unexpected Authenticode publisher for $Path`: '$SignerSimpleName'"
-    }
-    if ($null -eq $Signature.TimeStamperCertificate) {
-        throw "The Authenticode signature has no trusted timestamp: $Path"
-    }
-    $TimestampReceipt = Get-CertificateReceipt $Signature.TimeStamperCertificate
-    $TimestampReceipt["signed_at_utc"] = (
-        Get-EmbeddedAuthenticodeTimestampUtc $Path
-    ).ToString("o")
     return [ordered]@{
         status = [string]$Signature.Status
+        present = $true
         signer = Get-CertificateReceipt $Signature.SignerCertificate
-        timestamp = $TimestampReceipt
+        timestamp = Get-CertificateReceipt $Signature.TimeStamperCertificate
     }
 }
 
@@ -203,145 +114,6 @@ function Get-RelativeFileMap([string]$Root) {
         $Map[$Relative] = $File
     }
     return $Map
-}
-
-function Get-AuthenticodeNormalizedSha256([string]$Path) {
-    Assert-File $Path
-    $Bytes = [IO.File]::ReadAllBytes([IO.Path]::GetFullPath($Path))
-    if ($Bytes.Length -lt 64) {
-        throw "Cannot normalize a non-PE file: $Path"
-    }
-    $PeOffset = [Int64][BitConverter]::ToUInt32($Bytes, 0x3c)
-    if ($PeOffset -lt 0 -or $PeOffset + 24 -gt $Bytes.Length) {
-        throw "Invalid PE header offset in $Path"
-    }
-    if ([BitConverter]::ToUInt32($Bytes, [int]$PeOffset) -ne 0x00004550) {
-        throw "Missing PE signature in $Path"
-    }
-    $OptionalSize = [int][BitConverter]::ToUInt16($Bytes, [int]$PeOffset + 20)
-    $OptionalOffset = $PeOffset + 24
-    if ($OptionalSize -lt 120 -or $OptionalOffset + $OptionalSize -gt $Bytes.Length) {
-        throw "Invalid PE optional header in $Path"
-    }
-    $Magic = [BitConverter]::ToUInt16($Bytes, [int]$OptionalOffset)
-    if ($Magic -eq 0x010b) {
-        $DataDirectoryOffset = $OptionalOffset + 96
-    }
-    elseif ($Magic -eq 0x020b) {
-        $DataDirectoryOffset = $OptionalOffset + 112
-    }
-    else {
-        throw "Unsupported PE optional-header magic in $Path"
-    }
-    $ChecksumOffset = $OptionalOffset + 64
-    $SecurityDirectoryOffset = $DataDirectoryOffset + 32
-    if ($SecurityDirectoryOffset + 8 -gt $OptionalOffset + $OptionalSize) {
-        throw "PE security directory is outside the optional header in $Path"
-    }
-    $CertificateOffset = [Int64][BitConverter]::ToUInt32(
-        $Bytes,
-        [int]$SecurityDirectoryOffset
-    )
-    $CertificateSize = [Int64][BitConverter]::ToUInt32(
-        $Bytes,
-        [int]$SecurityDirectoryOffset + 4
-    )
-    foreach ($Index in 0..3) {
-        $Bytes[[int]$ChecksumOffset + $Index] = 0
-    }
-    foreach ($Index in 0..7) {
-        $Bytes[[int]$SecurityDirectoryOffset + $Index] = 0
-    }
-    if (($CertificateOffset -eq 0) -xor ($CertificateSize -eq 0)) {
-        throw "Inconsistent PE certificate table in $Path"
-    }
-    if ($CertificateSize -gt 0) {
-        if (
-            $CertificateOffset -lt 8 -or
-            ($CertificateOffset % 8) -ne 0 -or
-            $CertificateSize -lt 8 -or
-            $CertificateOffset + $CertificateSize -gt $Bytes.Length
-        ) {
-            throw "Invalid PE certificate table range in $Path"
-        }
-    }
-    $Hasher = [Security.Cryptography.SHA256]::Create()
-    $CryptoStream = New-Object Security.Cryptography.CryptoStream(
-        [IO.Stream]::Null,
-        $Hasher,
-        [Security.Cryptography.CryptoStreamMode]::Write
-    )
-    try {
-        if ($CertificateSize -eq 0) {
-            $CryptoStream.Write($Bytes, 0, $Bytes.Length)
-        }
-        else {
-            $CryptoStream.Write($Bytes, 0, [int]$CertificateOffset)
-            $AfterOffset = [int]($CertificateOffset + $CertificateSize)
-            $AfterLength = $Bytes.Length - $AfterOffset
-            if ($AfterLength -gt 0) {
-                $CryptoStream.Write($Bytes, $AfterOffset, $AfterLength)
-            }
-        }
-        $CryptoStream.FlushFinalBlock()
-        return ([BitConverter]::ToString($Hasher.Hash)).Replace('-', '').ToLowerInvariant()
-    }
-    finally {
-        $CryptoStream.Dispose()
-        $Hasher.Dispose()
-    }
-}
-
-function Assert-NormalizedPeInvariant([string]$UnsignedPath, [string]$SignedPath) {
-    $Before = Get-AuthenticodeNormalizedSha256 $UnsignedPath
-    $After = Get-AuthenticodeNormalizedSha256 $SignedPath
-    if ($Before -ne $After) {
-        throw "Signing changed Authenticode-covered PE content: $SignedPath"
-    }
-    return [ordered]@{
-        unsigned_sha256 = $Before
-        signed_sha256 = $After
-    }
-}
-
-function Assert-SignedTreeInvariant(
-    [string]$UnsignedRoot,
-    [string]$SignedRoot,
-    [string[]]$SignableFiles
-) {
-    $Unsigned = Get-RelativeFileMap $UnsignedRoot
-    $Signed = Get-RelativeFileMap $SignedRoot
-    if ($Unsigned.Count -ne $Signed.Count) {
-        throw "SignPath changed the application file count for $SignedRoot"
-    }
-    $Signable = @{}
-    foreach ($Relative in $SignableFiles) {
-        $Signable[$Relative.Replace('\', '/').Normalize().ToLowerInvariant()] = $true
-    }
-    $NormalizedDigests = [ordered]@{}
-    foreach ($Relative in @($Unsigned.Keys | Sort-Object)) {
-        if (-not $Signed.ContainsKey($Relative)) {
-            throw "SignPath output is missing $Relative"
-        }
-        if ($Signable.ContainsKey($Relative)) {
-            $NormalizedDigests[$Relative] = Assert-NormalizedPeInvariant `
-                $Unsigned[$Relative].FullName `
-                $Signed[$Relative].FullName
-        }
-        else {
-            $Before = (Get-FileHash -LiteralPath $Unsigned[$Relative].FullName -Algorithm SHA256).Hash
-            $After = (Get-FileHash -LiteralPath $Signed[$Relative].FullName -Algorithm SHA256).Hash
-            if ($Before -ne $After) {
-                throw "SignPath unexpectedly changed non-signable payload file $Relative"
-            }
-        }
-    }
-    foreach ($Relative in $Signable.Keys) {
-        if (-not $Unsigned.ContainsKey($Relative)) {
-            throw "Unsigned signing input is missing expected executable $Relative"
-        }
-    }
-    return $NormalizedDigests
 }
 
 function Get-TreeDigest([string]$Root) {
@@ -400,36 +172,7 @@ $RequiredExecutables = @(
     }
 )
 
-$NormalizedSigningDigests = [ordered]@{}
-if (-not $AllowUnsigned) {
-    if ([string]::IsNullOrWhiteSpace($UnsignedAppPayloadPath)) {
-        throw "Signed release verification requires -UnsignedAppPayloadPath"
-    }
-    if ([string]::IsNullOrWhiteSpace($UnsignedLauncherPath)) {
-        throw "Signed release verification requires -UnsignedLauncherPath"
-    }
-    if (-not $SkipSetup -and [string]::IsNullOrWhiteSpace($UnsignedSetupPath)) {
-        throw "Signed release verification requires -UnsignedSetupPath"
-    }
-}
-if (-not [string]::IsNullOrWhiteSpace($UnsignedAppPayloadPath)) {
-    $NormalizedSigningDigests.payload = Assert-SignedTreeInvariant `
-        ([IO.Path]::GetFullPath($UnsignedAppPayloadPath)) `
-        ([IO.Path]::GetFullPath($AppPayloadPath)) `
-        @('AutoSpeechJournal.exe', 'AutoSpeechJournal.CLI.exe')
-}
-if (-not [string]::IsNullOrWhiteSpace($UnsignedLauncherPath)) {
-    $NormalizedSigningDigests.launchers = Assert-SignedTreeInvariant `
-        ([IO.Path]::GetFullPath($UnsignedLauncherPath)) `
-        ([IO.Path]::GetFullPath($LauncherPath)) `
-        @('AutoSpeechJournal.exe', 'AutoSpeechJournal.CLI.exe')
-}
 if (-not $SkipSetup) {
-    if (-not [string]::IsNullOrWhiteSpace($UnsignedSetupPath)) {
-        $NormalizedSigningDigests.setup = Assert-NormalizedPeInvariant `
-            ([IO.Path]::GetFullPath($UnsignedSetupPath)) `
-            $SetupPath
-    }
     $RequiredExecutables += [pscustomobject]@{
         Label = "setup/AutoSpeechJournal-Setup-$Version-x64.exe"
         Path = $SetupPath
@@ -471,10 +214,10 @@ if ($CliHash -eq $StableCliHash) {
     throw "The stable CLI launcher is a copied version executable"
 }
 
-$SignatureResults = [ordered]@{}
+$AuthenticodeResults = [ordered]@{}
 $VersionResults = [ordered]@{}
 foreach ($Executable in $RequiredExecutables) {
-    $SignatureResults[$Executable.Label] = Test-AuthenticodeFile $Executable.Path
+    $AuthenticodeResults[$Executable.Label] = Get-AuthenticodeReceipt $Executable.Path
     $VersionInfo = [Diagnostics.FileVersionInfo]::GetVersionInfo($Executable.Path)
     $ActualFileVersion = $VersionInfo.FileVersionRaw.ToString()
     $ActualProductVersion = ([string]$VersionInfo.ProductVersion).Trim()
@@ -561,17 +304,16 @@ catch {
 }
 
 $Receipt = [ordered]@{
-    schema_version = 2
+    schema_version = 3
     project_version = $Version
     verified_at_utc = [DateTime]::UtcNow.ToString("o")
-    allow_unsigned = [bool]$AllowUnsigned
+    authenticode_policy = "optional_unsigned_allowed"
     payload_file_count = $PayloadFiles.Count
     payload_tree_sha256 = $PayloadTreeSha256
     launcher_tree_sha256 = $LauncherTreeSha256
     runtime_inventory_validation = $RuntimeInventoryResult
-    signatures = $SignatureResults
+    authenticode = $AuthenticodeResults
     version_resources = $VersionResults
-    authenticode_normalized_invariants = $NormalizedSigningDigests
     files = [ordered]@{}
 }
 foreach ($Executable in $RequiredExecutables) {

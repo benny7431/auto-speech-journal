@@ -4,7 +4,6 @@ import base64
 import json
 import os
 import shutil
-import struct
 import subprocess
 from pathlib import Path
 
@@ -316,17 +315,63 @@ exit /b 9
     assert "/Delete" not in invocation_log
 
 
-def test_release_workflow_signs_inner_and_setup_separately_and_fails_closed() -> None:
+def test_release_workflow_allows_unsigned_setup_and_preserves_integrity_gates() -> None:
     workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-    assert workflow.count("signpath/github-action-submit-signing-request@") == 2
-    assert workflow.count("github-artifact-id:") == 2
-    assert "SIGNPATH_PROGRAM_ARTIFACT_CONFIGURATION" in workflow
-    assert "SIGNPATH_SETUP_ARTIFACT_CONFIGURATION" in workflow
-    assert "Unsigned public releases are forbidden" in workflow
+    windows_package = (ROOT / ".github/workflows/windows-package.yml").read_text(
+        encoding="utf-8"
+    )
+    packaging_workflows = workflow + windows_package
+
+    assert "signpath" not in packaging_workflows.lower()
+    assert "SIGNPATH_" not in packaging_workflows
+    assert "secrets." not in workflow
+    assert "AllowUnsigned" not in packaging_workflows
+    assert "ExpectedPublisher" not in packaging_workflows
+    assert "UnsignedAppPayloadPath" not in packaging_workflows
+    assert "UnsignedLauncherPath" not in packaging_workflows
+    assert "UnsignedSetupPath" not in packaging_workflows
+    assert "Build unsigned Windows release package" in workflow
+    assert "Install unsigned Setup" in workflow
+    assert "Windows / Python 3.11" in workflow
+    assert "CodeQL" in workflow
+    assert "Python security-extended" in workflow
+    assert "Unsigned installer contract" in workflow
     assert "-ReleaseBuild" in workflow
     assert "--clobber" not in workflow
     assert "--draft" in workflow
+    assert "SHA256SUMS.txt" in workflow
+    assert "AutoSpeechJournal.cdx.json" in workflow
     assert "attest-build-provenance" in workflow
+    assert "gh attestation verify" in workflow
+    assert "Start-Process -FilePath $setup" in windows_package
+    assert "Start-Process -FilePath $uninstaller" in windows_package
+
+
+def test_unsigned_release_notice_is_explicit_without_disabling_defender() -> None:
+    workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    readme_zh = (ROOT / "README.md").read_text(encoding="utf-8")
+    readme_en = (ROOT / "README.en.md").read_text(encoding="utf-8")
+
+    assert "Unknown publisher" in workflow
+    assert "Microsoft Defender SmartScreen" in workflow
+    assert "Do not disable Microsoft Defender" in workflow
+    assert "未知的發行者" in readme_zh
+    assert "Microsoft Defender SmartScreen" in readme_zh
+    assert "SHA-256" in readme_zh
+    assert "artifact attestation" in readme_zh
+    assert "Unknown publisher" in readme_en
+    assert "Microsoft Defender SmartScreen" in readme_en
+    assert "SHA-256" in readme_en
+    assert "artifact attestation" in readme_en
+    for forbidden in (
+        "turn off Windows Defender",
+        "disable Windows Defender before",
+        "關閉 Windows Defender",
+        "停用 Windows Defender 後",
+    ):
+        assert forbidden not in workflow
+        assert forbidden not in readme_zh
+        assert forbidden not in readme_en
 
 
 def test_release_workflow_uses_hugging_face_manifest_without_models_release() -> None:
@@ -344,7 +389,7 @@ def test_release_workflow_uses_hugging_face_manifest_without_models_release() ->
     assert "verify_runtime_models.py" in models
 
 
-def test_windows_resource_and_signature_verification_contracts_are_exact() -> None:
+def test_windows_resource_and_unsigned_verification_contracts_are_exact() -> None:
     build = (ROOT / "tools/build_windows_installer.ps1").read_text(encoding="utf-8-sig")
     verify = (ROOT / "tools/verify_windows_installer.ps1").read_text(
         encoding="utf-8-sig"
@@ -363,58 +408,47 @@ def test_windows_resource_and_signature_verification_contracts_are_exact() -> No
     assert "#ifndef AppNumericVersion" in inno
     assert "VersionInfoVersion={#AppNumericVersion}" in inno
 
-    assert "[string]$UnsignedSetupPath" in verify
-    assert "Get-AuthenticodeNormalizedSha256" in verify
-    assert "Signing changed Authenticode-covered PE content" in verify
-    assert "Signed release verification requires -UnsignedSetupPath" in verify
+    assert "[switch]$AllowUnsigned" not in verify
+    assert "ExpectedPublisher" not in verify
+    assert "UnsignedAppPayloadPath" not in verify
+    assert "UnsignedLauncherPath" not in verify
+    assert "UnsignedSetupPath" not in verify
+    assert 'if ($Signature.Status -eq "NotSigned")' in verify
+    assert 'authenticode_policy = "optional_unsigned_allowed"' in verify
+    assert "Artifact contains an invalid Authenticode signature" in verify
     assert "X509NameType]::SimpleName" in verify
-    assert "[StringComparison]::Ordinal" in verify
-    assert 'TimestampReceipt["signed_at_utc"]' in verify
     assert "File version does not exactly match" in verify
     assert 'OriginalFilename = "AutoSpeechJournal.CLI.exe"' in verify
     assert 'InternalName = "AutoSpeechJournal.CLI"' in verify
-    assert "authenticode_normalized_invariants" in verify
+    assert "authenticode_normalized_invariants" not in verify
+    assert "payload_tree_sha256" in verify
+    assert "launcher_tree_sha256" in verify
     assert "runtime_inventory.py" in verify
     assert "frozen-runtime-inventory.json" in verify
     assert "runtime_inventory_validation" in verify
 
 
-def test_authenticode_normalization_ignores_only_pe_signature_fields(tmp_path: Path) -> None:
+def test_authenticode_receipt_accepts_unsigned_executable(tmp_path: Path) -> None:
     powershell = shutil.which("powershell.exe")
-    if powershell is None:
-        pytest.skip("Windows PowerShell is unavailable")
+    compiler = _csc()
+    if powershell is None or compiler is None:
+        pytest.skip("Windows PowerShell or .NET Framework csc.exe is unavailable")
 
-    unsigned = bytearray(512)
-    unsigned[0:2] = b"MZ"
-    pe_offset = 0x80
-    struct.pack_into("<I", unsigned, 0x3C, pe_offset)
-    unsigned[pe_offset : pe_offset + 4] = b"PE\x00\x00"
-    struct.pack_into("<H", unsigned, pe_offset + 20, 240)
-    optional_offset = pe_offset + 24
-    struct.pack_into("<H", unsigned, optional_offset, 0x20B)
-    unsigned[0x1A0:0x1B0] = b"covered-content!"
+    source = tmp_path / "Program.cs"
+    executable = tmp_path / "unsigned.exe"
+    source.write_text("internal static class Program { static void Main() {} }", encoding="ascii")
+    compiled = subprocess.run(
+        [str(compiler), "/nologo", f"/out:{executable}", str(source)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert compiled.returncode == 0, compiled.stdout + compiled.stderr
 
-    signed = bytearray(unsigned)
-    struct.pack_into("<I", signed, optional_offset + 64, 0x12345678)
-    security_directory = optional_offset + 112 + 32
-    struct.pack_into("<II", signed, security_directory, len(signed), 16)
-    signed.extend(struct.pack("<IHH", 16, 0x200, 2) + b"sigbytes")
-
-    altered = bytearray(signed)
-    altered[0x1A0] ^= 0xFF
-    unsigned_path = tmp_path / "unsigned.exe"
-    signed_path = tmp_path / "signed.exe"
-    altered_path = tmp_path / "altered.exe"
-    unsigned_path.write_bytes(unsigned)
-    signed_path.write_bytes(signed)
-    altered_path.write_bytes(altered)
-
-    function_names = ("Assert-File", "Get-AuthenticodeNormalizedSha256")
+    function_names = ("Assert-File", "Get-CertificateReceipt", "Get-AuthenticodeReceipt")
     escaped_script = str(ROOT / "tools/verify_windows_installer.ps1").replace("'", "''")
-    escaped_paths = [
-        str(path).replace("'", "''")
-        for path in (unsigned_path, signed_path, altered_path)
-    ]
+    escaped_executable = str(executable).replace("'", "''")
     command = (
         f"$ast=[Management.Automation.Language.Parser]::ParseFile('{escaped_script}',"
         "[ref]$null,[ref]$null);"
@@ -422,9 +456,7 @@ def test_authenticode_normalization_ignores_only_pe_signature_fields(tmp_path: P
         "$fn=$ast.FindAll({param($node) $node -is "
         "[Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name},"
         "$true)|Select-Object -First 1;Invoke-Expression $fn.Extent.Text};"
-        + ";".join(
-            f"Get-AuthenticodeNormalizedSha256 '{path}'" for path in escaped_paths
-        )
+        f"Get-AuthenticodeReceipt '{escaped_executable}'|ConvertTo-Json -Compress"
     )
     result = subprocess.run(
         [powershell, "-NoLogo", "-NoProfile", "-Command", command],
@@ -434,10 +466,13 @@ def test_authenticode_normalization_ignores_only_pe_signature_fields(tmp_path: P
         timeout=30,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    digests = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-    assert len(digests) == 3
-    assert digests[0] == digests[1]
-    assert digests[0] != digests[2]
+    receipt = json.loads(result.stdout)
+    assert receipt == {
+        "status": "NotSigned",
+        "present": False,
+        "signer": None,
+        "timestamp": None,
+    }
 
 
 def test_release_build_validates_canonical_runtime_model_manifest() -> None:

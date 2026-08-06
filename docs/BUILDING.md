@@ -45,8 +45,10 @@ uv run --no-sync python tools/verify_wheel_contents.py
 
 ```powershell
 winget install --id JRSoftware.InnoSetup -e --version 6.7.3
-.\tools\build_windows_installer.ps1 -Stage All
-.\tools\verify_windows_installer.ps1 -AllowUnsigned
+.\tools\build_windows_installer.ps1 -Stage All `
+  -ReleaseBuild `
+  -ModelManifestPath .\packaging\manifests\runtime-models-v1.json
+.\tools\verify_windows_installer.ps1
 ```
 
 建置腳本使用 `uv.lock` 內固定的 `PyInstaller 6.16.0` 產生 onedir payload：
@@ -58,24 +60,32 @@ winget install --id JRSoftware.InnoSetup -e --version 6.7.3
 
 輸出在 `artifacts/windows/`。`verify_windows_installer.ps1` 會拒絕 Torch、Transformers、
 Safetensors、NVIDIA runtime、模型、使用者狀態或本機字體混入 frozen payload，並執行真正的
-`installer-probe --isolated` 以載入凍結後的 Qt/QML。`-AllowUnsigned` 只允許 PR 的內部
-artifact；公開發行不可帶這個參數。
+`installer-probe --isolated` 以載入凍結後的 Qt/QML。`v0.2.0` 的內層 EXE 與 Setup 預期為
+未簽章；Authenticode 缺失不是 verifier 或正式 Release 的失敗條件。
 
-分段簽章建置使用：
+正式未簽章建置也可分段執行：
 
 ```powershell
-# 先產生內層程式，交由 SignPath 簽章
+# 先產生內層程式與 stable launchers
 .\tools\build_windows_installer.ps1 -Stage Application `
   -ReleaseBuild `
   -ModelManifestPath .\packaging\manifests\runtime-models-v1.json
 
-# 以簽章後 payload/launcher 建外層 Setup
+# 直接使用已驗證的未簽章 payload/launchers 建立 Setup
 .\tools\build_windows_installer.ps1 -Stage Installer `
   -ReleaseBuild `
-  -AppPayloadPath .\signed\payload `
-  -LauncherPath .\signed\launchers `
+  -AppPayloadPath .\artifacts\windows\application\payload `
+  -LauncherPath .\artifacts\windows\application\launchers `
   -ModelManifestPath .\packaging\manifests\runtime-models-v1.json
+
+.\tools\verify_windows_installer.ps1
 ```
+
+未來取得合適的程式碼簽章憑證後，可以在不改變 payload、測試與 provenance 契約的前提下
+重新加入簽章階段；目前不需要任何 SignPath、OV Authenticode 或其他簽章 secret。正式 Release
+仍必須通過完整測試、CodeQL、Windows 安裝 E2E、SHA-256、SBOM、artifact attestation 與模型
+參考音訊驗證。Windows 可能對未簽章 Setup 顯示未知發行者或 SmartScreen 提示；測試與文件
+不得要求使用者停用 Windows Defender。
 
 `packaging/manifests/runtime-models-v1.json` 是 repository 內版本化的 runtime 供應清單。
 `-ReleaseBuild` 會要求每個 Hugging Face 來源使用完整 40 位 commit revision，並檢查允許的
@@ -107,7 +117,7 @@ pre-release 前另需完成：
 
 Repository 的 Python/QML/Markdown/YAML/TOML/JSON 使用 LF；PowerShell 使用 CRLF。所有
 `.ps1`（包含 packaging runner）保留 UTF-8 BOM 以相容 Windows PowerShell 5.1。runtime
-資料、模型、簽章憑證、token 與個人錄音不得加入 repository。
+資料、模型、secret、token 與個人錄音不得加入 repository。
 
 ## Focused tools
 
@@ -115,4 +125,5 @@ Repository 的 Python/QML/Markdown/YAML/TOML/JSON 使用 LF；PowerShell 使用 
 - `tools/benchmark_preview_latency.py`: 量測 preview latency。
 - `tools/validate_scene_assets.py --strict`: 驗證完整場景矩陣與 digest。
 - `tools/verify_wheel_contents.py`: 驗證 Python 發行物邊界。
-- `tools/verify_windows_installer.ps1`: 驗證 frozen payload、QML probe 與 Authenticode。
+- `tools/verify_windows_installer.ps1`: 驗證 frozen payload、QML probe、SBOM 與安裝器內容邊界；
+  `v0.2.0` 不以 Authenticode 是否存在作為通過條件。
