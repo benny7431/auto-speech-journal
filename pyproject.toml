@@ -9,7 +9,7 @@ description = "Local-first Windows microphone journal with streaming preview and
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
 license = "MIT"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 dependencies = [
   "PySide6==6.11.1",
   "sounddevice==0.5.5",

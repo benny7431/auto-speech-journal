@@ -1,0 +1,85 @@
+name: Bug report
+description: 回報可重現的程式、安裝或資料復原問題
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        請勿上傳錄音、逐字稿、資料庫、設定檔或未去識別化日誌。安全問題請先閱讀 SECURITY.md。
+  - type: textarea
+    id: summary
+    attributes:
+      label: 問題摘要
+      description: 簡短說明發生了什麼。
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 版本或 commit
+      placeholder: v0.1.0 或 git rev-parse --short HEAD
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows 版本
+      placeholder: Windows 11 24H2 build 26100.x
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: 安裝方式
+      options:
+        - install.ps1（CUDA）
+        - install.ps1 -NoCuda
+        - Source checkout
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: hardware
+    attributes:
+      label: 裝置與硬體
+      description: 提供已去識別化的麥克風名稱／路由、CPU、GPU、驅動及 CUDA/CPU 模式。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 重現步驟
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 預期結果
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 實際結果
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 已去識別化的診斷資訊
+      description: 僅貼最小必要片段；移除使用者名稱、路徑、裝置 ID、筆記文字與 token。
+      render: text
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 隱私確認
+      options:
+        - label: 我已移除錄音、逐字稿、資料庫、設定、完整路徑、裝置 ID、憑證及其他個資。
+          required: true
+        - label: 這不是含敏感細節的安全漏洞報告。
+          required: true

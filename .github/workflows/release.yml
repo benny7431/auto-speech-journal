@@ -1,0 +1,172 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Verify and publish ${{ github.ref_name }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      PYTHONPATH: ${{ github.workspace }}\src
+      QT_QPA_PLATFORM: offscreen
+      QT_QUICK_BACKEND: software
+      QSG_RHI_BACKEND: software
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install locked development environment
+        run: uv sync --frozen --no-editable --extra dev
+
+      - name: Validate tag against project version
+        shell: pwsh
+        run: |
+          $projectVersion = uv run --no-sync python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
+          $tagVersion = $env:GITHUB_REF_NAME.Substring(1)
+          $canonicalProject = ($projectVersion -replace '[-_.]', '').ToLowerInvariant()
+          $canonicalTag = ($tagVersion -replace '[-_.]', '').ToLowerInvariant()
+          if ($canonicalProject -ne $canonicalTag) {
+            throw "Tag $env:GITHUB_REF_NAME does not match project version $projectVersion"
+          }
+
+      - name: Ruff
+        run: uv run --no-sync ruff check src tests tools
+
+      - name: Pytest and coverage
+        run: >-
+          uv run --no-sync pytest
+          --cov=auto_speech_journal
+          --cov-report=term-missing
+          --cov-report=xml:coverage.xml
+          --cov-fail-under=75
+
+      - name: Self-test without models or microphone
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "auto-speech-journal-self-test"
+          $env:LOCALAPPDATA = Join-Path $root "local-app-data"
+          $env:USERPROFILE = Join-Path $root "profile"
+          $env:HOME = $env:USERPROFILE
+          New-Item -ItemType Directory -Force -Path (Join-Path $env:USERPROFILE "Documents") | Out-Null
+          uv run --no-sync python -m auto_speech_journal self-test --no-model-check --no-microphone-check
+
+      - name: Validate all 192 scene assets
+        run: uv run --no-sync python tools/validate_scene_assets.py --strict
+
+      - name: Build and verify distributions
+        shell: pwsh
+        run: |
+          uv build
+          uv run --no-sync python tools/verify_wheel_contents.py
+
+      - name: Prepare release notes and checksums
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $version = $tag.Substring(1)
+          $lines = Get-Content -LiteralPath CHANGELOG.md
+          $start = -1
+          $end = $lines.Count
+          for ($index = 0; $index -lt $lines.Count; $index++) {
+            if ($lines[$index] -match "^## \[$([regex]::Escape($version))\]") {
+              $start = $index
+              continue
+            }
+            if ($start -ge 0 -and $index -gt $start -and $lines[$index] -match '^## \[') {
+              $end = $index
+              break
+            }
+          }
+          if ($start -lt 0) { throw "CHANGELOG.md has no section for $version" }
+
+          $utf8 = [System.Text.UTF8Encoding]::new($false)
+          [System.IO.File]::WriteAllLines(
+            (Join-Path $PWD "RELEASE_NOTES.md"),
+            $lines[$start..($end - 1)],
+            $utf8
+          )
+
+          $artifacts = Get-ChildItem -LiteralPath dist -File | Sort-Object Name
+          $checksums = foreach ($artifact in $artifacts) {
+            $hash = (Get-FileHash -LiteralPath $artifact.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($artifact.Name)"
+          }
+          [System.IO.File]::WriteAllLines(
+            (Join-Path $PWD "SHA256SUMS.txt"),
+            $checksums,
+            $utf8
+          )
+
+          $summary = @(
+            "# Test summary for $tag",
+            "",
+            "- Commit: $env:GITHUB_SHA",
+            "- Workflow: https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID",
+            "- Runner: windows-latest",
+            "- Python: 3.11",
+            "- Ruff: passed",
+            "- Pytest and coverage >= 75%: passed",
+            "- No-model/no-microphone self-test: passed",
+            "- Scene assets: 192/192 passed",
+            "- Wheel contents: passed"
+          )
+          [System.IO.File]::WriteAllLines(
+            (Join-Path $PWD "TEST-SUMMARY.md"),
+            $summary,
+            $utf8
+          )
+
+      - name: Create or repair GitHub release
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $assets = @(
+            (Get-ChildItem -LiteralPath dist -File | ForEach-Object FullName)
+            (Join-Path $PWD "SHA256SUMS.txt")
+            (Join-Path $PWD "TEST-SUMMARY.md")
+          )
+          $isPrerelease = $tag.StartsWith("v0.") -or $tag.Contains("-")
+
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag @assets --clobber
+            $editArgs = @("release", "edit", $tag, "--title", $tag, "--notes-file", "RELEASE_NOTES.md")
+            if ($isPrerelease) { $editArgs += "--prerelease" }
+            gh @editArgs
+          } else {
+            $createArgs = @(
+              "release", "create", $tag,
+              "--verify-tag",
+              "--title", $tag,
+              "--notes-file", "RELEASE_NOTES.md"
+            )
+            if ($isPrerelease) { $createArgs += "--prerelease" }
+            $createArgs += $assets
+            gh @createArgs
+          }

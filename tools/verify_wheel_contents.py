@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 from collections.abc import Sequence
+from email.parser import BytesParser
 from pathlib import Path, PurePosixPath
 from zipfile import ZipFile
 
@@ -59,6 +60,13 @@ PROHIBITED_PATH_FRAGMENTS = {
     "字體/",
     "聲明/",
 }
+PROHIBITED_MEMBER_SUFFIXES = {
+    ".db",
+    ".flac",
+    ".log",
+    ".sqlite",
+    ".wav",
+}
 SCENE_RE = re.compile(r"auto_speech_journal/assets/scenes/([^/]+\.webp)$")
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
@@ -79,6 +87,49 @@ def verify_wheel(path: Path) -> list[str]:
     errors: list[str] = []
     with ZipFile(path) as wheel:
         names = set(wheel.namelist())
+        lowercase_names = {name.lower() for name in names}
+        metadata_name = next(
+            (name for name in names if name.endswith(".dist-info/METADATA")),
+            None,
+        )
+        entry_points_name = next(
+            (name for name in names if name.endswith(".dist-info/entry_points.txt")),
+            None,
+        )
+        license_name = next(
+            (name for name in names if name.endswith(".dist-info/licenses/LICENSE")),
+            None,
+        )
+        notices_name = next(
+            (
+                name
+                for name in names
+                if name.endswith(".dist-info/licenses/THIRD_PARTY_NOTICES.md")
+            ),
+            None,
+        )
+        if metadata_name is None:
+            errors.append("wheel is missing distribution METADATA")
+        else:
+            metadata = BytesParser().parsebytes(wheel.read(metadata_name))
+            if metadata.get("Name") != "auto-speech-journal":
+                errors.append("wheel project name is not auto-speech-journal")
+            if metadata.get("Version") != "0.1.0":
+                errors.append("wheel version is not 0.1.0")
+            requires_python = str(metadata.get("Requires-Python", ""))
+            if ">=3.11" not in requires_python or "<3.12" not in requires_python:
+                errors.append("wheel Requires-Python does not enforce Python 3.11")
+        if entry_points_name is None:
+            errors.append("wheel is missing console entry points")
+        else:
+            entry_points = wheel.read(entry_points_name).decode("utf-8")
+            expected_entry = "auto-speech-journal = auto_speech_journal.cli:main"
+            if expected_entry not in entry_points:
+                errors.append("wheel is missing the auto-speech-journal console command")
+        if license_name is None:
+            errors.append("wheel is missing LICENSE")
+        if notices_name is None:
+            errors.append("wheel is missing THIRD_PARTY_NOTICES.md")
         for suffix in sorted(REQUIRED_SUFFIXES):
             if not any(name.endswith(suffix) for name in names):
                 errors.append(f"wheel is missing {suffix}")
@@ -88,6 +139,23 @@ def verify_wheel(path: Path) -> list[str]:
         for fragment in sorted(PROHIBITED_PATH_FRAGMENTS):
             if any(fragment in name for name in names):
                 errors.append(f"wheel contains local-only directory {fragment}")
+        for name in sorted(lowercase_names):
+            suffix = PurePosixPath(name).suffix
+            if suffix in PROHIBITED_MEMBER_SUFFIXES:
+                errors.append(f"wheel contains runtime or user data: {name}")
+            if any(
+                fragment in f"/{name}"
+                for fragment in ("/models/", "/spool/", "/logs/")
+            ):
+                errors.append(f"wheel contains runtime directory: {name}")
+            if PurePosixPath(name).name in {
+                ".model-manifest.json",
+                "config.json",
+                "settings-history.jsonl",
+            }:
+                errors.append(f"wheel contains runtime state: {name}")
+            if re.search(r"[a-z]:[/\\]", name):
+                errors.append(f"wheel contains a Windows absolute path: {name}")
 
         manifest_name = next(
             (
@@ -221,7 +289,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(
         f"Wheel verification passed: {wheel} "
         "(scene manifest, sound-river QML, particle sprites, brand assets; "
-        "local fonts excluded)"
+        "license notices present; runtime data and local fonts excluded)"
     )
     return 0
 
