@@ -8,10 +8,9 @@ import queue
 import threading
 import time
 import uuid
-from collections import deque
 from collections.abc import Callable, Sequence
 from contextlib import suppress
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -40,6 +39,12 @@ from .input_routing import (
 from .model_download import resolve_model_paths
 from .paths import AppPaths
 from .preview_engine import PreviewHypothesis, SherpaPreviewEngine
+from .preview_stream import (
+    PreviewCoordinator,
+    PreviewState,
+    as_preview_chunk,
+    hypothesis_texts,
+)
 from .spool_retry import SpoolCoordinator, SpoolState
 from .types import (
     AudioLevelUpdate,
@@ -75,13 +80,6 @@ class RealtimeModelProbe:
     preview_loaded: bool
     vad_loaded: bool
     normalized_example: str
-
-
-@dataclass(frozen=True, slots=True)
-class _PreviewPrerollChunk:
-    samples: Any
-    sample_rate: int
-    started_at_utc: datetime
 
 
 @dataclass(slots=True)
@@ -126,24 +124,6 @@ class _SegmentState:
     def clear_stream_clock(self) -> None:
         self.stream_origin = None
         self.last_chunk_end_utc = None
-
-
-@dataclass(slots=True)
-class _PreviewState:
-    """Streaming-preview emission state: what was last shown, and the pre-roll buffer.
-
-    `dropped` and `backpressure_active` only ever gate preview output — preview is the
-    droppable layer, so a full preview queue must never stall VAD or the FLAC spool.
-    """
-
-    last_emit: float = 0.0
-    last_emitted: str = ""
-    last_emitted_raw: str = ""
-    has_emitted: bool = False
-    dropped: bool = False
-    backpressure_active: bool = False
-    preroll: deque[_PreviewPrerollChunk] = field(default_factory=deque)
-    preroll_samples: int = 0
 
 
 class WorkerBackpressure(RuntimeError):
@@ -460,14 +440,6 @@ def probe_realtime_models(
             preview.close()
 
 
-def _hypothesis_texts(hypothesis: Any) -> tuple[str, str]:
-    normalized = str(
-        getattr(hypothesis, "normalized_text", getattr(hypothesis, "text", "")) or ""
-    ).strip()
-    raw = str(getattr(hypothesis, "raw_text", "") or normalized).strip()
-    return raw, normalized
-
-
 def _preview_loop(
     config: AppConfig,
     paths: AppPaths,
@@ -568,7 +540,7 @@ def _preview_loop(
                         item.samples,
                         sample_rate=item.sample_rate,
                     )
-                    raw_tail, normalized_tail = _hypothesis_texts(hypothesis)
+                    raw_tail, normalized_tail = hypothesis_texts(hypothesis)
                     current_raw = (raw_prefix + raw_tail).strip()
                     current_normalized = (normalized_prefix + normalized_tail).strip()
                     if hypothesis.is_endpoint:
@@ -627,7 +599,7 @@ def _preview_loop(
                     reset_state()
                 if active_segment_id == segment.segment_id:
                     tail = engine.finish()
-                    raw_tail, normalized_tail = _hypothesis_texts(tail)
+                    raw_tail, normalized_tail = hypothesis_texts(tail)
                     raw_text = (raw_prefix + raw_tail).strip() or last_raw
                     normalized_text = (
                         (normalized_prefix + normalized_tail).strip() or last_normalized
@@ -744,7 +716,7 @@ def _recorder_loop(
 
     loop_state = _LoopState()
     segment_state = _SegmentState()
-    preview_state = _PreviewState()
+    preview_state = PreviewState()
     spool_state = SpoolState()
     retry_delay = 2.0
     reserve_bytes = round(config.max_segment_ms * config.audio_sample_rate / 1000) * 2
@@ -752,87 +724,28 @@ def _recorder_loop(
     def reset_segment_state() -> None:
         segment_state.current_id = None
         segment_state.current_started_at = None
-        segment_state.current_preview = ""
-        segment_state.current_preview_raw = ""
-        segment_state.preview_prefix = ""
-        segment_state.preview_raw_prefix = ""
-        preview_state.last_emit = 0.0
-        preview_state.last_emitted = ""
-        preview_state.last_emitted_raw = ""
-        preview_state.has_emitted = False
-        preview_state.dropped = False
-
-    def clear_preview_preroll() -> None:
-        preview_state.preroll.clear()
-        preview_state.preroll_samples = 0
-
-    def remember_preview_preroll(chunk: AudioChunk) -> None:
-        limit = round(config.pre_roll_ms * chunk.sample_rate / 1000)
-        if limit <= 0:
-            clear_preview_preroll()
-            return
-        samples = (
-            chunk.samples.copy()
-            if callable(getattr(chunk.samples, "copy", None))
-            else chunk.samples
-        )
-        preview_state.preroll.append(
-            _PreviewPrerollChunk(samples, chunk.sample_rate, chunk.started_at_utc)
-        )
-        preview_state.preroll_samples += len(samples)
-        while preview_state.preroll and preview_state.preroll_samples > limit:
-            excess = preview_state.preroll_samples - limit
-            first = preview_state.preroll[0]
-            if len(first.samples) <= excess:
-                preview_state.preroll.popleft()
-                preview_state.preroll_samples -= len(first.samples)
-                continue
-            trimmed = first.samples[excess:].copy()
-            preview_state.preroll[0] = _PreviewPrerollChunk(
-                trimmed,
-                first.sample_rate,
-                first.started_at_utc + timedelta(seconds=excess / first.sample_rate),
-            )
-            preview_state.preroll_samples -= excess
+        preview_state.reset_for_segment()
 
     def ensure_segment(started_at: datetime) -> None:
         if segment_state.current_id is None:
             segment_state.current_id = _segment_id(started_at)
             segment_state.current_started_at = started_at
 
-    def offer_preview(item: PreviewAudioChunk | PreviewFinalize) -> bool:
-        if preview_queue is None or preview_state.dropped:
-            return False
-        try:
-            preview_queue.put_nowait(item)
-        except queue.Full:
-            preview_state.dropped = True
-            if not preview_state.backpressure_active:
-                preview_state.backpressure_active = True
-                _status(
-                    event_queue,
-                    WorkerKind.PREVIEW,
-                    WorkerState.DEGRADED,
-                    "preview queue is full; durable audio capture continues without preview",
-                    severity=Severity.WARNING,
-                    queue_size=_queue_size(preview_queue),
-                    metadata={"preview_backpressure": True},
-                )
-            return False
-        if preview_state.backpressure_active:
-            preview_state.backpressure_active = False
-            _status(
-                event_queue,
-                WorkerKind.PREVIEW,
-                WorkerState.READY,
-                "preview queue recovered",
-                queue_size=_queue_size(preview_queue),
-            )
-        return True
+    previews = PreviewCoordinator(
+        preview_state,
+        config,
+        inline_preview=inline_preview,
+        preview_queue=preview_queue,
+        status=lambda state, message, **kwargs: _status(
+            event_queue, WorkerKind.PREVIEW, state, message, **kwargs
+        ),
+        emit_partial=lambda partial: _emit(event_queue, partial, replaceable=True),
+        queue_size=lambda: _queue_size(preview_queue),
+    )
 
     def publish_persisted_segment(segment: CapturedSegment, audio_path: Path) -> None:
         persisted = replace(segment, audio_path=Path(audio_path), preview_pending=False)
-        if preview_queue is not None and offer_preview(PreviewFinalize(persisted)):
+        if preview_queue is not None and previews.offer(PreviewFinalize(persisted)):
             persisted = replace(persisted, preview_pending=True)
         _emit(event_queue, persisted)
 
@@ -851,8 +764,8 @@ def _recorder_loop(
         )
         ensure_segment(started_at)
         identifier = segment_state.current_id or _segment_id(started_at)
-        text = (flushed_preview or segment_state.current_preview).strip()
-        raw_text = (flushed_preview_raw or segment_state.current_preview_raw or text).strip()
+        text = (flushed_preview or preview_state.current_text).strip()
+        raw_text = (flushed_preview_raw or preview_state.current_raw_text or text).strip()
         overlap_samples = (
             max(0, segment_state.previous_forced_end_sample - speech.start_sample)
             if segment_state.previous_forced_segment_id is not None
@@ -901,22 +814,7 @@ def _recorder_loop(
                     inline_preview.reset()
 
     def flush_current() -> bool:
-        flushed = ""
-        flushed_raw = ""
-        if inline_preview is not None:
-            try:
-                hypothesis = inline_preview.finish()
-                raw_tail, normalized_tail = _hypothesis_texts(hypothesis)
-                flushed = (segment_state.preview_prefix + normalized_tail).strip()
-                flushed_raw = (segment_state.preview_raw_prefix + raw_tail).strip()
-            except Exception as exc:
-                _status(
-                    event_queue,
-                    WorkerKind.PREVIEW,
-                    WorkerState.DEGRADED,
-                    f"preview flush failed: {exc}",
-                    severity=Severity.WARNING,
-                )
+        flushed, flushed_raw = previews.finish_for_flush()
         try:
             segments = vad.flush()
         except Exception as exc:
@@ -936,7 +834,7 @@ def _recorder_loop(
         if inline_preview is not None:
             inline_preview.reset()
         reset_segment_state()
-        clear_preview_preroll()
+        previews.clear_preroll()
         segment_state.previous_forced_segment_id = None
         segment_state.previous_forced_end_sample = None
         return not spool_state.pending_writes
@@ -974,7 +872,7 @@ def _recorder_loop(
         segment_state.clear_stream_clock()
         loop_state.capture_degraded = False
         reset_segment_state()
-        clear_preview_preroll()
+        previews.clear_preroll()
 
     def stop_capture_after_spool_failure() -> None:
         """Stop taking audio we cannot store, without tearing down the route."""
@@ -1315,7 +1213,7 @@ def _recorder_loop(
         try:
             was_speech_active = bool(getattr(vad, "is_speech_detected", False))
             if segment_state.current_id is None and not was_speech_active:
-                remember_preview_preroll(chunk)
+                previews.remember_preroll(chunk)
             completed = vad.accept(chunk.samples)
             speech_active = bool(getattr(vad, "is_speech_detected", False))
         except Exception as exc:
@@ -1356,101 +1254,22 @@ def _recorder_loop(
         )
 
         if segment_state.current_id is not None and segment_state.current_started_at is not None:
-            if starting_segment and preview_state.preroll:
-                chunks_to_preview = list(preview_state.preroll)
-                clear_preview_preroll()
-            else:
-                samples = (
-                    chunk.samples.copy()
-                    if callable(getattr(chunk.samples, "copy", None))
-                    else chunk.samples
-                )
-                chunks_to_preview = [
-                    _PreviewPrerollChunk(
-                        samples,
-                        chunk.sample_rate,
-                        chunk.started_at_utc,
-                    )
-                ]
-            for preview_chunk in chunks_to_preview:
-                if inline_preview is None:
-                    offer_preview(
-                        PreviewAudioChunk(
-                            segment_id=segment_state.current_id,
-                            samples=preview_chunk.samples,
-                            sample_rate=preview_chunk.sample_rate,
-                            segment_started_at_utc=segment_state.current_started_at,
-                        )
-                    )
-                    continue
-                try:
-                    hypothesis: PreviewHypothesis = inline_preview.accept(
-                        preview_chunk.samples,
-                        sample_rate=preview_chunk.sample_rate,
-                    )
-                    raw_tail, normalized_tail = _hypothesis_texts(hypothesis)
-                    segment_state.current_preview = (
-                        segment_state.preview_prefix + normalized_tail
-                    ).strip()
-                    segment_state.current_preview_raw = (
-                        segment_state.preview_raw_prefix + raw_tail
-                    ).strip()
-                    if hypothesis.is_endpoint:
-                        segment_state.preview_prefix = segment_state.current_preview
-                        segment_state.preview_raw_prefix = segment_state.current_preview_raw
-                    due = monotonic() - preview_state.last_emit >= (
-                        config.preview_interval_ms / 1000
-                    )
-                    changed_since_emit = (
-                        segment_state.current_preview != preview_state.last_emitted
-                        or segment_state.current_preview_raw != preview_state.last_emitted_raw
-                    )
-                    should_emit = segment_state.current_preview and (
-                        (changed_since_emit and (not preview_state.has_emitted or due))
-                        or hypothesis.is_endpoint
-                    )
-                    if should_emit and _emit(
-                        event_queue,
-                        PartialUpdate(
-                            segment_id=segment_state.current_id,
-                            text=segment_state.current_preview,
-                            raw_text=segment_state.current_preview_raw,
-                            started_at_utc=segment_state.current_started_at,
-                        ),
-                        replaceable=True,
-                    ):
-                        preview_state.last_emit = monotonic()
-                        preview_state.has_emitted = True
-                        preview_state.last_emitted = segment_state.current_preview
-                        preview_state.last_emitted_raw = segment_state.current_preview_raw
-                except Exception as exc:
-                    _status(
-                        event_queue,
-                        WorkerKind.PREVIEW,
-                        WorkerState.DEGRADED,
-                        f"streaming preview failed; durable capture continues: {exc}",
-                        severity=Severity.WARNING,
-                    )
+            # A starting segment replays its pre-roll so the preview begins at the
+            # first word; otherwise only the chunk just read is previewed.
+            previews.feed(
+                previews.take_preroll()
+                if starting_segment and preview_state.preroll
+                else [as_preview_chunk(chunk)],
+                segment_id=segment_state.current_id,
+                segment_started_at=segment_state.current_started_at,
+                monotonic=monotonic,
+            )
 
         for index, speech in enumerate(completed):
-            flushed = segment_state.current_preview
-            flushed_raw = segment_state.current_preview_raw
-            if inline_preview is not None:
-                try:
-                    tail = inline_preview.finish()
-                    raw_tail, normalized_tail = _hypothesis_texts(tail)
-                    flushed = (
-                        (segment_state.preview_prefix + normalized_tail).strip()
-                        or segment_state.current_preview
-                    )
-                    flushed_raw = (
-                        (segment_state.preview_raw_prefix + raw_tail).strip()
-                        or segment_state.current_preview_raw
-                        or flushed
-                    )
-                except Exception:
-                    pass
-            elif index:
+            flushed, flushed_raw = previews.finish_for_segment()
+            if inline_preview is None and index:
+                # Out-of-process preview cannot be split across several segments
+                # completing in one chunk, so drop the preview for the extras.
                 preview_state.dropped = True
             emit_speech_segment(speech, flushed, flushed_raw)
 
