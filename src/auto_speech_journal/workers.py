@@ -928,18 +928,13 @@ def _recorder_loop(
         retry_delay=retry_delay,
     )
 
-    router.publish_route()
-
-    while loop_state.running:
-        loop_state.iterations += 1
-        if max_iterations is not None and loop_state.iterations > max_iterations:
-            break
-
+    def drain_commands() -> None:
+        """Apply every queued command. A STOP begins the shutdown drain."""
         while True:
             try:
                 command = command_queue.get_nowait()
             except queue.Empty:
-                break
+                return
             if not isinstance(command, WorkerCommand):
                 continue
             if command.kind in (WorkerCommandKind.START, WorkerCommandKind.RESUME):
@@ -1004,143 +999,144 @@ def _recorder_loop(
                 loop_state.desired_recording = False
                 loop_state.stop_requested = True
                 spool_state.next_retry = 0.0
-                break
-        if not loop_state.running:
-            break
-        now = monotonic()
-        spool_writer.poll_warning_recovery(now)
-        if spool_state.pending_writes:
-            spool_writer.drain_pending_write(now)
-            continue
-        if loop_state.stop_requested and not stop_capture(paused=False):
-            time.sleep(0.05)
-            continue
-        if loop_state.stop_requested:
-            loop_state.running = False
-            break
+                return
+
+    def retry_pending_flushes() -> bool:
+        """Re-attempt a pause-stop or stream flush that could not complete earlier."""
         if loop_state.stop_capture_pending:
             if stop_capture(paused=True):
                 loop_state.stop_capture_pending = False
             else:
                 time.sleep(0.05)
-                continue
+                return True
         if loop_state.stream_flush_pending:
             if not flush_current():
                 time.sleep(0.05)
-                continue
+                return True
             loop_state.stream_flush_pending = False
             segment_state.clear_stream_clock()
-        if route_state.pending_route_request is not None and router.apply_pending_route(now):
-            continue
+        return False
 
-        if now >= route_state.next_route_check:
-            route_state.next_route_check = now + 2.0
-            include_preferred = route_state.include_preferred
-            try:
-                tracked = router.resolve_route(include_preferred=include_preferred)
-            except Exception as exc:
-                tracked = _InputRouteResolution(
-                    candidates=(),
-                    preferred_input_name=router.preferred_name(),
-                    preferred_input_available=False,
-                    reason=f"microphone catalog refresh failed: {exc}",
-                )
-            if tracked.preferred_input_available != route_state.preferred_input_available:
-                route_state.preferred_input_available = tracked.preferred_input_available
-                route_state.input_route_reason = router.route_reason(
-                    tracked, route_state.active_route
-                )
-                router.publish_route()
-            if (
-                loop_state.desired_recording
-                and route_state.capture is not None
-                and getattr(route_state.capture, "running", False)
-            ):
-                tracked_candidate = tracked.candidates[0] if tracked.candidates else None
-                target_changed = (
-                    tracked_candidate is None
-                    or route_state.active_fingerprint is None
-                    or device_key(tracked_candidate.fingerprint)
-                    != device_key(route_state.active_fingerprint)
-                    or tracked_candidate.route != route_state.active_route
-                )
-                if target_changed:
-                    request = InputRouteRequest(
-                        request_id=f"auto-{uuid.uuid4()}",
-                        selection=route_state.selection,
-                    )
-                    route_state.seen_request_ids.add(request.request_id)
-                    route_state.pending_route_request = request
-                    route_state.pending_include_preferred = include_preferred
-                    router.publish_route(request_id=request.request_id, switching=True)
-                    continue
-        if loop_state.desired_recording and not getattr(route_state.capture, "running", False):
-            if now < route_state.next_start_attempt:
-                time.sleep(min(0.05, route_state.next_start_attempt - now))
-                continue
-            if segment_state.stream_origin is not None:
-                if not flush_current():
-                    route_state.next_start_attempt = now + retry_delay
-                    continue
-                segment_state.clear_stream_clock()
-                _status(
-                    event_queue,
-                    WorkerKind.RECORDER,
-                    WorkerState.DEGRADED,
-                    "microphone stream became inactive; buffered speech was flushed",
-                    severity=Severity.WARNING,
-                )
-            spool_ratio = spool_writer.usage_ratio
-            recovered_below_hysteresis = spool_ratio < config.spool_warning_ratio
-            # Unlike the mid-stream gate below, this one holds the block until usage
-            # falls back under the warning ratio, so recording does not flap.
-            if not spool_writer.has_headroom() or (
-                spool_state.capacity_blocked and not recovered_below_hysteresis
-            ):
-                if not spool_state.capacity_blocked:
-                    spool_writer.report_hard_limit(
-                        "audio spool lacks headroom for a complete segment; recording stopped"
-                    )
-                spool_state.capacity_blocked = True
-                route_state.next_start_attempt = now + 1.0
-                continue
-            if spool_state.capacity_blocked:
-                spool_state.capacity_blocked = False
-                _status(
-                    event_queue,
-                    WorkerKind.RECORDER,
-                    WorkerState.READY,
-                    "audio spool recovered; resuming recording",
-                    metadata={"spool_ratio": spool_ratio},
-                )
-            if not router.start_current_route(now):
-                continue
-
-        if not loop_state.desired_recording or not getattr(route_state.capture, "running", False):
-            time.sleep(0.05)
-            continue
-
-        # Mid-stream loss of headroom between segments. No hysteresis here: we are
-        # already recording, so the stream stops immediately rather than waiting for
-        # usage to fall back under the warning ratio.
-        if segment_state.current_id is None and not spool_writer.has_headroom():
-            with suppress(Exception):
-                route_state.capture.stop()
-            segment_state.clear_stream_clock()
-            spool_writer.report_hard_limit(
-                "audio spool lacks headroom for the next segment; recording stopped"
+    def poll_device_watchdog(now: float) -> bool:
+        """Every 2s, notice the catalog moving under us and queue a switch."""
+        if now < route_state.next_route_check:
+            return False
+        route_state.next_route_check = now + 2.0
+        include_preferred = route_state.include_preferred
+        try:
+            tracked = router.resolve_route(include_preferred=include_preferred)
+        except Exception as exc:
+            tracked = _InputRouteResolution(
+                candidates=(),
+                preferred_input_name=router.preferred_name(),
+                preferred_input_available=False,
+                reason=f"microphone catalog refresh failed: {exc}",
             )
-            route_state.next_start_attempt = monotonic() + 1.0
-            continue
+        if tracked.preferred_input_available != route_state.preferred_input_available:
+            route_state.preferred_input_available = tracked.preferred_input_available
+            route_state.input_route_reason = router.route_reason(
+                tracked, route_state.active_route
+            )
+            router.publish_route()
+        if not (
+            loop_state.desired_recording
+            and route_state.capture is not None
+            and getattr(route_state.capture, "running", False)
+        ):
+            return False
+        tracked_candidate = tracked.candidates[0] if tracked.candidates else None
+        target_changed = (
+            tracked_candidate is None
+            or route_state.active_fingerprint is None
+            or device_key(tracked_candidate.fingerprint)
+            != device_key(route_state.active_fingerprint)
+            or tracked_candidate.route != route_state.active_route
+        )
+        if not target_changed:
+            return False
+        # Route the change through the same pending-request path a user switch uses,
+        # so it is applied at a safe boundary rather than mid-segment.
+        request = InputRouteRequest(
+            request_id=f"auto-{uuid.uuid4()}",
+            selection=route_state.selection,
+        )
+        route_state.seen_request_ids.add(request.request_id)
+        route_state.pending_route_request = request
+        route_state.pending_include_preferred = include_preferred
+        router.publish_route(request_id=request.request_id, switching=True)
+        return True
 
+    def ensure_capture_started(now: float) -> bool:
+        """Open a capture when recording is wanted but no stream is live."""
+        if not loop_state.desired_recording or getattr(route_state.capture, "running", False):
+            return False
+        if now < route_state.next_start_attempt:
+            time.sleep(min(0.05, route_state.next_start_attempt - now))
+            return True
+        if segment_state.stream_origin is not None:
+            if not flush_current():
+                route_state.next_start_attempt = now + retry_delay
+                return True
+            segment_state.clear_stream_clock()
+            _status(
+                event_queue,
+                WorkerKind.RECORDER,
+                WorkerState.DEGRADED,
+                "microphone stream became inactive; buffered speech was flushed",
+                severity=Severity.WARNING,
+            )
+        spool_ratio = spool_writer.usage_ratio
+        recovered_below_hysteresis = spool_ratio < config.spool_warning_ratio
+        # Unlike the mid-stream gate, this one holds the block until usage falls back
+        # under the warning ratio, so recording does not flap on and off.
+        if not spool_writer.has_headroom() or (
+            spool_state.capacity_blocked and not recovered_below_hysteresis
+        ):
+            if not spool_state.capacity_blocked:
+                spool_writer.report_hard_limit(
+                    "audio spool lacks headroom for a complete segment; recording stopped"
+                )
+            spool_state.capacity_blocked = True
+            route_state.next_start_attempt = now + 1.0
+            return True
+        if spool_state.capacity_blocked:
+            spool_state.capacity_blocked = False
+            _status(
+                event_queue,
+                WorkerKind.RECORDER,
+                WorkerState.READY,
+                "audio spool recovered; resuming recording",
+                metadata={"spool_ratio": spool_ratio},
+            )
+        return not router.start_current_route(now)
+
+    def guard_mid_stream_headroom() -> bool:
+        """Stop between segments if the spool ran out while we were recording.
+
+        No hysteresis here, unlike the pre-start gate: audio is already flowing, so
+        the stream stops immediately rather than waiting for usage to fall back.
+        """
+        if not (segment_state.current_id is None and not spool_writer.has_headroom()):
+            return False
+        with suppress(Exception):
+            route_state.capture.stop()
+        segment_state.clear_stream_clock()
+        spool_writer.report_hard_limit(
+            "audio spool lacks headroom for the next segment; recording stopped"
+        )
+        route_state.next_start_attempt = monotonic() + 1.0
+        return True
+
+    def read_chunk() -> AudioChunk | None:
+        """Take the next chunk of audio, or None when the iteration should end."""
         try:
             if loop_state.deferred_gap_chunk is not None:
                 chunk = loop_state.deferred_gap_chunk
                 loop_state.deferred_gap_chunk = None
-            else:
-                chunk = route_state.capture.read(timeout=0.1)
+                return chunk
+            return route_state.capture.read(timeout=0.1)
         except queue.Empty:
-            continue
+            return None
         except Exception as exc:
             loop_state.stream_flush_pending = not flush_current()
             with suppress(Exception):
@@ -1155,13 +1151,18 @@ def _recorder_loop(
                 f"microphone stream failed; reconnecting: {exc}",
                 severity=Severity.WARNING,
             )
-            continue
+            return None
 
+    def track_stream_clock(chunk: AudioChunk) -> bool:
+        """Anchor the chunk to the stream clock, restarting it across a sleep gap.
+
+        A wall-clock jump means the machine slept or the device stalled, so sample
+        offsets from the old origin would date the next segment wrongly.
+        """
         chunk_duration = len(chunk.samples) / chunk.sample_rate
         if segment_state.last_chunk_end_utc is not None:
             wall_gap = (chunk.started_at_utc - segment_state.last_chunk_end_utc).total_seconds()
-            gap_threshold = max(1.0, 3 * chunk_duration)
-            if wall_gap > gap_threshold:
+            if wall_gap > max(1.0, 3 * chunk_duration):
                 if not flush_current():
                     loop_state.stream_flush_pending = True
                     loop_state.deferred_gap_chunk = chunk
@@ -1176,7 +1177,7 @@ def _recorder_loop(
                         severity=Severity.WARNING,
                         metadata={"sleep_gap_seconds": wall_gap},
                     )
-                    continue
+                    return True
                 segment_state.stream_origin = None
                 _status(
                     event_queue,
@@ -1187,7 +1188,12 @@ def _recorder_loop(
                 )
         if segment_state.stream_origin is None:
             segment_state.stream_origin = chunk.started_at_utc
-        segment_state.last_chunk_end_utc = chunk.started_at_utc + timedelta(seconds=chunk_duration)
+        segment_state.last_chunk_end_utc = chunk.started_at_utc + timedelta(
+            seconds=chunk_duration
+        )
+        return False
+
+    def report_capture_health(chunk: AudioChunk) -> None:
         if chunk.dropped_frames or chunk.status:
             loop_state.capture_degraded = True
             _status(
@@ -1210,12 +1216,14 @@ def _recorder_loop(
                 "audio capture recovered",
             )
 
+    def accept_into_vad(chunk: AudioChunk) -> tuple[list[SpeechAudio], bool] | None:
+        """Run VAD over the chunk. None means the pipeline failed and we auto-paused."""
         try:
             was_speech_active = bool(getattr(vad, "is_speech_detected", False))
             if segment_state.current_id is None and not was_speech_active:
                 previews.remember_preroll(chunk)
             completed = vad.accept(chunk.samples)
-            speech_active = bool(getattr(vad, "is_speech_detected", False))
+            return completed, bool(getattr(vad, "is_speech_detected", False))
         except Exception as exc:
             _status(
                 event_queue,
@@ -1226,19 +1234,75 @@ def _recorder_loop(
             )
             loop_state.desired_recording = False
             loop_state.stop_capture_pending = not stop_capture(paused=True)
+            return None
+
+    def open_segment_if_speech_started(
+        chunk: AudioChunk,
+        completed: list[SpeechAudio],
+        speech_active: bool,
+    ) -> bool:
+        """Start a segment, dating it from the pre-roll so it begins at the first word."""
+        if not (segment_state.current_id is None and bool(completed or speech_active)):
+            return False
+        if preview_state.preroll:
+            speech_started_at = preview_state.preroll[0].started_at_utc
+        elif completed:
+            speech_started_at = segment_state.stream_origin + timedelta(
+                seconds=completed[0].start_sample / config.audio_sample_rate
+            )
+        else:
+            speech_started_at = chunk.started_at_utc
+        ensure_segment(speech_started_at)
+        return True
+
+    router.publish_route()
+
+    while loop_state.running:
+        loop_state.iterations += 1
+        if max_iterations is not None and loop_state.iterations > max_iterations:
+            break
+
+        drain_commands()
+        if not loop_state.running:
+            break
+        now = monotonic()
+        spool_writer.poll_warning_recovery(now)
+        if spool_state.pending_writes:
+            spool_writer.drain_pending_write(now)
+            continue
+        if loop_state.stop_requested and not stop_capture(paused=False):
+            time.sleep(0.05)
+            continue
+        if loop_state.stop_requested:
+            loop_state.running = False
+            break
+        if retry_pending_flushes():
+            continue
+        if route_state.pending_route_request is not None and router.apply_pending_route(now):
+            continue
+        if poll_device_watchdog(now):
+            continue
+        if ensure_capture_started(now):
             continue
 
-        starting_segment = segment_state.current_id is None and bool(completed or speech_active)
-        if starting_segment:
-            if preview_state.preroll:
-                speech_started_at = preview_state.preroll[0].started_at_utc
-            elif completed:
-                speech_started_at = segment_state.stream_origin + timedelta(
-                    seconds=completed[0].start_sample / config.audio_sample_rate
-                )
-            else:
-                speech_started_at = chunk.started_at_utc
-            ensure_segment(speech_started_at)
+        if not loop_state.desired_recording or not getattr(route_state.capture, "running", False):
+            time.sleep(0.05)
+            continue
+        if guard_mid_stream_headroom():
+            continue
+
+        chunk = read_chunk()
+        if chunk is None:
+            continue
+        if track_stream_clock(chunk):
+            continue
+        report_capture_health(chunk)
+
+        accepted = accept_into_vad(chunk)
+        if accepted is None:
+            continue
+        completed, speech_active = accepted
+        starting_segment = open_segment_if_speech_started(chunk, completed, speech_active)
 
         rms_dbfs, peak_dbfs = _audio_levels_dbfs(chunk.samples)
         _emit(
