@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib
-import inspect
 import math
 import multiprocessing as mp
 import os
@@ -19,20 +18,26 @@ from typing import Any
 
 from .audio import (
     AudioChunk,
-    AudioDeviceNotFound,
     FlacSpool,
-    InputDevice,
     SherpaSileroVadSegmenter,
     SpeechAudio,
     SpoolLimitExceeded,
     VadSegmenter,
-    WasapiMicrophone,
     create_vad_segmenter,
-    default_wasapi_input_device,
-    resolve_wasapi_input_device,
 )
-from .config import AppConfig, DeviceFingerprint, MicrophoneMode, MicrophoneSelection
+from .config import AppConfig, MicrophoneMode, MicrophoneSelection
 from .finalizer_engine import FasterWhisperFinalizer
+from .input_routing import (
+    CaptureCandidate as _CaptureCandidate,
+)
+from .input_routing import (
+    InputRouteResolution as _InputRouteResolution,
+)
+from .input_routing import (
+    RouteCoordinator,
+    RouteState,
+    device_key,
+)
 from .model_download import resolve_model_paths
 from .paths import AppPaths
 from .preview_engine import PreviewHypothesis, SherpaPreviewEngine
@@ -40,7 +45,6 @@ from .types import (
     AudioLevelUpdate,
     CapturedSegment,
     FinalResult,
-    InputRoute,
     InputRouteRequest,
     InputRouteUpdate,
     PartialUpdate,
@@ -88,22 +92,6 @@ class _PreviewPrerollChunk:
     started_at_utc: datetime
 
 
-@dataclass(frozen=True, slots=True)
-class _CaptureCandidate:
-    fingerprint: DeviceFingerprint
-    route: InputRoute
-    catalog_name: str
-    resolved_device: InputDevice | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class _InputRouteResolution:
-    candidates: tuple[_CaptureCandidate, ...]
-    preferred_input_name: str | None
-    preferred_input_available: bool
-    reason: str | None = None
-
-
 @dataclass(slots=True)
 class _LoopState:
     """Whether the recorder wants to record, and the work it owes before it may exit.
@@ -121,51 +109,6 @@ class _LoopState:
     stream_flush_pending: bool = False
     deferred_gap_chunk: AudioChunk | None = None
     capture_degraded: bool = False
-
-
-@dataclass(slots=True)
-class _RouteState:
-    """Which microphone the recorder is on, and the in-flight request to change it.
-
-    Every device change — user-requested or detected by the watchdog — is funnelled
-    through `pending_route_request` rather than switching inline, so a switch can be
-    deferred while captured audio is still waiting to become durable.
-    """
-
-    selection: MicrophoneSelection
-    active_route: InputRoute
-    capture: Any | None = None
-    active_input_name: str | None = None
-    active_fingerprint: DeviceFingerprint | None = None
-    preferred_input_available: bool = False
-    input_route_reason: str | None = None
-    pending_route_request: InputRouteRequest | None = None
-    pending_include_preferred: bool = True
-    seen_request_ids: set[str] = field(default_factory=set)
-    next_route_check: float = 0.0
-    next_switch_attempt: float = 0.0
-    next_start_attempt: float = 0.0
-
-    @classmethod
-    def for_selection(cls, selection: MicrophoneSelection) -> _RouteState:
-        return cls(selection=selection, active_route=cls.idle_route(selection))
-
-    @staticmethod
-    def idle_route(selection: MicrophoneSelection) -> InputRoute:
-        """The route to report while no capture is open."""
-        if selection.mode == MicrophoneMode.PENDING:
-            return InputRoute.PENDING
-        if selection.mode == MicrophoneMode.SKIPPED:
-            return InputRoute.SKIPPED
-        return InputRoute.UNAVAILABLE
-
-    @property
-    def include_preferred(self) -> bool:
-        """A fixed device that already fell back is not retried until asked."""
-        return not (
-            self.selection.mode == MicrophoneMode.FIXED
-            and self.active_route == InputRoute.FALLBACK
-        )
 
 
 @dataclass(slots=True)
@@ -451,183 +394,6 @@ def _status(
 
 def _segment_id(_started_at: datetime) -> str:
     return str(uuid.uuid4())
-
-
-def _build_capture(
-    config: AppConfig,
-    fingerprint: DeviceFingerprint | None = None,
-    *,
-    resolved_device: InputDevice | None = None,
-    require_system_default: bool = False,
-) -> WasapiMicrophone:
-    if fingerprint is None:
-        resolution = _resolve_input_route(config.microphone)
-        if not resolution.candidates:
-            raise AudioDeviceNotFound(resolution.reason or "microphone is not configured")
-        fingerprint = resolution.candidates[0].fingerprint
-    return WasapiMicrophone(
-        fingerprint,
-        target_sample_rate=config.audio_sample_rate,
-        block_ms=100,
-        queue_blocks=32,
-        resolved_device=resolved_device,
-        require_system_default=require_system_default,
-    )
-
-
-def _device_key(fingerprint: DeviceFingerprint) -> tuple[Any, ...]:
-    return (
-        fingerprint.endpoint_id.strip().casefold(),
-        fingerprint.host_api.strip().casefold(),
-        fingerprint.name.strip().casefold(),
-        fingerprint.default_sample_rate,
-        fingerprint.max_input_channels,
-    )
-
-
-def _candidate(device: InputDevice, route: InputRoute) -> _CaptureCandidate:
-    return _CaptureCandidate(
-        fingerprint=device.fingerprint(),
-        route=route,
-        catalog_name=device.name,
-        resolved_device=device,
-    )
-
-
-def _resolve_input_route(
-    selection: MicrophoneSelection,
-    *,
-    include_preferred: bool = True,
-) -> _InputRouteResolution:
-    """Resolve stable fingerprints without persisting PortAudio indexes."""
-
-    preferred = selection.preferred_device
-    preferred_name = preferred.name if preferred is not None else None
-    if selection.mode in {MicrophoneMode.PENDING, MicrophoneMode.SKIPPED}:
-        return _InputRouteResolution(
-            candidates=(),
-            preferred_input_name=preferred_name,
-            preferred_input_available=False,
-            reason="microphone selection is not configured",
-        )
-
-    if selection.mode == MicrophoneMode.SYSTEM_DEFAULT:
-        try:
-            default = default_wasapi_input_device()
-        except Exception as exc:
-            return _InputRouteResolution(
-                candidates=(),
-                preferred_input_name=None,
-                preferred_input_available=False,
-                reason=f"Windows default microphone is unavailable: {exc}",
-            )
-        return _InputRouteResolution(
-            candidates=(_candidate(default, InputRoute.SYSTEM_DEFAULT),),
-            preferred_input_name=None,
-            preferred_input_available=True,
-        )
-
-    if preferred is None:
-        return _InputRouteResolution(
-            candidates=(),
-            preferred_input_name=None,
-            preferred_input_available=False,
-            reason="fixed microphone selection has no fingerprint",
-        )
-
-    preferred_device: InputDevice | None = None
-    preferred_error: Exception | None = None
-    try:
-        preferred_device = resolve_wasapi_input_device(preferred)
-    except Exception as exc:
-        preferred_error = exc
-
-    candidates: list[_CaptureCandidate] = []
-    if include_preferred and preferred_device is not None:
-        candidates.append(_candidate(preferred_device, InputRoute.PREFERRED))
-
-    default_error: Exception | None = None
-    try:
-        default = default_wasapi_input_device()
-    except Exception as exc:
-        default_error = exc
-    else:
-        default_candidate = _candidate(default, InputRoute.FALLBACK)
-        if not candidates or _device_key(candidates[0].fingerprint) != _device_key(
-            default_candidate.fingerprint
-        ):
-            candidates.append(default_candidate)
-
-    reason = None
-    if preferred_error is not None:
-        reason = f"preferred microphone is unavailable: {preferred_error}"
-        if default_error is not None:
-            reason += f"; Windows default is unavailable: {default_error}"
-    elif not candidates and default_error is not None:
-        reason = f"Windows default microphone is unavailable: {default_error}"
-    return _InputRouteResolution(
-        candidates=tuple(candidates),
-        preferred_input_name=preferred_name,
-        preferred_input_available=preferred_device is not None,
-        reason=reason,
-    )
-
-
-def _synthetic_input_route(
-    selection: MicrophoneSelection,
-    *,
-    include_preferred: bool = True,
-) -> _InputRouteResolution:
-    """Keep private recorder-loop fakes independent from host audio hardware."""
-
-    preferred = selection.preferred_device
-    if selection.mode == MicrophoneMode.FIXED and preferred is not None:
-        candidates = (
-            _CaptureCandidate(preferred, InputRoute.PREFERRED, preferred.name),
-        ) if include_preferred else ()
-        return _InputRouteResolution(
-            candidates=candidates,
-            preferred_input_name=preferred.name,
-            preferred_input_available=True,
-        )
-    fingerprint = DeviceFingerprint(
-        name="Test microphone",
-        host_api="Windows WASAPI",
-        endpoint_id="test:microphone",
-        default_sample_rate=float(48_000),
-        max_input_channels=1,
-    )
-    return _InputRouteResolution(
-        candidates=(
-            _CaptureCandidate(
-                fingerprint,
-                InputRoute.SYSTEM_DEFAULT,
-                fingerprint.name,
-            ),
-        ),
-        preferred_input_name=None,
-        preferred_input_available=True,
-    )
-
-
-def _call_capture_factory(
-    factory: Callable[..., Any],
-    fingerprint: DeviceFingerprint,
-) -> Any:
-    try:
-        signature = inspect.signature(factory)
-    except (TypeError, ValueError):
-        return factory()
-    accepts_argument = any(
-        parameter.kind
-        in {
-            inspect.Parameter.POSITIONAL_ONLY,
-            inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            inspect.Parameter.VAR_POSITIONAL,
-        }
-        for parameter in signature.parameters.values()
-    )
-    return factory(fingerprint) if accepts_argument else factory()
 
 
 def _build_preview(config: AppConfig, paths: AppPaths) -> SherpaPreviewEngine:
@@ -961,7 +727,7 @@ def _recorder_loop(
         )
         raise RuntimeError(f"recorder initialization failed: {exc}") from exc
 
-    route_state = _RouteState.for_selection(config.microphone)
+    route_state = RouteState.for_selection(config.microphone)
 
     _status(event_queue, WorkerKind.RECORDER, WorkerState.READY, "recorder ready")
     if degraded_reason:
@@ -1010,60 +776,6 @@ def _recorder_loop(
     spool_state = _SpoolState()
     retry_delay = 2.0
     reserve_bytes = round(config.max_segment_ms * config.audio_sample_rate / 1000) * 2
-
-    def resolve_route(*, include_preferred: bool) -> _InputRouteResolution:
-        if route_resolver is not None:
-            return route_resolver(route_state.selection, include_preferred=include_preferred)
-        if capture_factory is not None:
-            return _synthetic_input_route(
-                route_state.selection,
-                include_preferred=include_preferred,
-            )
-        return _resolve_input_route(route_state.selection, include_preferred=include_preferred)
-
-    def preferred_name() -> str | None:
-        device = route_state.selection.preferred_device
-        return device.name if device is not None else None
-
-    def publish_route(
-        *,
-        request_id: str | None = None,
-        switching: bool = False,
-        reason: str | None = None,
-    ) -> None:
-        _emit(
-            event_queue,
-            InputRouteUpdate(
-                request_id=request_id,
-                preferred_input_name=preferred_name(),
-                active_input_name=route_state.active_input_name,
-                input_route=route_state.active_route,
-                input_switching=switching,
-                preferred_input_available=route_state.preferred_input_available,
-                reason=reason if reason is not None else route_state.input_route_reason,
-            ),
-        )
-
-    def route_reason(
-        resolution: _InputRouteResolution,
-        route: InputRoute,
-    ) -> str | None:
-        if route != InputRoute.FALLBACK:
-            return None
-        if resolution.reason:
-            return resolution.reason
-        preferred = preferred_name()
-        if route_state.selection.mode == MicrophoneMode.FIXED and preferred:
-            if resolution.preferred_input_available:
-                return (
-                    f"using Windows default microphone; preferred microphone "
-                    f"{preferred!r} is available but will not be selected automatically"
-                )
-            return (
-                "using Windows default microphone while preferred microphone "
-                f"{preferred!r} is unavailable"
-            )
-        return "using Windows default microphone"
 
     def spool_has_headroom() -> bool:
         checker = getattr(spool, "can_reserve", None)
@@ -1360,253 +1072,23 @@ def _recorder_loop(
         reset_segment_state()
         clear_preview_preroll()
 
-    def start_candidates(
-        resolution: _InputRouteResolution,
-    ) -> tuple[Any | None, Any | None, _CaptureCandidate | None, str | None]:
-        errors: list[str] = []
-        for candidate in resolution.candidates:
-            next_capture: Any | None = None
-            try:
-                next_capture = (
-                    _call_capture_factory(capture_factory, candidate.fingerprint)
-                    if capture_factory is not None
-                    else _build_capture(
-                        config,
-                        candidate.fingerprint,
-                        resolved_device=candidate.resolved_device,
-                        require_system_default=candidate.route
-                        in {InputRoute.SYSTEM_DEFAULT, InputRoute.FALLBACK},
-                    )
-                )
-                device = next_capture.start()
-            except Exception as exc:
-                errors.append(f"{candidate.catalog_name}: {exc}")
-                if next_capture is not None:
-                    with suppress(Exception):
-                        next_capture.stop()
-                continue
-            return next_capture, device, candidate, "; ".join(errors) or None
-        return None, None, None, "; ".join(errors) or resolution.reason
+    router = RouteCoordinator(
+        route_state,
+        config,
+        emit=lambda event: _emit(event_queue, event),
+        status=lambda state, message, **kwargs: _status(
+            event_queue, WorkerKind.RECORDER, state, message, **kwargs
+        ),
+        capture_factory=capture_factory,
+        route_resolver=route_resolver,
+        flush_current=flush_current,
+        reset_stream_state=reset_stream_state,
+        is_recording=lambda: loop_state.desired_recording,
+        has_pending_writes=lambda: bool(spool_state.pending_writes),
+        retry_delay=retry_delay,
+    )
 
-    def commit_started_capture(
-        next_capture: Any,
-        device: Any,
-        candidate: _CaptureCandidate,
-        resolution: _InputRouteResolution,
-        *,
-        request_id: str | None,
-    ) -> None:
-        route_state.capture = next_capture
-        route_state.active_route = candidate.route
-        route_state.active_input_name = str(getattr(device, "name", candidate.catalog_name))
-        route_state.active_fingerprint = candidate.fingerprint
-        route_state.preferred_input_available = resolution.preferred_input_available
-        route_state.input_route_reason = route_reason(resolution, candidate.route)
-        reset_stream_state()
-        _status(
-            event_queue,
-            WorkerKind.RECORDER,
-            WorkerState.RECORDING,
-            f"recording from {route_state.active_input_name}",
-            severity=(
-                Severity.WARNING
-                if candidate.route == InputRoute.FALLBACK
-                else Severity.INFO
-            ),
-            metadata={
-                "device_index": getattr(device, "index", None),
-                "active_input_name": route_state.active_input_name,
-                "input_route": route_state.active_route.value,
-                "preferred_input_available": route_state.preferred_input_available,
-            },
-        )
-        publish_route(request_id=request_id)
-
-    def apply_pending_route(now: float) -> bool:
-        request = route_state.pending_route_request
-        if request is None or now < route_state.next_switch_attempt or spool_state.pending_writes:
-            return False
-        resolution = resolve_route(include_preferred=route_state.pending_include_preferred)
-        route_state.preferred_input_available = resolution.preferred_input_available
-
-        if not loop_state.desired_recording:
-            route_state.active_input_name = None
-            route_state.active_fingerprint = None
-            route_state.active_route = (
-                InputRoute.PENDING
-                if route_state.selection.mode == MicrophoneMode.PENDING
-                else InputRoute.SKIPPED
-                if route_state.selection.mode == MicrophoneMode.SKIPPED
-                else (
-                    resolution.candidates[0].route
-                    if resolution.candidates
-                    else InputRoute.UNAVAILABLE
-                )
-            )
-            route_state.input_route_reason = (
-                resolution.reason or "input change will apply on resume"
-            )
-            route_state.pending_route_request = None
-            publish_route(request_id=request.request_id)
-            return True
-
-        if not resolution.candidates:
-            route_state.input_route_reason = resolution.reason or "microphone is unavailable"
-            route_state.pending_route_request = None
-            _status(
-                event_queue,
-                WorkerKind.RECORDER,
-                WorkerState.DEGRADED,
-                route_state.input_route_reason,
-                severity=Severity.WARNING,
-                metadata={"input_route": route_state.active_route.value},
-            )
-            publish_route(request_id=request.request_id)
-            return True
-
-        first = resolution.candidates[0]
-        if (
-            route_state.capture is not None
-            and getattr(route_state.capture, "running", False)
-            and route_state.active_fingerprint is not None
-            and _device_key(route_state.active_fingerprint) == _device_key(first.fingerprint)
-        ):
-            route_state.active_route = first.route
-            route_state.preferred_input_available = resolution.preferred_input_available
-            route_state.input_route_reason = route_reason(resolution, first.route)
-            route_state.pending_route_request = None
-            publish_route(request_id=request.request_id)
-            return True
-
-        old_capture = route_state.capture
-        old_route = route_state.active_route
-        old_name = route_state.active_input_name
-        old_fingerprint = route_state.active_fingerprint
-        if old_capture is not None and getattr(old_capture, "running", False):
-            if not flush_current():
-                route_state.next_switch_attempt = now + retry_delay
-                return False
-            try:
-                old_capture.stop()
-            except Exception as exc:
-                route_state.next_switch_attempt = now + retry_delay
-                route_state.input_route_reason = f"failed to close current microphone: {exc}"
-                _status(
-                    event_queue,
-                    WorkerKind.RECORDER,
-                    WorkerState.DEGRADED,
-                    route_state.input_route_reason,
-                    severity=Severity.WARNING,
-                )
-                return False
-
-        next_capture, device, candidate, error = start_candidates(resolution)
-        if next_capture is not None and device is not None and candidate is not None:
-            if candidate.route == InputRoute.FALLBACK and error:
-                resolution = replace(
-                    resolution,
-                    reason=f"preferred microphone could not be opened: {error}",
-                )
-            commit_started_capture(
-                next_capture,
-                device,
-                candidate,
-                resolution,
-                request_id=request.request_id,
-            )
-            route_state.pending_route_request = None
-            route_state.next_switch_attempt = now
-            return True
-
-        route_state.capture = None
-        restored = False
-        if old_capture is not None:
-            try:
-                old_device = old_capture.start()
-            except Exception:
-                pass
-            else:
-                route_state.capture = old_capture
-                route_state.active_route = old_route
-                route_state.active_input_name = str(
-                    getattr(old_device, "name", old_name or "microphone")
-                )
-                route_state.active_fingerprint = old_fingerprint
-                reset_stream_state()
-                restored = True
-        if not restored:
-            route_state.active_route = InputRoute.UNAVAILABLE
-            route_state.active_input_name = None
-            route_state.active_fingerprint = None
-        route_state.input_route_reason = f"microphone switch failed: {error or 'unavailable'}"
-        route_state.pending_route_request = None
-        route_state.next_switch_attempt = now + retry_delay
-        _status(
-            event_queue,
-            WorkerKind.RECORDER,
-            WorkerState.DEGRADED,
-            route_state.input_route_reason,
-            severity=Severity.WARNING,
-            metadata={"previous_input_restored": restored},
-        )
-        publish_route(request_id=request.request_id)
-        return True
-
-    def start_current_route(now: float) -> bool:
-        resolution = resolve_route(include_preferred=route_state.include_preferred)
-        route_state.preferred_input_available = resolution.preferred_input_available
-        first = resolution.candidates[0] if resolution.candidates else None
-        if (
-            route_state.capture is not None
-            and first is not None
-            and route_state.active_fingerprint is not None
-            and _device_key(first.fingerprint) == _device_key(route_state.active_fingerprint)
-        ):
-            try:
-                device = route_state.capture.start()
-            except Exception:
-                with suppress(Exception):
-                    route_state.capture.stop()
-                route_state.capture = None
-            else:
-                commit_started_capture(
-                    route_state.capture,
-                    device,
-                    first,
-                    resolution,
-                    request_id=None,
-                )
-                return True
-        next_capture, device, candidate, error = start_candidates(resolution)
-        if next_capture is None or device is None or candidate is None:
-            route_state.input_route_reason = (
-                error or resolution.reason or "microphone is unavailable"
-            )
-            route_state.next_start_attempt = now + retry_delay
-            _status(
-                event_queue,
-                WorkerKind.RECORDER,
-                WorkerState.DEGRADED,
-                f"microphone unavailable; retrying: {route_state.input_route_reason}",
-                severity=Severity.WARNING,
-            )
-            publish_route(reason=route_state.input_route_reason)
-            return False
-        if candidate.route == InputRoute.FALLBACK and error:
-            resolution = replace(
-                resolution,
-                reason=f"preferred microphone could not be opened: {error}",
-            )
-        commit_started_capture(
-            next_capture,
-            device,
-            candidate,
-            resolution,
-            request_id=None,
-        )
-        return True
-
-    publish_route()
+    router.publish_route()
 
     while loop_state.running:
         loop_state.iterations += 1
@@ -1659,7 +1141,7 @@ def _recorder_loop(
                     )
                     continue
                 if request.request_id in route_state.seen_request_ids:
-                    publish_route(
+                    router.publish_route(
                         request_id=request.request_id,
                         switching=(
                             route_state.pending_route_request is not None
@@ -1668,7 +1150,7 @@ def _recorder_loop(
                     )
                     continue
                 if route_state.pending_route_request is not None:
-                    publish_route(
+                    router.publish_route(
                         request_id=route_state.pending_route_request.request_id,
                         reason="microphone change was superseded by a newer request",
                     )
@@ -1677,7 +1159,7 @@ def _recorder_loop(
                 route_state.pending_route_request = request
                 route_state.pending_include_preferred = True
                 route_state.next_switch_attempt = 0.0
-                publish_route(request_id=request.request_id, switching=True)
+                router.publish_route(request_id=request.request_id, switching=True)
             elif command.kind == WorkerCommandKind.STOP:
                 loop_state.desired_recording = False
                 loop_state.stop_requested = True
@@ -1849,25 +1331,27 @@ def _recorder_loop(
                 continue
             loop_state.stream_flush_pending = False
             segment_state.clear_stream_clock()
-        if route_state.pending_route_request is not None and apply_pending_route(now):
+        if route_state.pending_route_request is not None and router.apply_pending_route(now):
             continue
 
         if now >= route_state.next_route_check:
             route_state.next_route_check = now + 2.0
             include_preferred = route_state.include_preferred
             try:
-                tracked = resolve_route(include_preferred=include_preferred)
+                tracked = router.resolve_route(include_preferred=include_preferred)
             except Exception as exc:
                 tracked = _InputRouteResolution(
                     candidates=(),
-                    preferred_input_name=preferred_name(),
+                    preferred_input_name=router.preferred_name(),
                     preferred_input_available=False,
                     reason=f"microphone catalog refresh failed: {exc}",
                 )
             if tracked.preferred_input_available != route_state.preferred_input_available:
                 route_state.preferred_input_available = tracked.preferred_input_available
-                route_state.input_route_reason = route_reason(tracked, route_state.active_route)
-                publish_route()
+                route_state.input_route_reason = router.route_reason(
+                    tracked, route_state.active_route
+                )
+                router.publish_route()
             if (
                 loop_state.desired_recording
                 and route_state.capture is not None
@@ -1877,8 +1361,8 @@ def _recorder_loop(
                 target_changed = (
                     tracked_candidate is None
                     or route_state.active_fingerprint is None
-                    or _device_key(tracked_candidate.fingerprint)
-                    != _device_key(route_state.active_fingerprint)
+                    or device_key(tracked_candidate.fingerprint)
+                    != device_key(route_state.active_fingerprint)
                     or tracked_candidate.route != route_state.active_route
                 )
                 if target_changed:
@@ -1889,7 +1373,7 @@ def _recorder_loop(
                     route_state.seen_request_ids.add(request.request_id)
                     route_state.pending_route_request = request
                     route_state.pending_include_preferred = include_preferred
-                    publish_route(request_id=request.request_id, switching=True)
+                    router.publish_route(request_id=request.request_id, switching=True)
                     continue
         if loop_state.desired_recording and not getattr(route_state.capture, "running", False):
             if now < route_state.next_start_attempt:
@@ -1936,7 +1420,7 @@ def _recorder_loop(
                     "audio spool recovered; resuming recording",
                     metadata={"spool_ratio": spool_ratio},
                 )
-            if not start_current_route(now):
+            if not router.start_current_route(now):
                 continue
 
         if not loop_state.desired_recording or not getattr(route_state.capture, "running", False):
@@ -3140,5 +2624,9 @@ __all__ = [
     "RecorderShutdownPending",
     "RealtimeModelProbe",
     "WorkerBackpressure",
+    # Re-exported from `input_routing` so the recorder's routing types stay reachable
+    # from the module that owns the loop they belong to.
+    "_CaptureCandidate",
+    "_InputRouteResolution",
     "probe_realtime_models",
 ]
