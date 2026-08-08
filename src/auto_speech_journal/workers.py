@@ -21,7 +21,6 @@ from .audio import (
     FlacSpool,
     SherpaSileroVadSegmenter,
     SpeechAudio,
-    SpoolLimitExceeded,
     VadSegmenter,
     create_vad_segmenter,
 )
@@ -41,6 +40,7 @@ from .input_routing import (
 from .model_download import resolve_model_paths
 from .paths import AppPaths
 from .preview_engine import PreviewHypothesis, SherpaPreviewEngine
+from .spool_retry import SpoolCoordinator, SpoolState
 from .types import (
     AudioLevelUpdate,
     CapturedSegment,
@@ -75,14 +75,6 @@ class RealtimeModelProbe:
     preview_loaded: bool
     vad_loaded: bool
     normalized_example: str
-
-
-@dataclass(frozen=True, slots=True)
-class _PendingSpoolWrite:
-    segment: CapturedSegment
-    samples: Any
-    forced_endpoint: bool
-    end_sample: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,26 +144,6 @@ class _PreviewState:
     backpressure_active: bool = False
     preroll: deque[_PreviewPrerollChunk] = field(default_factory=deque)
     preroll_samples: int = 0
-
-
-@dataclass(slots=True)
-class _SpoolState:
-    """Durable-write backpressure and retry bookkeeping for the recorder loop.
-
-    A failed spool write is never dropped: the segment is parked in `pending_writes`
-    and retried until it lands, which is what keeps shutdown blocked until captured
-    audio is durable.
-    """
-
-    capacity_blocked: bool = False
-    warning_active: bool = False
-    last_recovery_check: float = 0.0
-    pending_writes: deque[_PendingSpoolWrite] = field(default_factory=deque)
-    recovered_metadata: dict[str, Any] = field(default_factory=dict)
-    rejected_recovery_backups: dict[str, Path] = field(default_factory=dict)
-    next_retry: float = 0.0
-    last_retry_status: float = 0.0
-    stream_reset_pending: bool = False
 
 
 class WorkerBackpressure(RuntimeError):
@@ -773,15 +745,9 @@ def _recorder_loop(
     loop_state = _LoopState()
     segment_state = _SegmentState()
     preview_state = _PreviewState()
-    spool_state = _SpoolState()
+    spool_state = SpoolState()
     retry_delay = 2.0
     reserve_bytes = round(config.max_segment_ms * config.audio_sample_rate / 1000) * 2
-
-    def spool_has_headroom() -> bool:
-        checker = getattr(spool, "can_reserve", None)
-        if callable(checker):
-            return bool(checker(reserve_bytes))
-        return float(getattr(spool, "usage_ratio", 0.0)) < 1.0
 
     def reset_segment_state() -> None:
         segment_state.current_id = None
@@ -910,85 +876,23 @@ def _recorder_loop(
                 previous_segment_id=segment_state.previous_forced_segment_id,
             )
 
-        event_emitted = False
-        queued_for_retry = False
+        stored = False
         try:
-            audio_path = spool.write(
+            stored = spool_writer.write_segment(
+                captured_event,
                 speech.samples,
-                sample_rate=config.audio_sample_rate,
                 segment_id=identifier,
-            )
-            publish_persisted_segment(captured_event(Path(audio_path)), Path(audio_path))
-            event_emitted = True
-            ratio = float(getattr(spool, "usage_ratio", 0.0))
-            if ratio >= config.spool_warning_ratio and not spool_state.warning_active:
-                spool_state.warning_active = True
-                _status(
-                    event_queue,
-                    WorkerKind.RECORDER,
-                    WorkerState.DEGRADED,
-                    f"audio spool is {ratio:.0%} full",
-                    severity=Severity.ERROR,
-                    metadata={"spool_ratio": ratio},
-                )
-            elif ratio < config.spool_warning_ratio and spool_state.warning_active:
-                spool_state.warning_active = False
-                _status(
-                    event_queue,
-                    WorkerKind.RECORDER,
-                    WorkerState.RECORDING,
-                    "audio spool usage recovered below warning threshold",
-                    metadata={"spool_ratio": ratio},
-                )
-        except Exception as exc:
-            expected_path = paths.spool_dir / f"{identifier}.flac"
-            spool_state.pending_writes.append(
-                _PendingSpoolWrite(
-                    segment=captured_event(expected_path),
-                    samples=(
-                        speech.samples.copy()
-                        if hasattr(speech.samples, "copy")
-                        else speech.samples
-                    ),
-                    forced_endpoint=speech.forced_endpoint,
-                    end_sample=speech.end_sample,
-                )
-            )
-            queued_for_retry = True
-            hard_limit = isinstance(exc, SpoolLimitExceeded)
-            spool_state.capacity_blocked = spool_state.capacity_blocked or hard_limit
-            failed_at = monotonic()
-            spool_state.next_retry = (
-                failed_at if loop_state.stop_requested else failed_at + retry_delay
-            )
-            spool_state.stream_reset_pending = True
-            if route_state.capture is not None:
-                with suppress(Exception):
-                    route_state.capture.stop()
-            _status(
-                event_queue,
-                WorkerKind.RECORDER,
-                WorkerState.ERROR,
-                (
-                    "audio spool hard limit reached; captured speech is held for retry"
-                    if hard_limit
-                    else "failed to spool captured speech; captured speech is held for retry"
-                )
-                + f": {exc}",
-                severity=Severity.ERROR,
-                metadata={
-                    "spool_write_failed": True,
-                    "spool_hard_limit": hard_limit,
-                    "segment_id": identifier,
-                    "recovery_path": str(expected_path),
-                    "pending_spool_writes": len(spool_state.pending_writes),
-                },
+                forced_endpoint=speech.forced_endpoint,
+                end_sample=speech.end_sample,
+                expected_path=paths.spool_dir / f"{identifier}.flac",
+                monotonic=monotonic,
+                on_capture_stop=stop_capture_after_spool_failure,
             )
         finally:
-            if (event_emitted or queued_for_retry) and speech.forced_endpoint:
+            if stored and speech.forced_endpoint:
                 segment_state.previous_forced_segment_id = identifier
                 segment_state.previous_forced_end_sample = speech.end_sample
-            elif event_emitted or queued_for_retry:
+            elif stored:
                 segment_state.previous_forced_segment_id = None
                 segment_state.previous_forced_end_sample = None
             reset_segment_state()
@@ -1071,6 +975,44 @@ def _recorder_loop(
         loop_state.capture_degraded = False
         reset_segment_state()
         clear_preview_preroll()
+
+    def stop_capture_after_spool_failure() -> None:
+        """Stop taking audio we cannot store, without tearing down the route."""
+        if route_state.capture is not None:
+            with suppress(Exception):
+                route_state.capture.stop()
+
+    def reset_stream_after_drain() -> None:
+        """Restart the stream once the write backlog clears.
+
+        Deliberately narrower than `reset_stream_state`: the capture never stopped
+        being the active device, so neither the degraded flag nor the preview pre-roll
+        is cleared here.
+        """
+        vad.reset()
+        if inline_preview is not None:
+            inline_preview.reset()
+        segment_state.clear_stream_clock()
+        reset_segment_state()
+
+    spool_writer = SpoolCoordinator(
+        spool_state,
+        spool,
+        config,
+        status=lambda state, message, **kwargs: _status(
+            event_queue, WorkerKind.RECORDER, state, message, **kwargs
+        ),
+        publish_persisted=publish_persisted_segment,
+        reset_stream_after_drain=reset_stream_after_drain,
+        is_stopping=lambda: loop_state.stop_requested,
+        recording_state=lambda: (
+            WorkerState.RECORDING
+            if loop_state.desired_recording and getattr(route_state.capture, "running", False)
+            else WorkerState.READY
+        ),
+        reserve_bytes=reserve_bytes,
+        retry_delay=retry_delay,
+    )
 
     router = RouteCoordinator(
         route_state,
@@ -1168,150 +1110,9 @@ def _recorder_loop(
         if not loop_state.running:
             break
         now = monotonic()
-        if spool_state.warning_active and now - spool_state.last_recovery_check >= 1.0:
-            spool_state.last_recovery_check = now
-            spool_ratio = float(getattr(spool, "usage_ratio", 0.0))
-            if spool_ratio < config.spool_warning_ratio:
-                spool_state.warning_active = False
-                _status(
-                    event_queue,
-                    WorkerKind.RECORDER,
-                    (
-                        WorkerState.RECORDING
-                        if loop_state.desired_recording
-                        and getattr(route_state.capture, "running", False)
-                        else WorkerState.READY
-                    ),
-                    "audio spool usage recovered below warning threshold",
-                    metadata={"spool_ratio": spool_ratio},
-                )
+        spool_writer.poll_warning_recovery(now)
         if spool_state.pending_writes:
-            if now < spool_state.next_retry:
-                time.sleep(min(0.05, spool_state.next_retry - now))
-                continue
-            pending = spool_state.pending_writes[0]
-            expected_path = Path(pending.segment.audio_path)
-            recovered_path: Path | None = None
-            recovered_info = spool_state.recovered_metadata.get(pending.segment.segment_id)
-            rejected_backup = spool_state.rejected_recovery_backups.get(pending.segment.segment_id)
-            if (
-                expected_path.is_file()
-                and recovered_info is None
-                and rejected_backup is None
-            ):
-                recovered_path = expected_path
-            recover = getattr(spool, "recover_partials", None)
-            if (
-                not expected_path.is_file()
-                and not (rejected_backup is not None and rejected_backup.is_file())
-                and callable(recover)
-            ):
-                try:
-                    recovered = recover()
-                    spool_state.recovered_metadata.update(
-                        (item.segment_id, item) for item in recovered
-                    )
-                except Exception:
-                    pass
-                recovered_info = spool_state.recovered_metadata.get(pending.segment.segment_id)
-            if recovered_info is not None:
-                exact_recovery = (
-                    int(recovered_info.sample_rate) == pending.segment.sample_rate
-                    and int(recovered_info.frame_count) == len(pending.samples)
-                )
-                if exact_recovery and Path(recovered_info.path).is_file():
-                    recovered_path = Path(recovered_info.path)
-                else:
-                    spool_state.recovered_metadata.pop(pending.segment.segment_id, None)
-                    recovered_file = Path(recovered_info.path)
-                    backup = recovered_file.with_name(
-                        f".{pending.segment.segment_id}.{uuid.uuid4().hex}.partial.flac"
-                    )
-                    try:
-                        os.replace(recovered_file, backup)
-                    except OSError:
-                        # Keep the decodable prefix at its current path. The id
-                        # remains rejected so it cannot be mistaken for a full
-                        # segment on the next in-process retry.
-                        backup = recovered_file
-                    spool_state.rejected_recovery_backups[pending.segment.segment_id] = backup
-                    _status(
-                        event_queue,
-                        WorkerKind.RECORDER,
-                        WorkerState.ERROR,
-                        "partial FLAC length mismatch; rewriting from complete in-memory audio",
-                        severity=Severity.ERROR,
-                        metadata={
-                            "partial_length_mismatch": True,
-                            "segment_id": pending.segment.segment_id,
-                            "expected_frames": len(pending.samples),
-                            "recovered_frames": int(recovered_info.frame_count),
-                        },
-                    )
-            try:
-                write_pending = (
-                    getattr(spool, "write_emergency", spool.write)
-                    if loop_state.stop_requested
-                    else spool.write
-                )
-                audio_path = recovered_path or Path(
-                    write_pending(
-                        pending.samples,
-                        sample_rate=pending.segment.sample_rate,
-                        segment_id=pending.segment.segment_id,
-                    )
-                )
-                if not audio_path.is_file():
-                    raise OSError(f"spool write returned missing path: {audio_path}")
-            except Exception as exc:
-                spool_state.next_retry = now if loop_state.stop_requested else now + retry_delay
-                if now - spool_state.last_retry_status >= 30.0:
-                    spool_state.last_retry_status = now
-                    _status(
-                        event_queue,
-                        WorkerKind.RECORDER,
-                        WorkerState.ERROR,
-                        f"captured speech is still waiting for durable storage: {exc}",
-                        severity=Severity.ERROR,
-                        metadata={
-                            "spool_write_retry": True,
-                            "segment_id": pending.segment.segment_id,
-                            "pending_spool_writes": len(spool_state.pending_writes),
-                        },
-                    )
-                if loop_state.stop_requested:
-                    time.sleep(0.05)
-                continue
-            publish_persisted_segment(pending.segment, audio_path)
-            spool_state.pending_writes.popleft()
-            spool_state.recovered_metadata.pop(pending.segment.segment_id, None)
-            rejected_backup = spool_state.rejected_recovery_backups.pop(
-                pending.segment.segment_id,
-                None,
-            )
-            if rejected_backup is not None and rejected_backup != audio_path:
-                with suppress(OSError):
-                    rejected_backup.unlink(missing_ok=True)
-            spool_state.next_retry = now
-            spool_state.capacity_blocked = not spool_has_headroom()
-            if not spool_state.pending_writes and spool_state.stream_reset_pending:
-                vad.reset()
-                if inline_preview is not None:
-                    inline_preview.reset()
-                segment_state.clear_stream_clock()
-                reset_segment_state()
-                spool_state.stream_reset_pending = False
-            _status(
-                event_queue,
-                WorkerKind.RECORDER,
-                WorkerState.READY,
-                "captured speech was recovered to durable FLAC storage",
-                metadata={
-                    "spool_write_recovered": True,
-                    "segment_id": pending.segment.segment_id,
-                    "pending_spool_writes": len(spool_state.pending_writes),
-                },
-            )
+            spool_writer.drain_pending_write(now)
             continue
         if loop_state.stop_requested and not stop_capture(paused=False):
             time.sleep(0.05)
@@ -1391,22 +1192,16 @@ def _recorder_loop(
                     "microphone stream became inactive; buffered speech was flushed",
                     severity=Severity.WARNING,
                 )
-            spool_ratio = float(getattr(spool, "usage_ratio", 0.0))
+            spool_ratio = spool_writer.usage_ratio
             recovered_below_hysteresis = spool_ratio < config.spool_warning_ratio
-            if not spool_has_headroom() or (
+            # Unlike the mid-stream gate below, this one holds the block until usage
+            # falls back under the warning ratio, so recording does not flap.
+            if not spool_writer.has_headroom() or (
                 spool_state.capacity_blocked and not recovered_below_hysteresis
             ):
                 if not spool_state.capacity_blocked:
-                    _status(
-                        event_queue,
-                        WorkerKind.RECORDER,
-                        WorkerState.ERROR,
-                        "audio spool lacks headroom for a complete segment; recording stopped",
-                        severity=Severity.ERROR,
-                        metadata={
-                            "spool_hard_limit": True,
-                            "reserved_bytes": reserve_bytes,
-                        },
+                    spool_writer.report_hard_limit(
+                        "audio spool lacks headroom for a complete segment; recording stopped"
                     )
                 spool_state.capacity_blocked = True
                 route_state.next_start_attempt = now + 1.0
@@ -1427,18 +1222,15 @@ def _recorder_loop(
             time.sleep(0.05)
             continue
 
-        if segment_state.current_id is None and not spool_has_headroom():
-            spool_state.capacity_blocked = True
+        # Mid-stream loss of headroom between segments. No hysteresis here: we are
+        # already recording, so the stream stops immediately rather than waiting for
+        # usage to fall back under the warning ratio.
+        if segment_state.current_id is None and not spool_writer.has_headroom():
             with suppress(Exception):
                 route_state.capture.stop()
             segment_state.clear_stream_clock()
-            _status(
-                event_queue,
-                WorkerKind.RECORDER,
-                WorkerState.ERROR,
-                "audio spool lacks headroom for the next segment; recording stopped",
-                severity=Severity.ERROR,
-                metadata={"spool_hard_limit": True, "reserved_bytes": reserve_bytes},
+            spool_writer.report_hard_limit(
+                "audio spool lacks headroom for the next segment; recording stopped"
             )
             route_state.next_start_attempt = monotonic() + 1.0
             continue
