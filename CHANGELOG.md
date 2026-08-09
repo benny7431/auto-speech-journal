@@ -7,6 +7,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Removed
+
+- The generated scene-art system: the 12 month x 8 state x 2 variant matrix of 192 WebP
+  backgrounds, the particle sprites, `SceneArt.qml`, `AmbientSoundRiver.qml`,
+  `TodayParticleLayer.qml`, `PigmentAbsorption.qml`, `scene_assets.py`, and the nine scene and
+  particle tools. Photographic backgrounds forced three compensating translucent washes under
+  every text surface and still left the handwriting fonts low-contrast, so the interface now
+  reads from paper, type, and a single low-opacity month tint. The wheel drops from roughly
+  41 MB of packaged art, and the UI test suite runs in half the time. The assets remain
+  recoverable from Git history.
+- `AUTO_SPEECH_JOURNAL_SCENE_DIR` and the `--scene-dir` option of `tools/render_ui_baselines.py`,
+  which existed only to preview prototype scene matrices.
+
+### Fixed
+
+- `tools/render_ui_baselines.py` produced no usable baselines: it left `onboarding_completed`
+  unset so every grab failed the window-size check, its output drifted by up to a fifth of the
+  pixels between runs of the same revision, and the gate matrix silently collapsed its
+  `default` and `large` window sizes onto one clamped size.
+
+### Added
+
+- `tools/compare_ui_baselines.py`, which compares two baseline directories on peak per-channel
+  delta so a visually inert refactor can be demonstrated rather than asserted.
+
 ## [0.2.0] - 2026-08-06
 
 ### Added

@@ -74,9 +74,6 @@ jobs:
           New-Item -ItemType Directory -Force -Path (Join-Path $env:USERPROFILE "Documents") | Out-Null
           uv run --no-sync python -m auto_speech_journal self-test --no-model-check --no-microphone-check
 
-      - name: Validate all 192 scene assets
-        run: uv run --no-sync python tools/validate_scene_assets.py --strict
-
       - name: Build wheel and source distribution
         run: uv build
 
