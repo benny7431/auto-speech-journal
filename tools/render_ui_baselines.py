@@ -39,6 +39,9 @@ from auto_speech_journal.ui import (  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT / "artifacts" / "ui-baselines"
+# The settings sheet renders this path, so it must not depend on the output
+# directory or two baseline sets could never be compared against each other.
+PREVIEW_RECORDS_ROOT = Path("C:/Users/journal/Documents/聲跡日記")
 TAIPEI = ZoneInfo("Asia/Taipei")
 STATES = (
     "starting",
@@ -56,6 +59,10 @@ GATE_SIZES = (
     ("large", 1440, 960),
 )
 GATE_FONT_SIZES = (14, 18, 26)
+DRAWER_TABS = ("settings", "system", "vocabulary", "hours")
+# The tight gate is where drawer form density fails first; the wide gate catches
+# a drawer that was only ever designed against the narrow one.
+DRAWER_SIZES = (("minimum", 960, 680), ("large", 1440, 960))
 LONG_SEGMENT_TEXT = (
     "傍晚回到家後，我先把窗戶推開，讓雨後的風慢慢穿過房間。"
     "桌上的杯子還留著一點溫度，今天幾次重要的對話與臨時想到的細節，"
@@ -250,7 +257,7 @@ def render_baselines(output_dir: Path, *, month: int) -> list[Path]:
     _freeze_motion()
     application = QApplication.instance() or QApplication([])
     _configure_application(application)
-    controller = _PreviewController(output_dir / "records")
+    controller = _PreviewController(PREVIEW_RECORDS_ROOT)
     window = _create_main_window(controller, application)
     view_model = window._journal_view_model
     fixed_now = datetime(2026, month, 15, 10, 30, tzinfo=TAIPEI)
@@ -292,7 +299,7 @@ def render_gate_matrix(output_dir: Path, *, month: int) -> list[Path]:
     _freeze_motion()
     application = QApplication.instance() or QApplication([])
     _configure_application(application)
-    controller = _PreviewController(output_dir / "records")
+    controller = _PreviewController(PREVIEW_RECORDS_ROOT)
     controller.long_text = True
     window = _create_main_window(controller, application)
     view_model = window._journal_view_model
@@ -361,6 +368,55 @@ def render_gate_matrix(output_dir: Path, *, month: int) -> list[Path]:
     return outputs
 
 
+def render_drawer_matrix(output_dir: Path, *, month: int) -> list[Path]:
+    """Capture every utility-drawer tab across the tight and wide window gates.
+
+    The drawer was previously invisible to this tool, which never set
+    `activeSheet`. It is the densest surface in the app and the first to overflow,
+    so it needs its own before/after evidence.
+    """
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _freeze_motion()
+    application = QApplication.instance() or QApplication([])
+    _configure_application(application)
+    controller = _PreviewController(PREVIEW_RECORDS_ROOT)
+    window = _create_main_window(controller, application)
+    view_model = window._journal_view_model
+    fixed_now = datetime(2026, month, 15, 10, 30, tzinfo=TAIPEI)
+    view_model._clock = lambda: fixed_now
+    controller.snapshot = _snapshot("listening", 200)
+    view_model.refresh(force_timeline=True)
+    window.show()
+    QTest.qWait(100)
+
+    outputs: list[Path] = []
+    try:
+        _ensure_mode(view_model, expanded=True)
+        for size_name, width, height in DRAWER_SIZES:
+            bounded = QSize(width, height)
+            window.setMaximumSize(bounded)
+            view_model._set_expanded_size(bounded)
+            window.resize(bounded)
+            QTest.qWait(120)
+            for font_size in GATE_FONT_SIZES:
+                view_model._set_runtime_appearance(view_model.uiFontFamily, font_size)
+                for tab in DRAWER_TABS:
+                    window.setProperty("activeSheet", tab)
+                    QTest.qWait(120)
+                    destination = (
+                        output_dir / f"drawer-{tab}-{size_name}-{font_size}px.png"
+                    )
+                    _grab(window, view_model, destination, expanded=True)
+                    outputs.append(destination)
+        window.setProperty("activeSheet", "")
+    finally:
+        view_model._poll_timer.stop()
+        view_model._allow_close = True
+        window.close()
+    return outputs
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
@@ -371,18 +427,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="also render compact font and workspace size/font/long-text gate cases",
     )
     parser.add_argument(
+        "--drawer-matrix",
+        action="store_true",
+        help="also render every utility-drawer tab across the size and font gates",
+    )
+    parser.add_argument(
+        "--drawer-matrix-only",
+        action="store_true",
+        help="render only the utility-drawer cases",
+    )
+    parser.add_argument(
         "--gate-matrix-only",
         action="store_true",
         help="render only the size/font/long-text gate cases",
     )
     args = parser.parse_args(argv)
-    outputs = (
-        []
-        if args.gate_matrix_only
-        else render_baselines(args.output_dir, month=args.month)
-    )
+    only = args.gate_matrix_only or args.drawer_matrix_only
+    outputs = [] if only else render_baselines(args.output_dir, month=args.month)
     if args.gate_matrix or args.gate_matrix_only:
         outputs.extend(render_gate_matrix(args.output_dir, month=args.month))
+    if args.drawer_matrix or args.drawer_matrix_only:
+        outputs.extend(render_drawer_matrix(args.output_dir, month=args.month))
     print(f"Rendered {len(outputs)} UI baselines under {args.output_dir}")
     return 0
 

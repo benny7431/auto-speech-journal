@@ -21,12 +21,21 @@ def _project_version() -> str:
         return str(tomllib.load(handle)["project"]["version"])
 REQUIRED_SUFFIXES = {
     "auto_speech_journal/runtime-models-v1.json",
+    "auto_speech_journal/qml/CompactRecorder.qml",
     "auto_speech_journal/qml/FirstRunWizard.qml",
+    "auto_speech_journal/qml/HoursSheet.qml",
+    "auto_speech_journal/qml/IconButton.qml",
     "auto_speech_journal/qml/JournalEntryDelegate.qml",
     "auto_speech_journal/qml/JournalWindow.qml",
+    "auto_speech_journal/qml/PaperButton.qml",
+    "auto_speech_journal/qml/SettingsSheet.qml",
     "auto_speech_journal/qml/SoundRiver.qml",
+    "auto_speech_journal/qml/SystemSheet.qml",
+    "auto_speech_journal/qml/TextButton.qml",
     "auto_speech_journal/qml/TodayLiveBar.qml",
     "auto_speech_journal/qml/TodayWorkspace.qml",
+    "auto_speech_journal/qml/UtilityDrawer.qml",
+    "auto_speech_journal/qml/VocabularySheet.qml",
     "auto_speech_journal/assets/brand/journal-ink-icon.json",
     "auto_speech_journal/assets/brand/journal-ink-icon.png",
 }
