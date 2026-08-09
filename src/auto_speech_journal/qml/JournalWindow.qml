@@ -34,11 +34,7 @@ ApplicationWindow {
         0,
         Math.min(11, parseInt(journal.dayKey.slice(5, 7)) - 1)
     )
-    readonly property color monthTint: [
-        "#AAB7C7", "#A58AB6", "#9FB88D", "#7894A8",
-        "#5E8B70", "#657AA3", "#D6A143", "#3F8582",
-        "#8794B3", "#C88D4E", "#8A668F", "#C7B99E"
-    ][monthIndex]
+    readonly property color monthTint: Theme.monthTints[monthIndex]
     readonly property bool motionAllowed: visible && !journal.reducedMotion &&
                                            (visibility === Window.Windowed ||
                                             visibility === Window.FullScreen)

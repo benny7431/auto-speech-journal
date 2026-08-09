@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
@@ -924,7 +926,7 @@ def test_internal_typography_is_enlarged_without_crowding_fixed_layouts(
         "workspaceLiveLabel": 15,
         "workspacePartialText": 18,
         "timelineTitle": 25,
-        "sheetTitle": 32,
+        "sheetTitle": 25,
         "previewSpin": 18,
     }
     for object_name, pixel_size in expected_sizes.items():
@@ -1048,6 +1050,40 @@ def test_live_bar_collapses_when_only_waiting_placeholder_remains(journal_window
     assert live_bar.property("hasPartial") is False
     assert float(live_bar.property("implicitHeight")) < expanded_height
     assert window.findChild(QObject, "workspaceLiveLabel").property("text") == "即時預覽"
+
+
+def test_redesigned_surfaces_take_every_colour_from_theme() -> None:
+    """Colour belongs to Theme.qml; a literal anywhere else is a palette fork.
+
+    FirstRunWizard and the window's banner, confirmation and toast layers are out
+    of scope for this redesign and still carry their own values.
+    """
+
+    qml_dir = (
+        Path(__file__).resolve().parents[1] / "src" / "auto_speech_journal" / "qml"
+    )
+    covered = (
+        "CompactRecorder.qml",
+        "FormSection.qml",
+        "HoursSheet.qml",
+        "IconButton.qml",
+        "JournalEntryDelegate.qml",
+        "LevelMeter.qml",
+        "PaperButton.qml",
+        "SettingsSheet.qml",
+        "SoundRiver.qml",
+        "SystemSheet.qml",
+        "TextButton.qml",
+        "TodayLiveBar.qml",
+        "TodayWorkspace.qml",
+        "UtilityDrawer.qml",
+        "VocabularySheet.qml",
+    )
+    offenders = {
+        name: re.findall(r'"#[0-9A-Fa-f]{3,8}"', (qml_dir / name).read_text("utf-8"))
+        for name in covered
+    }
+    assert {name: found for name, found in offenders.items() if found} == {}
 
 
 def test_hour_header_reports_its_segment_count(journal_window):

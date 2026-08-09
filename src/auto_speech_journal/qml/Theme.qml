@@ -56,6 +56,7 @@ QtObject {
     readonly property real spaceXl: 24
     readonly property real space2Xl: 32
 
+    readonly property real radiusXs: 4
     readonly property real radiusSm: 8
     readonly property real radiusMd: 12
     readonly property real radiusLg: 16

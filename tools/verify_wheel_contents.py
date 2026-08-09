@@ -23,6 +23,7 @@ REQUIRED_SUFFIXES = {
     "auto_speech_journal/runtime-models-v1.json",
     "auto_speech_journal/qml/CompactRecorder.qml",
     "auto_speech_journal/qml/FirstRunWizard.qml",
+    "auto_speech_journal/qml/FormSection.qml",
     "auto_speech_journal/qml/HoursSheet.qml",
     "auto_speech_journal/qml/IconButton.qml",
     "auto_speech_journal/qml/JournalEntryDelegate.qml",

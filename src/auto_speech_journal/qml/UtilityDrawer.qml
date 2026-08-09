@@ -2,6 +2,8 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
+import "."
+
 /*
  * The right-hand utility drawer: settings, status, vocabulary and hours.
  *
@@ -18,7 +20,7 @@ Rectangle {
     id: root
     objectName: "sheetShade"
     anchors.fill: parent
-    color: "#624B4036"
+    color: Theme.wash(Theme.ink, 0.38)
     z: 30
 
     required property var journal
@@ -64,9 +66,9 @@ Rectangle {
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         width: Math.min(430, Math.max(390, parent.width * 0.42))
-        color: "#F8F5EEDD"
-        border.width: 1
-        border.color: "#D1C3B0"
+        color: Theme.paperSheet
+        border.width: Theme.hairline
+        border.color: Theme.line
 
         MouseArea { anchors.fill: parent }
 
@@ -74,19 +76,19 @@ Rectangle {
             id: sheetTitle
             objectName: "sheetTitle"
             anchors.left: parent.left
-            anchors.leftMargin: 24
+            anchors.leftMargin: Theme.spaceXl
             anchors.top: parent.top
-            anchors.topMargin: 28
+            anchors.topMargin: Theme.spaceXl
             text: "今日工具"
-            color: "#493F35"
+            color: Theme.inkStrong
             font.family: journal.systemFontFamily
-            font.pixelSize: root.px(28)
+            font.pixelSize: root.px(22)
             font.weight: Font.DemiBold
         }
 
         IconButton {
             anchors.right: parent.right
-            anchors.rightMargin: 16
+            anchors.rightMargin: Theme.spaceLg
             anchors.verticalCenter: sheetTitle.verticalCenter
             text: "×"
             onClicked: root.closeRequested()
@@ -96,13 +98,13 @@ Rectangle {
             id: drawerTabs
             objectName: "utilityDrawerTabs"
             anchors.left: parent.left
-            anchors.leftMargin: 20
+            anchors.leftMargin: Theme.spaceXl
             anchors.right: parent.right
-            anchors.rightMargin: 20
+            anchors.rightMargin: Theme.spaceXl
             anchors.top: sheetTitle.bottom
-            anchors.topMargin: 16
-            height: 38
-            spacing: 6
+            anchors.topMargin: Theme.spaceLg
+            height: 36
+            spacing: Theme.spaceXs
 
             TextButton {
                 objectName: "settingsDrawerTab"
@@ -112,8 +114,11 @@ Rectangle {
                 font.weight: root.activeSheet === "settings" ? Font.DemiBold : Font.Normal
                 onClicked: root.sheetRequested("settings")
                 background: Rectangle {
-                    radius: 8
-                    color: root.activeSheet === "settings" ? "#1B718A78" : "transparent"
+                    radius: Theme.radiusSm
+                    color: root.activeSheet === "settings"
+                           ? Theme.paperRaised : "transparent"
+                    border.width: root.activeSheet === "settings" ? Theme.hairline : 0
+                    border.color: Theme.line
                 }
             }
             TextButton {
@@ -124,8 +129,11 @@ Rectangle {
                 font.weight: root.activeSheet === "system" ? Font.DemiBold : Font.Normal
                 onClicked: root.sheetRequested("system")
                 background: Rectangle {
-                    radius: 8
-                    color: root.activeSheet === "system" ? "#1B718A78" : "transparent"
+                    radius: Theme.radiusSm
+                    color: root.activeSheet === "system"
+                           ? Theme.paperRaised : "transparent"
+                    border.width: root.activeSheet === "system" ? Theme.hairline : 0
+                    border.color: Theme.line
                 }
             }
             TextButton {
@@ -136,8 +144,11 @@ Rectangle {
                 font.weight: root.activeSheet === "vocabulary" ? Font.DemiBold : Font.Normal
                 onClicked: root.sheetRequested("vocabulary")
                 background: Rectangle {
-                    radius: 8
-                    color: root.activeSheet === "vocabulary" ? "#1B718A78" : "transparent"
+                    radius: Theme.radiusSm
+                    color: root.activeSheet === "vocabulary"
+                           ? Theme.paperRaised : "transparent"
+                    border.width: root.activeSheet === "vocabulary" ? Theme.hairline : 0
+                    border.color: Theme.line
                 }
             }
             TextButton {
@@ -148,19 +159,34 @@ Rectangle {
                 font.weight: root.activeSheet === "hours" ? Font.DemiBold : Font.Normal
                 onClicked: root.sheetRequested("hours")
                 background: Rectangle {
-                    radius: 8
-                    color: root.activeSheet === "hours" ? "#1B718A78" : "transparent"
+                    radius: Theme.radiusSm
+                    color: root.activeSheet === "hours"
+                           ? Theme.paperRaised : "transparent"
+                    border.width: root.activeSheet === "hours" ? Theme.hairline : 0
+                    border.color: Theme.line
                 }
             }
+        }
+
+        // Separates the fixed header from the scrolling sheet below it.
+        Rectangle {
+            id: headerRule
+            objectName: "drawerHeaderRule"
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: drawerTabs.bottom
+            anchors.topMargin: Theme.spaceLg
+            height: Theme.hairline
+            color: Theme.line
         }
 
         VocabularySheet {
             id: vocabularySheet
             anchors.left: parent.left
             anchors.right: parent.right
-            anchors.top: drawerTabs.bottom
+            anchors.top: headerRule.bottom
             anchors.bottom: parent.bottom
-            anchors.margins: 24
+            anchors.margins: Theme.spaceXl
             visible: root.activeSheet === "vocabulary"
             journal: root.journal
             onClearVocabularyRequested: root.clearVocabularyRequested()
@@ -170,9 +196,9 @@ Rectangle {
             id: settingsSheet
             anchors.left: parent.left
             anchors.right: parent.right
-            anchors.top: drawerTabs.bottom
+            anchors.top: headerRule.bottom
             anchors.bottom: parent.bottom
-            anchors.margins: 24
+            anchors.margins: Theme.spaceXl
             visible: root.activeSheet === "settings"
             journal: root.journal
             onCloseRequested: root.closeRequested()
@@ -182,8 +208,8 @@ Rectangle {
             id: systemSheet
             anchors.left: parent.left
             anchors.right: parent.right
-            anchors.top: drawerTabs.bottom
-            anchors.margins: 24
+            anchors.top: headerRule.bottom
+            anchors.margins: Theme.spaceXl
             visible: root.activeSheet === "system"
             journal: root.journal
             onExitRequested: root.exitRequested()
@@ -193,8 +219,8 @@ Rectangle {
             id: hoursSheet
             anchors.left: parent.left
             anchors.right: parent.right
-            anchors.top: drawerTabs.bottom
-            anchors.margins: 24
+            anchors.top: headerRule.bottom
+            anchors.margins: Theme.spaceXl
             visible: root.activeSheet === "hours"
             journal: root.journal
             onDeleteHourRequested: function(hourKey) { root.deleteHourRequested(hourKey) }
