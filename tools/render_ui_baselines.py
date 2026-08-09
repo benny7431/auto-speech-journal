@@ -19,6 +19,7 @@ from PySide6.QtGui import QColor, QImage, QPainter  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
+from auto_speech_journal import ui_models  # noqa: E402
 from auto_speech_journal.config import AppConfig  # noqa: E402
 from auto_speech_journal.controller import ControllerSnapshot  # noqa: E402
 from auto_speech_journal.timeline import (  # noqa: E402
@@ -63,9 +64,26 @@ LONG_SEGMENT_TEXT = (
 )
 
 
+def _freeze_motion() -> None:
+    """Make grabs reproducible by taking the reduced-motion path.
+
+    Particles, ambient washes and scene cross-fades are time driven, so two runs
+    of the same revision otherwise disagree on up to a fifth of their pixels.
+    `reducedMotion` is a constant QML property, so this has to be in place before
+    the view model is constructed.
+    """
+
+    ui_models._windows_reduced_motion = lambda *args, **kwargs: True
+
+
 class _PreviewController:
     def __init__(self, records_root: Path) -> None:
-        self.config = AppConfig(records_root=str(records_root))
+        # Baselines capture the recorder, not the wizard. Without this the window
+        # stays at the onboarding size and every grab fails the size check.
+        self.config = AppConfig(
+            records_root=str(records_root),
+            onboarding_completed=True,
+        )
         self.snapshot = ControllerSnapshot(timeline_revision=1)
         self.long_text = False
 
@@ -230,6 +248,7 @@ def _grab(window, view_model, destination: Path, *, expanded: bool) -> None:
 
 def render_baselines(output_dir: Path, *, month: int) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
+    _freeze_motion()
     application = QApplication.instance() or QApplication([])
     _configure_application(application)
     controller = _PreviewController(output_dir / "records")
@@ -271,6 +290,7 @@ def render_baselines(output_dir: Path, *, month: int) -> list[Path]:
 
 def render_gate_matrix(output_dir: Path, *, month: int) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
+    _freeze_motion()
     application = QApplication.instance() or QApplication([])
     _configure_application(application)
     controller = _PreviewController(output_dir / "records")
@@ -305,15 +325,12 @@ def render_gate_matrix(output_dir: Path, *, month: int) -> list[Path]:
 
         _ensure_mode(view_model, expanded=True)
         for size_name, requested_width, requested_height in GATE_SIZES:
-            screen = window.screen() or application.primaryScreen()
-            available = (
-                screen.availableGeometry().size()
-                if screen is not None
-                else QSize(requested_width, requested_height)
-            )
-            bounded = view_model._clamp_expanded_size(
-                QSize(requested_width, requested_height), available
-            )
+            # Qt's offscreen platform reports an 800x800 virtual screen, so going
+            # through the runtime clamp would collapse both `default` and `large`
+            # onto 960x800 and silently drop the wide-window gate. Lift the
+            # window's own maximum instead, the way the workspace grabs do.
+            bounded = QSize(requested_width, requested_height)
+            window.setMaximumSize(bounded)
             view_model._set_expanded_size(bounded)
             window.resize(bounded)
             QTest.qWait(120)
