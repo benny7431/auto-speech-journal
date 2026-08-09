@@ -1,13 +1,15 @@
 import QtQuick
 import QtQuick.Layouts
 
+import "."
+
 /*
  * The resident floating recorder: a fixed 440x190 window minus the title bar.
  *
- * Every size here is load bearing because the window cannot grow. The partial
- * transcript takes whatever vertical space the backlog line and the action row
- * leave behind, and drops to a single line once the journal font passes the
- * dense breakpoint.
+ * Four stacked rows - status, live transcript, actions - inside a single card.
+ * Every size is load bearing because the window cannot grow: the transcript
+ * takes whatever the status row and the action row leave behind, and drops to
+ * one line once the journal font passes the dense breakpoint.
  */
 Item {
     id: root
@@ -16,6 +18,8 @@ Item {
     required property var journal
     required property string systemFontFamily
     required property color monthTint
+
+    readonly property bool dense: journal.uiFontScale > Theme.denseFontScale
 
     function px(size) {
         return Math.max(1, Math.round(size * journal.uiFontScale))
@@ -32,38 +36,73 @@ Item {
         objectName: "compactInfo"
         z: 2
         anchors.left: parent.left
-        anchors.leftMargin: 14
+        anchors.leftMargin: Theme.spaceLg
         anchors.right: parent.right
-        anchors.rightMargin: 14
+        anchors.rightMargin: Theme.spaceLg
         anchors.top: parent.top
         anchors.bottom: parent.bottom
 
-        Text {
-            id: compactBacklogText
-            objectName: "compactBacklogText"
-            anchors.top: parent.top
-            anchors.topMargin: 5
+        // Live indicator on the left, backlog on the right, sharing one baseline.
+        Item {
+            id: statusRow
+            objectName: "compactStatusRow"
+            anchors.left: parent.left
             anchors.right: parent.right
-            text: root.journal.backlogText
-            color: "#776B5E"
-            font.family: root.systemFontFamily
-            font.pixelSize: root.px(13)
-            horizontalAlignment: Text.AlignRight
+            anchors.top: parent.top
+            anchors.topMargin: Theme.spaceXs
+            height: Math.max(compactBacklogText.implicitHeight, 12)
+
+            Row {
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: Theme.spaceSm
+
+                Rectangle {
+                    objectName: "compactStatusDot"
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 8
+                    height: 8
+                    radius: 4
+                    color: root.journal.paused ? Theme.inkFaint : Theme.accent
+                    opacity: root.journal.speechActive ? 1 : 0.45
+                }
+
+                LevelMeter {
+                    objectName: "compactLevelMeter"
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 56
+                    height: 10
+                    level: root.journal.audioLevel
+                    active: root.journal.speechActive
+                }
+            }
+
+            Text {
+                id: compactBacklogText
+                objectName: "compactBacklogText"
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.journal.backlogText
+                color: Theme.inkMuted
+                font.family: root.systemFontFamily
+                font.pixelSize: root.px(13)
+                horizontalAlignment: Text.AlignRight
+            }
         }
 
         Text {
             objectName: "compactPartialText"
             anchors.left: parent.left
             anchors.right: parent.right
-            anchors.top: compactBacklogText.bottom
-            anchors.topMargin: 6
+            anchors.top: statusRow.bottom
+            anchors.topMargin: Theme.spaceSm
             anchors.bottom: compactActionRow.top
-            anchors.bottomMargin: 12
+            anchors.bottomMargin: Theme.spaceMd
             text: root.journal.partialText
             wrapMode: Text.Wrap
-            maximumLineCount: root.journal.uiFontScale > 1.4 ? 1 : 2
+            maximumLineCount: root.dense ? 1 : 2
             elide: Text.ElideRight
-            color: "#3E3831"
+            color: Theme.ink
             font.family: root.systemFontFamily
             font.pixelSize: root.px(15)
             lineHeight: 1.18
@@ -76,9 +115,9 @@ Item {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.bottom: parent.bottom
-            anchors.bottomMargin: 9
+            anchors.bottomMargin: Theme.spaceMd
             height: Math.max(32, root.px(16) + 10)
-            spacing: 8
+            spacing: Theme.spaceSm
 
             PaperButton {
                 objectName: "pauseButton"

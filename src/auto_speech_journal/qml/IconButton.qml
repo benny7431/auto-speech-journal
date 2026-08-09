@@ -1,6 +1,8 @@
 import QtQuick
 import QtQuick.Controls
 
+import "."
+
 /*
  * The square glyph button: window close and sheet dismiss.
  * Reads `journal` from the engine root context; see PaperButton.qml.
@@ -18,13 +20,14 @@ Button {
 
     contentItem: Text {
         text: control.text
-        color: "#5C5044"
+        color: Theme.inkBody
         font: control.font
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter
     }
     background: Rectangle {
-        radius: 8
-        color: control.down ? "#DDD2C0" : control.hovered ? "#EFE5D6" : "transparent"
+        radius: Theme.radiusSm
+        color: control.down ? Theme.wash(Theme.ink, 0.12)
+               : control.hovered ? Theme.wash(Theme.ink, 0.06) : "transparent"
     }
 }

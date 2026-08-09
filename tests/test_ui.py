@@ -789,26 +789,29 @@ def test_redesigned_workspace_uses_plain_paper_and_single_river(
     assert window.findChild(QObject, "minimizeButton") is None
     assert close_button.property("text") == "×"
     # The scene strip used to take the left 242px; the text column now owns the
-    # whole window width minus a symmetric gutter.
-    assert float(compact_info.property("x")) == pytest.approx(14.0, abs=0.5)
-    assert float(compact_info.property("width")) == pytest.approx(412.0, abs=0.5)
+    # whole window width minus a symmetric gutter from the spacing scale.
+    assert float(compact_info.property("x")) == pytest.approx(16.0, abs=0.5)
+    assert float(compact_info.property("width")) == pytest.approx(408.0, abs=0.5)
     assert window.findChild(QObject, "compactStatusMark") is None
     assert window.findChild(QObject, "compactStateText") is None
     assert window.findChild(QObject, "compactStatusMessage") is None
+
+    # Live indicator left, backlog right, on one row; transcript starts below it.
+    compact_status_row = window.findChild(QObject, "compactStatusRow")
+    assert window.findChild(QObject, "compactLevelMeter") is not None
     assert float(compact_backlog.property("x")) + float(
         compact_backlog.property("width")
     ) == pytest.approx(float(compact_info.property("width")), abs=0.5)
     assert float(compact_partial.property("y")) >= (
-        float(compact_backlog.property("y"))
-        + float(compact_backlog.property("height"))
-        + 5.5
+        float(compact_status_row.property("y"))
+        + float(compact_status_row.property("height"))
     )
     compact_action_parent = compact_action_row.parent()
     bottom_gap = float(compact_action_parent.property("height")) - (
         float(compact_action_row.property("y"))
         + float(compact_action_row.property("height"))
     )
-    assert bottom_gap == pytest.approx(9.0, abs=0.5)
+    assert bottom_gap == pytest.approx(12.0, abs=0.5)
     assert float(compact_action_row.property("spacing")) == pytest.approx(8.0)
 
     window._journal_view_model.toggleExpanded()
@@ -900,8 +903,11 @@ def test_internal_typography_is_enlarged_without_crowding_fixed_layouts(
     assert _pixel_size(window.findChild(QObject, "pauseButton")) == 18
     assert _pixel_size(window.findChild(QObject, "expandButton")) == 18
     assert _pixel_size(window.findChild(QObject, "closeButton")) == 16
-    assert window.findChild(QObject, "compactStatusRow") is None
-    assert float(window.findChild(QObject, "compactPartialText").property("height")) >= 70
+    # The transcript takes what the status and action rows leave; it must still
+    # clear the two lines it is allowed to wrap to (17px at lineHeight 1.18).
+    partial = window.findChild(QObject, "compactPartialText")
+    assert float(partial.property("height")) >= 2 * 17 * 1.18
+    assert float(partial.property("maximumLineCount")) == 2
     assert float(window.findChild(QObject, "compactActionRow").property("height")) == 32
 
     window._journal_view_model.toggleExpanded()
