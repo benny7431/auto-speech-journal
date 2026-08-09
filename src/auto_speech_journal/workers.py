@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib
-import inspect
 import math
 import multiprocessing as mp
 import os
@@ -9,7 +8,6 @@ import queue
 import threading
 import time
 import uuid
-from collections import deque
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, replace
@@ -19,28 +17,39 @@ from typing import Any
 
 from .audio import (
     AudioChunk,
-    AudioDeviceNotFound,
     FlacSpool,
-    InputDevice,
     SherpaSileroVadSegmenter,
     SpeechAudio,
-    SpoolLimitExceeded,
     VadSegmenter,
-    WasapiMicrophone,
     create_vad_segmenter,
-    default_wasapi_input_device,
-    resolve_wasapi_input_device,
 )
-from .config import AppConfig, DeviceFingerprint, MicrophoneMode, MicrophoneSelection
+from .config import AppConfig, MicrophoneMode, MicrophoneSelection
 from .finalizer_engine import FasterWhisperFinalizer
+from .input_routing import (
+    CaptureCandidate as _CaptureCandidate,
+)
+from .input_routing import (
+    InputRouteResolution as _InputRouteResolution,
+)
+from .input_routing import (
+    RouteCoordinator,
+    RouteState,
+    device_key,
+)
 from .model_download import resolve_model_paths
 from .paths import AppPaths
 from .preview_engine import PreviewHypothesis, SherpaPreviewEngine
+from .preview_stream import (
+    PreviewCoordinator,
+    PreviewState,
+    as_preview_chunk,
+    hypothesis_texts,
+)
+from .spool_retry import SpoolCoordinator, SpoolState
 from .types import (
     AudioLevelUpdate,
     CapturedSegment,
     FinalResult,
-    InputRoute,
     InputRouteRequest,
     InputRouteUpdate,
     PartialUpdate,
@@ -73,35 +82,48 @@ class RealtimeModelProbe:
     normalized_example: str
 
 
-@dataclass(frozen=True, slots=True)
-class _PendingSpoolWrite:
-    segment: CapturedSegment
-    samples: Any
-    forced_endpoint: bool
-    end_sample: int
+@dataclass(slots=True)
+class _LoopState:
+    """Whether the recorder wants to record, and the work it owes before it may exit.
+
+    `stop_requested` starts a drain rather than ending the loop: the loop keeps turning
+    until every pending flush and spool write has landed, which is what
+    `RecorderShutdownPending` reports back to the supervisor.
+    """
+
+    desired_recording: bool = False
+    running: bool = True
+    iterations: int = 0
+    stop_requested: bool = False
+    stop_capture_pending: bool = False
+    stream_flush_pending: bool = False
+    deferred_gap_chunk: AudioChunk | None = None
+    capture_degraded: bool = False
 
 
-@dataclass(frozen=True, slots=True)
-class _PreviewPrerollChunk:
-    samples: Any
-    sample_rate: int
-    started_at_utc: datetime
+@dataclass(slots=True)
+class _SegmentState:
+    """The segment currently being accumulated, plus the stream clock it is timed against.
 
+    `stream_origin` anchors sample offsets to wall time; clearing it (see
+    `clear_stream_clock`) marks the audio stream as discontinuous, so the next chunk
+    starts a fresh timeline instead of being dated from the old origin.
+    """
 
-@dataclass(frozen=True, slots=True)
-class _CaptureCandidate:
-    fingerprint: DeviceFingerprint
-    route: InputRoute
-    catalog_name: str
-    resolved_device: InputDevice | None = None
+    stream_origin: datetime | None = None
+    last_chunk_end_utc: datetime | None = None
+    current_id: str | None = None
+    current_started_at: datetime | None = None
+    current_preview: str = ""
+    current_preview_raw: str = ""
+    preview_prefix: str = ""
+    preview_raw_prefix: str = ""
+    previous_forced_segment_id: str | None = None
+    previous_forced_end_sample: int | None = None
 
-
-@dataclass(frozen=True, slots=True)
-class _InputRouteResolution:
-    candidates: tuple[_CaptureCandidate, ...]
-    preferred_input_name: str | None
-    preferred_input_available: bool
-    reason: str | None = None
+    def clear_stream_clock(self) -> None:
+        self.stream_origin = None
+        self.last_chunk_end_utc = None
 
 
 class WorkerBackpressure(RuntimeError):
@@ -326,183 +348,6 @@ def _segment_id(_started_at: datetime) -> str:
     return str(uuid.uuid4())
 
 
-def _build_capture(
-    config: AppConfig,
-    fingerprint: DeviceFingerprint | None = None,
-    *,
-    resolved_device: InputDevice | None = None,
-    require_system_default: bool = False,
-) -> WasapiMicrophone:
-    if fingerprint is None:
-        resolution = _resolve_input_route(config.microphone)
-        if not resolution.candidates:
-            raise AudioDeviceNotFound(resolution.reason or "microphone is not configured")
-        fingerprint = resolution.candidates[0].fingerprint
-    return WasapiMicrophone(
-        fingerprint,
-        target_sample_rate=config.audio_sample_rate,
-        block_ms=100,
-        queue_blocks=32,
-        resolved_device=resolved_device,
-        require_system_default=require_system_default,
-    )
-
-
-def _device_key(fingerprint: DeviceFingerprint) -> tuple[Any, ...]:
-    return (
-        fingerprint.endpoint_id.strip().casefold(),
-        fingerprint.host_api.strip().casefold(),
-        fingerprint.name.strip().casefold(),
-        fingerprint.default_sample_rate,
-        fingerprint.max_input_channels,
-    )
-
-
-def _candidate(device: InputDevice, route: InputRoute) -> _CaptureCandidate:
-    return _CaptureCandidate(
-        fingerprint=device.fingerprint(),
-        route=route,
-        catalog_name=device.name,
-        resolved_device=device,
-    )
-
-
-def _resolve_input_route(
-    selection: MicrophoneSelection,
-    *,
-    include_preferred: bool = True,
-) -> _InputRouteResolution:
-    """Resolve stable fingerprints without persisting PortAudio indexes."""
-
-    preferred = selection.preferred_device
-    preferred_name = preferred.name if preferred is not None else None
-    if selection.mode in {MicrophoneMode.PENDING, MicrophoneMode.SKIPPED}:
-        return _InputRouteResolution(
-            candidates=(),
-            preferred_input_name=preferred_name,
-            preferred_input_available=False,
-            reason="microphone selection is not configured",
-        )
-
-    if selection.mode == MicrophoneMode.SYSTEM_DEFAULT:
-        try:
-            default = default_wasapi_input_device()
-        except Exception as exc:
-            return _InputRouteResolution(
-                candidates=(),
-                preferred_input_name=None,
-                preferred_input_available=False,
-                reason=f"Windows default microphone is unavailable: {exc}",
-            )
-        return _InputRouteResolution(
-            candidates=(_candidate(default, InputRoute.SYSTEM_DEFAULT),),
-            preferred_input_name=None,
-            preferred_input_available=True,
-        )
-
-    if preferred is None:
-        return _InputRouteResolution(
-            candidates=(),
-            preferred_input_name=None,
-            preferred_input_available=False,
-            reason="fixed microphone selection has no fingerprint",
-        )
-
-    preferred_device: InputDevice | None = None
-    preferred_error: Exception | None = None
-    try:
-        preferred_device = resolve_wasapi_input_device(preferred)
-    except Exception as exc:
-        preferred_error = exc
-
-    candidates: list[_CaptureCandidate] = []
-    if include_preferred and preferred_device is not None:
-        candidates.append(_candidate(preferred_device, InputRoute.PREFERRED))
-
-    default_error: Exception | None = None
-    try:
-        default = default_wasapi_input_device()
-    except Exception as exc:
-        default_error = exc
-    else:
-        default_candidate = _candidate(default, InputRoute.FALLBACK)
-        if not candidates or _device_key(candidates[0].fingerprint) != _device_key(
-            default_candidate.fingerprint
-        ):
-            candidates.append(default_candidate)
-
-    reason = None
-    if preferred_error is not None:
-        reason = f"preferred microphone is unavailable: {preferred_error}"
-        if default_error is not None:
-            reason += f"; Windows default is unavailable: {default_error}"
-    elif not candidates and default_error is not None:
-        reason = f"Windows default microphone is unavailable: {default_error}"
-    return _InputRouteResolution(
-        candidates=tuple(candidates),
-        preferred_input_name=preferred_name,
-        preferred_input_available=preferred_device is not None,
-        reason=reason,
-    )
-
-
-def _synthetic_input_route(
-    selection: MicrophoneSelection,
-    *,
-    include_preferred: bool = True,
-) -> _InputRouteResolution:
-    """Keep private recorder-loop fakes independent from host audio hardware."""
-
-    preferred = selection.preferred_device
-    if selection.mode == MicrophoneMode.FIXED and preferred is not None:
-        candidates = (
-            _CaptureCandidate(preferred, InputRoute.PREFERRED, preferred.name),
-        ) if include_preferred else ()
-        return _InputRouteResolution(
-            candidates=candidates,
-            preferred_input_name=preferred.name,
-            preferred_input_available=True,
-        )
-    fingerprint = DeviceFingerprint(
-        name="Test microphone",
-        host_api="Windows WASAPI",
-        endpoint_id="test:microphone",
-        default_sample_rate=float(48_000),
-        max_input_channels=1,
-    )
-    return _InputRouteResolution(
-        candidates=(
-            _CaptureCandidate(
-                fingerprint,
-                InputRoute.SYSTEM_DEFAULT,
-                fingerprint.name,
-            ),
-        ),
-        preferred_input_name=None,
-        preferred_input_available=True,
-    )
-
-
-def _call_capture_factory(
-    factory: Callable[..., Any],
-    fingerprint: DeviceFingerprint,
-) -> Any:
-    try:
-        signature = inspect.signature(factory)
-    except (TypeError, ValueError):
-        return factory()
-    accepts_argument = any(
-        parameter.kind
-        in {
-            inspect.Parameter.POSITIONAL_ONLY,
-            inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            inspect.Parameter.VAR_POSITIONAL,
-        }
-        for parameter in signature.parameters.values()
-    )
-    return factory(fingerprint) if accepts_argument else factory()
-
-
 def _build_preview(config: AppConfig, paths: AppPaths) -> SherpaPreviewEngine:
     models = resolve_model_paths(paths.models_dir)
     return SherpaPreviewEngine(
@@ -593,14 +438,6 @@ def probe_realtime_models(
     finally:
         with suppress(Exception):
             preview.close()
-
-
-def _hypothesis_texts(hypothesis: Any) -> tuple[str, str]:
-    normalized = str(
-        getattr(hypothesis, "normalized_text", getattr(hypothesis, "text", "")) or ""
-    ).strip()
-    raw = str(getattr(hypothesis, "raw_text", "") or normalized).strip()
-    return raw, normalized
 
 
 def _preview_loop(
@@ -703,7 +540,7 @@ def _preview_loop(
                         item.samples,
                         sample_rate=item.sample_rate,
                     )
-                    raw_tail, normalized_tail = _hypothesis_texts(hypothesis)
+                    raw_tail, normalized_tail = hypothesis_texts(hypothesis)
                     current_raw = (raw_prefix + raw_tail).strip()
                     current_normalized = (normalized_prefix + normalized_tail).strip()
                     if hypothesis.is_endpoint:
@@ -762,7 +599,7 @@ def _preview_loop(
                     reset_state()
                 if active_segment_id == segment.segment_id:
                     tail = engine.finish()
-                    raw_tail, normalized_tail = _hypothesis_texts(tail)
+                    raw_tail, normalized_tail = hypothesis_texts(tail)
                     raw_text = (raw_prefix + raw_tail).strip() or last_raw
                     normalized_text = (
                         (normalized_prefix + normalized_tail).strip() or last_normalized
@@ -834,8 +671,7 @@ def _recorder_loop(
         )
         raise RuntimeError(f"recorder initialization failed: {exc}") from exc
 
-    capture: Any | None = None
-    selection = config.microphone
+    route_state = RouteState.for_selection(config.microphone)
 
     _status(event_queue, WorkerKind.RECORDER, WorkerState.READY, "recorder ready")
     if degraded_reason:
@@ -878,213 +714,38 @@ def _recorder_loop(
                 severity=Severity.ERROR,
             )
 
-    desired_recording = False
-    running = True
-    next_start_attempt = 0.0
+    loop_state = _LoopState()
+    segment_state = _SegmentState()
+    preview_state = PreviewState()
+    spool_state = SpoolState()
     retry_delay = 2.0
-    stream_origin: datetime | None = None
-    last_chunk_end_utc: datetime | None = None
-    current_id: str | None = None
-    current_started_at: datetime | None = None
-    current_preview = ""
-    current_preview_raw = ""
-    preview_prefix = ""
-    preview_raw_prefix = ""
-    last_preview_emit = 0.0
-    last_emitted_preview = ""
-    last_emitted_preview_raw = ""
-    preview_has_emitted = False
-    preview_dropped = False
-    preview_backpressure_active = False
-    preview_preroll: deque[_PreviewPrerollChunk] = deque()
-    preview_preroll_samples = 0
-    iterations = 0
-    spool_capacity_blocked = False
-    capture_degraded = False
-    spool_warning_active = False
-    last_spool_recovery_check = 0.0
-    pending_spool_writes: deque[_PendingSpoolWrite] = deque()
-    recovered_spool_metadata: dict[str, Any] = {}
-    rejected_recovery_backups: dict[str, Path] = {}
-    next_spool_retry = 0.0
-    last_spool_retry_status = 0.0
-    spool_stream_reset_pending = False
-    stop_capture_pending = False
-    stream_flush_pending = False
-    deferred_gap_chunk: AudioChunk | None = None
-    stop_requested = False
-    previous_forced_segment_id: str | None = None
-    previous_forced_end_sample: int | None = None
-    active_route = (
-        InputRoute.PENDING
-        if selection.mode == MicrophoneMode.PENDING
-        else InputRoute.SKIPPED
-        if selection.mode == MicrophoneMode.SKIPPED
-        else InputRoute.UNAVAILABLE
-    )
-    active_input_name: str | None = None
-    active_fingerprint: DeviceFingerprint | None = None
-    preferred_input_available = False
-    input_route_reason: str | None = None
-    pending_route_request: InputRouteRequest | None = None
-    pending_include_preferred = True
-    seen_route_request_ids: set[str] = set()
-    next_route_check = 0.0
-    next_route_switch_attempt = 0.0
     reserve_bytes = round(config.max_segment_ms * config.audio_sample_rate / 1000) * 2
 
-    def resolve_route(*, include_preferred: bool) -> _InputRouteResolution:
-        if route_resolver is not None:
-            return route_resolver(selection, include_preferred=include_preferred)
-        if capture_factory is not None:
-            return _synthetic_input_route(
-                selection,
-                include_preferred=include_preferred,
-            )
-        return _resolve_input_route(selection, include_preferred=include_preferred)
-
-    def preferred_name() -> str | None:
-        device = selection.preferred_device
-        return device.name if device is not None else None
-
-    def publish_route(
-        *,
-        request_id: str | None = None,
-        switching: bool = False,
-        reason: str | None = None,
-    ) -> None:
-        _emit(
-            event_queue,
-            InputRouteUpdate(
-                request_id=request_id,
-                preferred_input_name=preferred_name(),
-                active_input_name=active_input_name,
-                input_route=active_route,
-                input_switching=switching,
-                preferred_input_available=preferred_input_available,
-                reason=reason if reason is not None else input_route_reason,
-            ),
-        )
-
-    def route_reason(
-        resolution: _InputRouteResolution,
-        route: InputRoute,
-    ) -> str | None:
-        if route != InputRoute.FALLBACK:
-            return None
-        if resolution.reason:
-            return resolution.reason
-        preferred = preferred_name()
-        if selection.mode == MicrophoneMode.FIXED and preferred:
-            if resolution.preferred_input_available:
-                return (
-                    f"using Windows default microphone; preferred microphone "
-                    f"{preferred!r} is available but will not be selected automatically"
-                )
-            return (
-                "using Windows default microphone while preferred microphone "
-                f"{preferred!r} is unavailable"
-            )
-        return "using Windows default microphone"
-
-    def spool_has_headroom() -> bool:
-        checker = getattr(spool, "can_reserve", None)
-        if callable(checker):
-            return bool(checker(reserve_bytes))
-        return float(getattr(spool, "usage_ratio", 0.0)) < 1.0
-
     def reset_segment_state() -> None:
-        nonlocal current_id, current_started_at, current_preview, current_preview_raw
-        nonlocal preview_prefix, preview_raw_prefix, last_preview_emit
-        nonlocal last_emitted_preview, last_emitted_preview_raw, preview_has_emitted
-        nonlocal preview_dropped
-        current_id = None
-        current_started_at = None
-        current_preview = ""
-        current_preview_raw = ""
-        preview_prefix = ""
-        preview_raw_prefix = ""
-        last_preview_emit = 0.0
-        last_emitted_preview = ""
-        last_emitted_preview_raw = ""
-        preview_has_emitted = False
-        preview_dropped = False
-
-    def clear_preview_preroll() -> None:
-        nonlocal preview_preroll_samples
-        preview_preroll.clear()
-        preview_preroll_samples = 0
-
-    def remember_preview_preroll(chunk: AudioChunk) -> None:
-        nonlocal preview_preroll_samples
-        limit = round(config.pre_roll_ms * chunk.sample_rate / 1000)
-        if limit <= 0:
-            clear_preview_preroll()
-            return
-        samples = (
-            chunk.samples.copy()
-            if callable(getattr(chunk.samples, "copy", None))
-            else chunk.samples
-        )
-        preview_preroll.append(
-            _PreviewPrerollChunk(samples, chunk.sample_rate, chunk.started_at_utc)
-        )
-        preview_preroll_samples += len(samples)
-        while preview_preroll and preview_preroll_samples > limit:
-            excess = preview_preroll_samples - limit
-            first = preview_preroll[0]
-            if len(first.samples) <= excess:
-                preview_preroll.popleft()
-                preview_preroll_samples -= len(first.samples)
-                continue
-            trimmed = first.samples[excess:].copy()
-            preview_preroll[0] = _PreviewPrerollChunk(
-                trimmed,
-                first.sample_rate,
-                first.started_at_utc + timedelta(seconds=excess / first.sample_rate),
-            )
-            preview_preroll_samples -= excess
+        segment_state.current_id = None
+        segment_state.current_started_at = None
+        preview_state.reset_for_segment()
 
     def ensure_segment(started_at: datetime) -> None:
-        nonlocal current_id, current_started_at
-        if current_id is None:
-            current_id = _segment_id(started_at)
-            current_started_at = started_at
+        if segment_state.current_id is None:
+            segment_state.current_id = _segment_id(started_at)
+            segment_state.current_started_at = started_at
 
-    def offer_preview(item: PreviewAudioChunk | PreviewFinalize) -> bool:
-        nonlocal preview_dropped, preview_backpressure_active
-        if preview_queue is None or preview_dropped:
-            return False
-        try:
-            preview_queue.put_nowait(item)
-        except queue.Full:
-            preview_dropped = True
-            if not preview_backpressure_active:
-                preview_backpressure_active = True
-                _status(
-                    event_queue,
-                    WorkerKind.PREVIEW,
-                    WorkerState.DEGRADED,
-                    "preview queue is full; durable audio capture continues without preview",
-                    severity=Severity.WARNING,
-                    queue_size=_queue_size(preview_queue),
-                    metadata={"preview_backpressure": True},
-                )
-            return False
-        if preview_backpressure_active:
-            preview_backpressure_active = False
-            _status(
-                event_queue,
-                WorkerKind.PREVIEW,
-                WorkerState.READY,
-                "preview queue recovered",
-                queue_size=_queue_size(preview_queue),
-            )
-        return True
+    previews = PreviewCoordinator(
+        preview_state,
+        config,
+        inline_preview=inline_preview,
+        preview_queue=preview_queue,
+        status=lambda state, message, **kwargs: _status(
+            event_queue, WorkerKind.PREVIEW, state, message, **kwargs
+        ),
+        emit_partial=lambda partial: _emit(event_queue, partial, replaceable=True),
+        queue_size=lambda: _queue_size(preview_queue),
+    )
 
     def publish_persisted_segment(segment: CapturedSegment, audio_path: Path) -> None:
         persisted = replace(segment, audio_path=Path(audio_path), preview_pending=False)
-        if preview_queue is not None and offer_preview(PreviewFinalize(persisted)):
+        if preview_queue is not None and previews.offer(PreviewFinalize(persisted)):
             persisted = replace(persisted, preview_pending=True)
         _emit(event_queue, persisted)
 
@@ -1093,24 +754,22 @@ def _recorder_loop(
         flushed_preview: str = "",
         flushed_preview_raw: str = "",
     ) -> None:
-        nonlocal current_preview, current_preview_raw, desired_recording
-        nonlocal spool_capacity_blocked, spool_warning_active
-        nonlocal previous_forced_segment_id, previous_forced_end_sample
-        nonlocal next_spool_retry, spool_stream_reset_pending
-        if stream_origin is None:
+        if segment_state.stream_origin is None:
             return
-        started_at = stream_origin + timedelta(
+        started_at = segment_state.stream_origin + timedelta(
             seconds=speech.start_sample / config.audio_sample_rate
         )
-        ended_at = stream_origin + timedelta(seconds=speech.end_sample / config.audio_sample_rate)
+        ended_at = segment_state.stream_origin + timedelta(
+            seconds=speech.end_sample / config.audio_sample_rate
+        )
         ensure_segment(started_at)
-        identifier = current_id or _segment_id(started_at)
-        text = (flushed_preview or current_preview).strip()
-        raw_text = (flushed_preview_raw or current_preview_raw or text).strip()
+        identifier = segment_state.current_id or _segment_id(started_at)
+        text = (flushed_preview or preview_state.current_text).strip()
+        raw_text = (flushed_preview_raw or preview_state.current_raw_text or text).strip()
         overlap_samples = (
-            max(0, previous_forced_end_sample - speech.start_sample)
-            if previous_forced_segment_id is not None
-            and previous_forced_end_sample is not None
+            max(0, segment_state.previous_forced_end_sample - speech.start_sample)
+            if segment_state.previous_forced_segment_id is not None
+            and segment_state.previous_forced_end_sample is not None
             else 0
         )
 
@@ -1127,111 +786,35 @@ def _recorder_loop(
                 leading_overlap_ms=round(
                     overlap_samples * 1000 / config.audio_sample_rate
                 ),
-                previous_segment_id=previous_forced_segment_id,
+                previous_segment_id=segment_state.previous_forced_segment_id,
             )
 
-        event_emitted = False
-        queued_for_retry = False
+        stored = False
         try:
-            audio_path = spool.write(
+            stored = spool_writer.write_segment(
+                captured_event,
                 speech.samples,
-                sample_rate=config.audio_sample_rate,
                 segment_id=identifier,
-            )
-            publish_persisted_segment(captured_event(Path(audio_path)), Path(audio_path))
-            event_emitted = True
-            ratio = float(getattr(spool, "usage_ratio", 0.0))
-            if ratio >= config.spool_warning_ratio and not spool_warning_active:
-                spool_warning_active = True
-                _status(
-                    event_queue,
-                    WorkerKind.RECORDER,
-                    WorkerState.DEGRADED,
-                    f"audio spool is {ratio:.0%} full",
-                    severity=Severity.ERROR,
-                    metadata={"spool_ratio": ratio},
-                )
-            elif ratio < config.spool_warning_ratio and spool_warning_active:
-                spool_warning_active = False
-                _status(
-                    event_queue,
-                    WorkerKind.RECORDER,
-                    WorkerState.RECORDING,
-                    "audio spool usage recovered below warning threshold",
-                    metadata={"spool_ratio": ratio},
-                )
-        except Exception as exc:
-            expected_path = paths.spool_dir / f"{identifier}.flac"
-            pending_spool_writes.append(
-                _PendingSpoolWrite(
-                    segment=captured_event(expected_path),
-                    samples=(
-                        speech.samples.copy()
-                        if hasattr(speech.samples, "copy")
-                        else speech.samples
-                    ),
-                    forced_endpoint=speech.forced_endpoint,
-                    end_sample=speech.end_sample,
-                )
-            )
-            queued_for_retry = True
-            hard_limit = isinstance(exc, SpoolLimitExceeded)
-            spool_capacity_blocked = spool_capacity_blocked or hard_limit
-            failed_at = monotonic()
-            next_spool_retry = failed_at if stop_requested else failed_at + retry_delay
-            spool_stream_reset_pending = True
-            if capture is not None:
-                with suppress(Exception):
-                    capture.stop()
-            _status(
-                event_queue,
-                WorkerKind.RECORDER,
-                WorkerState.ERROR,
-                (
-                    "audio spool hard limit reached; captured speech is held for retry"
-                    if hard_limit
-                    else "failed to spool captured speech; captured speech is held for retry"
-                )
-                + f": {exc}",
-                severity=Severity.ERROR,
-                metadata={
-                    "spool_write_failed": True,
-                    "spool_hard_limit": hard_limit,
-                    "segment_id": identifier,
-                    "recovery_path": str(expected_path),
-                    "pending_spool_writes": len(pending_spool_writes),
-                },
+                forced_endpoint=speech.forced_endpoint,
+                end_sample=speech.end_sample,
+                expected_path=paths.spool_dir / f"{identifier}.flac",
+                monotonic=monotonic,
+                on_capture_stop=stop_capture_after_spool_failure,
             )
         finally:
-            if (event_emitted or queued_for_retry) and speech.forced_endpoint:
-                previous_forced_segment_id = identifier
-                previous_forced_end_sample = speech.end_sample
-            elif event_emitted or queued_for_retry:
-                previous_forced_segment_id = None
-                previous_forced_end_sample = None
+            if stored and speech.forced_endpoint:
+                segment_state.previous_forced_segment_id = identifier
+                segment_state.previous_forced_end_sample = speech.end_sample
+            elif stored:
+                segment_state.previous_forced_segment_id = None
+                segment_state.previous_forced_end_sample = None
             reset_segment_state()
             if inline_preview is not None:
                 with suppress(Exception):
                     inline_preview.reset()
 
     def flush_current() -> bool:
-        nonlocal previous_forced_segment_id, previous_forced_end_sample
-        flushed = ""
-        flushed_raw = ""
-        if inline_preview is not None:
-            try:
-                hypothesis = inline_preview.finish()
-                raw_tail, normalized_tail = _hypothesis_texts(hypothesis)
-                flushed = (preview_prefix + normalized_tail).strip()
-                flushed_raw = (preview_raw_prefix + raw_tail).strip()
-            except Exception as exc:
-                _status(
-                    event_queue,
-                    WorkerKind.PREVIEW,
-                    WorkerState.DEGRADED,
-                    f"preview flush failed: {exc}",
-                    severity=Severity.WARNING,
-                )
+        flushed, flushed_raw = previews.finish_for_flush()
         try:
             segments = vad.flush()
         except Exception as exc:
@@ -1251,17 +834,16 @@ def _recorder_loop(
         if inline_preview is not None:
             inline_preview.reset()
         reset_segment_state()
-        clear_preview_preroll()
-        previous_forced_segment_id = None
-        previous_forced_end_sample = None
-        return not pending_spool_writes
+        previews.clear_preroll()
+        segment_state.previous_forced_segment_id = None
+        segment_state.previous_forced_end_sample = None
+        return not spool_state.pending_writes
 
     def stop_capture(*, paused: bool) -> bool:
-        nonlocal capture, stream_origin, last_chunk_end_utc
         flushed = flush_current()
-        if capture is not None and getattr(capture, "running", False):
+        if route_state.capture is not None and getattr(route_state.capture, "running", False):
             try:
-                capture.stop()
+                route_state.capture.stop()
             except Exception as exc:
                 _status(
                     event_queue,
@@ -1273,9 +855,8 @@ def _recorder_loop(
                 return False
         if not flushed:
             return False
-        capture = None
-        stream_origin = None
-        last_chunk_end_utc = None
+        route_state.capture = None
+        segment_state.clear_stream_clock()
         _status(
             event_queue,
             WorkerKind.RECORDER,
@@ -1285,286 +866,83 @@ def _recorder_loop(
         return True
 
     def reset_stream_state() -> None:
-        nonlocal stream_origin, last_chunk_end_utc, capture_degraded
         vad.reset()
         if inline_preview is not None:
             inline_preview.reset()
-        stream_origin = None
-        last_chunk_end_utc = None
-        capture_degraded = False
+        segment_state.clear_stream_clock()
+        loop_state.capture_degraded = False
         reset_segment_state()
-        clear_preview_preroll()
+        previews.clear_preroll()
 
-    def start_candidates(
-        resolution: _InputRouteResolution,
-    ) -> tuple[Any | None, Any | None, _CaptureCandidate | None, str | None]:
-        errors: list[str] = []
-        for candidate in resolution.candidates:
-            next_capture: Any | None = None
-            try:
-                next_capture = (
-                    _call_capture_factory(capture_factory, candidate.fingerprint)
-                    if capture_factory is not None
-                    else _build_capture(
-                        config,
-                        candidate.fingerprint,
-                        resolved_device=candidate.resolved_device,
-                        require_system_default=candidate.route
-                        in {InputRoute.SYSTEM_DEFAULT, InputRoute.FALLBACK},
-                    )
-                )
-                device = next_capture.start()
-            except Exception as exc:
-                errors.append(f"{candidate.catalog_name}: {exc}")
-                if next_capture is not None:
-                    with suppress(Exception):
-                        next_capture.stop()
-                continue
-            return next_capture, device, candidate, "; ".join(errors) or None
-        return None, None, None, "; ".join(errors) or resolution.reason
+    def stop_capture_after_spool_failure() -> None:
+        """Stop taking audio we cannot store, without tearing down the route."""
+        if route_state.capture is not None:
+            with suppress(Exception):
+                route_state.capture.stop()
 
-    def commit_started_capture(
-        next_capture: Any,
-        device: Any,
-        candidate: _CaptureCandidate,
-        resolution: _InputRouteResolution,
-        *,
-        request_id: str | None,
-    ) -> None:
-        nonlocal capture, active_route, active_input_name, active_fingerprint
-        nonlocal preferred_input_available, input_route_reason
-        capture = next_capture
-        active_route = candidate.route
-        active_input_name = str(getattr(device, "name", candidate.catalog_name))
-        active_fingerprint = candidate.fingerprint
-        preferred_input_available = resolution.preferred_input_available
-        input_route_reason = route_reason(resolution, candidate.route)
-        reset_stream_state()
-        _status(
-            event_queue,
-            WorkerKind.RECORDER,
-            WorkerState.RECORDING,
-            f"recording from {active_input_name}",
-            severity=(
-                Severity.WARNING
-                if candidate.route == InputRoute.FALLBACK
-                else Severity.INFO
-            ),
-            metadata={
-                "device_index": getattr(device, "index", None),
-                "active_input_name": active_input_name,
-                "input_route": active_route.value,
-                "preferred_input_available": preferred_input_available,
-            },
-        )
-        publish_route(request_id=request_id)
+    def reset_stream_after_drain() -> None:
+        """Restart the stream once the write backlog clears.
 
-    def apply_pending_route(now: float) -> bool:
-        nonlocal capture, pending_route_request, pending_include_preferred
-        nonlocal active_route, active_input_name, active_fingerprint
-        nonlocal preferred_input_available, input_route_reason
-        nonlocal next_route_switch_attempt
-        request = pending_route_request
-        if request is None or now < next_route_switch_attempt or pending_spool_writes:
-            return False
-        resolution = resolve_route(include_preferred=pending_include_preferred)
-        preferred_input_available = resolution.preferred_input_available
+        Deliberately narrower than `reset_stream_state`: the capture never stopped
+        being the active device, so neither the degraded flag nor the preview pre-roll
+        is cleared here.
+        """
+        vad.reset()
+        if inline_preview is not None:
+            inline_preview.reset()
+        segment_state.clear_stream_clock()
+        reset_segment_state()
 
-        if not desired_recording:
-            active_input_name = None
-            active_fingerprint = None
-            active_route = (
-                InputRoute.PENDING
-                if selection.mode == MicrophoneMode.PENDING
-                else InputRoute.SKIPPED
-                if selection.mode == MicrophoneMode.SKIPPED
-                else (
-                    resolution.candidates[0].route
-                    if resolution.candidates
-                    else InputRoute.UNAVAILABLE
-                )
-            )
-            input_route_reason = resolution.reason or "input change will apply on resume"
-            pending_route_request = None
-            publish_route(request_id=request.request_id)
-            return True
+    spool_writer = SpoolCoordinator(
+        spool_state,
+        spool,
+        config,
+        status=lambda state, message, **kwargs: _status(
+            event_queue, WorkerKind.RECORDER, state, message, **kwargs
+        ),
+        publish_persisted=publish_persisted_segment,
+        reset_stream_after_drain=reset_stream_after_drain,
+        is_stopping=lambda: loop_state.stop_requested,
+        recording_state=lambda: (
+            WorkerState.RECORDING
+            if loop_state.desired_recording and getattr(route_state.capture, "running", False)
+            else WorkerState.READY
+        ),
+        reserve_bytes=reserve_bytes,
+        retry_delay=retry_delay,
+    )
 
-        if not resolution.candidates:
-            input_route_reason = resolution.reason or "microphone is unavailable"
-            pending_route_request = None
-            _status(
-                event_queue,
-                WorkerKind.RECORDER,
-                WorkerState.DEGRADED,
-                input_route_reason,
-                severity=Severity.WARNING,
-                metadata={"input_route": active_route.value},
-            )
-            publish_route(request_id=request.request_id)
-            return True
+    router = RouteCoordinator(
+        route_state,
+        config,
+        emit=lambda event: _emit(event_queue, event),
+        status=lambda state, message, **kwargs: _status(
+            event_queue, WorkerKind.RECORDER, state, message, **kwargs
+        ),
+        capture_factory=capture_factory,
+        route_resolver=route_resolver,
+        flush_current=flush_current,
+        reset_stream_state=reset_stream_state,
+        is_recording=lambda: loop_state.desired_recording,
+        has_pending_writes=lambda: bool(spool_state.pending_writes),
+        retry_delay=retry_delay,
+    )
 
-        first = resolution.candidates[0]
-        if (
-            capture is not None
-            and getattr(capture, "running", False)
-            and active_fingerprint is not None
-            and _device_key(active_fingerprint) == _device_key(first.fingerprint)
-        ):
-            active_route = first.route
-            preferred_input_available = resolution.preferred_input_available
-            input_route_reason = route_reason(resolution, first.route)
-            pending_route_request = None
-            publish_route(request_id=request.request_id)
-            return True
-
-        old_capture = capture
-        old_route = active_route
-        old_name = active_input_name
-        old_fingerprint = active_fingerprint
-        if old_capture is not None and getattr(old_capture, "running", False):
-            if not flush_current():
-                next_route_switch_attempt = now + retry_delay
-                return False
-            try:
-                old_capture.stop()
-            except Exception as exc:
-                next_route_switch_attempt = now + retry_delay
-                input_route_reason = f"failed to close current microphone: {exc}"
-                _status(
-                    event_queue,
-                    WorkerKind.RECORDER,
-                    WorkerState.DEGRADED,
-                    input_route_reason,
-                    severity=Severity.WARNING,
-                )
-                return False
-
-        next_capture, device, candidate, error = start_candidates(resolution)
-        if next_capture is not None and device is not None and candidate is not None:
-            if candidate.route == InputRoute.FALLBACK and error:
-                resolution = replace(
-                    resolution,
-                    reason=f"preferred microphone could not be opened: {error}",
-                )
-            commit_started_capture(
-                next_capture,
-                device,
-                candidate,
-                resolution,
-                request_id=request.request_id,
-            )
-            pending_route_request = None
-            next_route_switch_attempt = now
-            return True
-
-        capture = None
-        restored = False
-        if old_capture is not None:
-            try:
-                old_device = old_capture.start()
-            except Exception:
-                pass
-            else:
-                capture = old_capture
-                active_route = old_route
-                active_input_name = str(getattr(old_device, "name", old_name or "microphone"))
-                active_fingerprint = old_fingerprint
-                reset_stream_state()
-                restored = True
-        if not restored:
-            active_route = InputRoute.UNAVAILABLE
-            active_input_name = None
-            active_fingerprint = None
-        input_route_reason = f"microphone switch failed: {error or 'unavailable'}"
-        pending_route_request = None
-        next_route_switch_attempt = now + retry_delay
-        _status(
-            event_queue,
-            WorkerKind.RECORDER,
-            WorkerState.DEGRADED,
-            input_route_reason,
-            severity=Severity.WARNING,
-            metadata={"previous_input_restored": restored},
-        )
-        publish_route(request_id=request.request_id)
-        return True
-
-    def start_current_route(now: float) -> bool:
-        nonlocal capture, preferred_input_available, input_route_reason, next_start_attempt
-        include_preferred = not (
-            selection.mode == MicrophoneMode.FIXED and active_route == InputRoute.FALLBACK
-        )
-        resolution = resolve_route(include_preferred=include_preferred)
-        preferred_input_available = resolution.preferred_input_available
-        first = resolution.candidates[0] if resolution.candidates else None
-        if (
-            capture is not None
-            and first is not None
-            and active_fingerprint is not None
-            and _device_key(first.fingerprint) == _device_key(active_fingerprint)
-        ):
-            try:
-                device = capture.start()
-            except Exception:
-                with suppress(Exception):
-                    capture.stop()
-                capture = None
-            else:
-                commit_started_capture(
-                    capture,
-                    device,
-                    first,
-                    resolution,
-                    request_id=None,
-                )
-                return True
-        next_capture, device, candidate, error = start_candidates(resolution)
-        if next_capture is None or device is None or candidate is None:
-            input_route_reason = error or resolution.reason or "microphone is unavailable"
-            next_start_attempt = now + retry_delay
-            _status(
-                event_queue,
-                WorkerKind.RECORDER,
-                WorkerState.DEGRADED,
-                f"microphone unavailable; retrying: {input_route_reason}",
-                severity=Severity.WARNING,
-            )
-            publish_route(reason=input_route_reason)
-            return False
-        if candidate.route == InputRoute.FALLBACK and error:
-            resolution = replace(
-                resolution,
-                reason=f"preferred microphone could not be opened: {error}",
-            )
-        commit_started_capture(
-            next_capture,
-            device,
-            candidate,
-            resolution,
-            request_id=None,
-        )
-        return True
-
-    publish_route()
-
-    while running:
-        iterations += 1
-        if max_iterations is not None and iterations > max_iterations:
-            break
-
+    def drain_commands() -> None:
+        """Apply every queued command. A STOP begins the shutdown drain."""
         while True:
             try:
                 command = command_queue.get_nowait()
             except queue.Empty:
-                break
+                return
             if not isinstance(command, WorkerCommand):
                 continue
             if command.kind in (WorkerCommandKind.START, WorkerCommandKind.RESUME):
-                desired_recording = True
-                next_start_attempt = 0.0
+                loop_state.desired_recording = True
+                route_state.next_start_attempt = 0.0
             elif command.kind == WorkerCommandKind.PAUSE:
-                desired_recording = False
-                stop_capture_pending = not stop_capture(paused=True)
+                loop_state.desired_recording = False
+                loop_state.stop_capture_pending = not stop_capture(paused=True)
             elif command.kind == WorkerCommandKind.UPDATE_HOTWORDS:
                 hotwords = list(command.payload or [])
                 applied = (
@@ -1576,7 +954,11 @@ def _recorder_loop(
                     _status(
                         event_queue,
                         WorkerKind.PREVIEW,
-                        WorkerState.RECORDING if desired_recording else WorkerState.READY,
+                        (
+                            WorkerState.RECORDING
+                            if loop_state.desired_recording
+                            else WorkerState.READY
+                        ),
                         "preview hotwords are unsupported; final transcription will use them",
                     )
             elif command.kind in {
@@ -1593,325 +975,175 @@ def _recorder_loop(
                         severity=Severity.WARNING,
                     )
                     continue
-                if request.request_id in seen_route_request_ids:
-                    publish_route(
+                if request.request_id in route_state.seen_request_ids:
+                    router.publish_route(
                         request_id=request.request_id,
                         switching=(
-                            pending_route_request is not None
-                            and pending_route_request.request_id == request.request_id
+                            route_state.pending_route_request is not None
+                            and route_state.pending_route_request.request_id == request.request_id
                         ),
                     )
                     continue
-                if pending_route_request is not None:
-                    publish_route(
-                        request_id=pending_route_request.request_id,
+                if route_state.pending_route_request is not None:
+                    router.publish_route(
+                        request_id=route_state.pending_route_request.request_id,
                         reason="microphone change was superseded by a newer request",
                     )
-                seen_route_request_ids.add(request.request_id)
-                selection = request.selection
-                pending_route_request = request
-                pending_include_preferred = True
-                next_route_switch_attempt = 0.0
-                publish_route(request_id=request.request_id, switching=True)
+                route_state.seen_request_ids.add(request.request_id)
+                route_state.selection = request.selection
+                route_state.pending_route_request = request
+                route_state.pending_include_preferred = True
+                route_state.next_switch_attempt = 0.0
+                router.publish_route(request_id=request.request_id, switching=True)
             elif command.kind == WorkerCommandKind.STOP:
-                desired_recording = False
-                stop_requested = True
-                next_spool_retry = 0.0
-                break
-        if not running:
-            break
-        now = monotonic()
-        if spool_warning_active and now - last_spool_recovery_check >= 1.0:
-            last_spool_recovery_check = now
-            spool_ratio = float(getattr(spool, "usage_ratio", 0.0))
-            if spool_ratio < config.spool_warning_ratio:
-                spool_warning_active = False
-                _status(
-                    event_queue,
-                    WorkerKind.RECORDER,
-                    (
-                        WorkerState.RECORDING
-                        if desired_recording and getattr(capture, "running", False)
-                        else WorkerState.READY
-                    ),
-                    "audio spool usage recovered below warning threshold",
-                    metadata={"spool_ratio": spool_ratio},
-                )
-        if pending_spool_writes:
-            if now < next_spool_retry:
-                time.sleep(min(0.05, next_spool_retry - now))
-                continue
-            pending = pending_spool_writes[0]
-            expected_path = Path(pending.segment.audio_path)
-            recovered_path: Path | None = None
-            recovered_info = recovered_spool_metadata.get(pending.segment.segment_id)
-            rejected_backup = rejected_recovery_backups.get(pending.segment.segment_id)
-            if (
-                expected_path.is_file()
-                and recovered_info is None
-                and rejected_backup is None
-            ):
-                recovered_path = expected_path
-            recover = getattr(spool, "recover_partials", None)
-            if (
-                not expected_path.is_file()
-                and not (rejected_backup is not None and rejected_backup.is_file())
-                and callable(recover)
-            ):
-                try:
-                    recovered = recover()
-                    recovered_spool_metadata.update(
-                        (item.segment_id, item) for item in recovered
-                    )
-                except Exception:
-                    pass
-                recovered_info = recovered_spool_metadata.get(pending.segment.segment_id)
-            if recovered_info is not None:
-                exact_recovery = (
-                    int(recovered_info.sample_rate) == pending.segment.sample_rate
-                    and int(recovered_info.frame_count) == len(pending.samples)
-                )
-                if exact_recovery and Path(recovered_info.path).is_file():
-                    recovered_path = Path(recovered_info.path)
-                else:
-                    recovered_spool_metadata.pop(pending.segment.segment_id, None)
-                    recovered_file = Path(recovered_info.path)
-                    backup = recovered_file.with_name(
-                        f".{pending.segment.segment_id}.{uuid.uuid4().hex}.partial.flac"
-                    )
-                    try:
-                        os.replace(recovered_file, backup)
-                    except OSError:
-                        # Keep the decodable prefix at its current path. The id
-                        # remains rejected so it cannot be mistaken for a full
-                        # segment on the next in-process retry.
-                        backup = recovered_file
-                    rejected_recovery_backups[pending.segment.segment_id] = backup
-                    _status(
-                        event_queue,
-                        WorkerKind.RECORDER,
-                        WorkerState.ERROR,
-                        "partial FLAC length mismatch; rewriting from complete in-memory audio",
-                        severity=Severity.ERROR,
-                        metadata={
-                            "partial_length_mismatch": True,
-                            "segment_id": pending.segment.segment_id,
-                            "expected_frames": len(pending.samples),
-                            "recovered_frames": int(recovered_info.frame_count),
-                        },
-                    )
-            try:
-                write_pending = (
-                    getattr(spool, "write_emergency", spool.write)
-                    if stop_requested
-                    else spool.write
-                )
-                audio_path = recovered_path or Path(
-                    write_pending(
-                        pending.samples,
-                        sample_rate=pending.segment.sample_rate,
-                        segment_id=pending.segment.segment_id,
-                    )
-                )
-                if not audio_path.is_file():
-                    raise OSError(f"spool write returned missing path: {audio_path}")
-            except Exception as exc:
-                next_spool_retry = now if stop_requested else now + retry_delay
-                if now - last_spool_retry_status >= 30.0:
-                    last_spool_retry_status = now
-                    _status(
-                        event_queue,
-                        WorkerKind.RECORDER,
-                        WorkerState.ERROR,
-                        f"captured speech is still waiting for durable storage: {exc}",
-                        severity=Severity.ERROR,
-                        metadata={
-                            "spool_write_retry": True,
-                            "segment_id": pending.segment.segment_id,
-                            "pending_spool_writes": len(pending_spool_writes),
-                        },
-                    )
-                if stop_requested:
-                    time.sleep(0.05)
-                continue
-            publish_persisted_segment(pending.segment, audio_path)
-            pending_spool_writes.popleft()
-            recovered_spool_metadata.pop(pending.segment.segment_id, None)
-            rejected_backup = rejected_recovery_backups.pop(
-                pending.segment.segment_id,
-                None,
+                loop_state.desired_recording = False
+                loop_state.stop_requested = True
+                spool_state.next_retry = 0.0
+                return
+
+    def retry_pending_flushes() -> bool:
+        """Re-attempt a pause-stop or stream flush that could not complete earlier."""
+        if loop_state.stop_capture_pending:
+            if stop_capture(paused=True):
+                loop_state.stop_capture_pending = False
+            else:
+                time.sleep(0.05)
+                return True
+        if loop_state.stream_flush_pending:
+            if not flush_current():
+                time.sleep(0.05)
+                return True
+            loop_state.stream_flush_pending = False
+            segment_state.clear_stream_clock()
+        return False
+
+    def poll_device_watchdog(now: float) -> bool:
+        """Every 2s, notice the catalog moving under us and queue a switch."""
+        if now < route_state.next_route_check:
+            return False
+        route_state.next_route_check = now + 2.0
+        include_preferred = route_state.include_preferred
+        try:
+            tracked = router.resolve_route(include_preferred=include_preferred)
+        except Exception as exc:
+            tracked = _InputRouteResolution(
+                candidates=(),
+                preferred_input_name=router.preferred_name(),
+                preferred_input_available=False,
+                reason=f"microphone catalog refresh failed: {exc}",
             )
-            if rejected_backup is not None and rejected_backup != audio_path:
-                with suppress(OSError):
-                    rejected_backup.unlink(missing_ok=True)
-            next_spool_retry = now
-            spool_capacity_blocked = not spool_has_headroom()
-            if not pending_spool_writes and spool_stream_reset_pending:
-                vad.reset()
-                if inline_preview is not None:
-                    inline_preview.reset()
-                stream_origin = None
-                last_chunk_end_utc = None
-                reset_segment_state()
-                spool_stream_reset_pending = False
+        if tracked.preferred_input_available != route_state.preferred_input_available:
+            route_state.preferred_input_available = tracked.preferred_input_available
+            route_state.input_route_reason = router.route_reason(
+                tracked, route_state.active_route
+            )
+            router.publish_route()
+        if not (
+            loop_state.desired_recording
+            and route_state.capture is not None
+            and getattr(route_state.capture, "running", False)
+        ):
+            return False
+        tracked_candidate = tracked.candidates[0] if tracked.candidates else None
+        target_changed = (
+            tracked_candidate is None
+            or route_state.active_fingerprint is None
+            or device_key(tracked_candidate.fingerprint)
+            != device_key(route_state.active_fingerprint)
+            or tracked_candidate.route != route_state.active_route
+        )
+        if not target_changed:
+            return False
+        # Route the change through the same pending-request path a user switch uses,
+        # so it is applied at a safe boundary rather than mid-segment.
+        request = InputRouteRequest(
+            request_id=f"auto-{uuid.uuid4()}",
+            selection=route_state.selection,
+        )
+        route_state.seen_request_ids.add(request.request_id)
+        route_state.pending_route_request = request
+        route_state.pending_include_preferred = include_preferred
+        router.publish_route(request_id=request.request_id, switching=True)
+        return True
+
+    def ensure_capture_started(now: float) -> bool:
+        """Open a capture when recording is wanted but no stream is live."""
+        if not loop_state.desired_recording or getattr(route_state.capture, "running", False):
+            return False
+        if now < route_state.next_start_attempt:
+            time.sleep(min(0.05, route_state.next_start_attempt - now))
+            return True
+        if segment_state.stream_origin is not None:
+            if not flush_current():
+                route_state.next_start_attempt = now + retry_delay
+                return True
+            segment_state.clear_stream_clock()
+            _status(
+                event_queue,
+                WorkerKind.RECORDER,
+                WorkerState.DEGRADED,
+                "microphone stream became inactive; buffered speech was flushed",
+                severity=Severity.WARNING,
+            )
+        spool_ratio = spool_writer.usage_ratio
+        recovered_below_hysteresis = spool_ratio < config.spool_warning_ratio
+        # Unlike the mid-stream gate, this one holds the block until usage falls back
+        # under the warning ratio, so recording does not flap on and off.
+        if not spool_writer.has_headroom() or (
+            spool_state.capacity_blocked and not recovered_below_hysteresis
+        ):
+            if not spool_state.capacity_blocked:
+                spool_writer.report_hard_limit(
+                    "audio spool lacks headroom for a complete segment; recording stopped"
+                )
+            spool_state.capacity_blocked = True
+            route_state.next_start_attempt = now + 1.0
+            return True
+        if spool_state.capacity_blocked:
+            spool_state.capacity_blocked = False
             _status(
                 event_queue,
                 WorkerKind.RECORDER,
                 WorkerState.READY,
-                "captured speech was recovered to durable FLAC storage",
-                metadata={
-                    "spool_write_recovered": True,
-                    "segment_id": pending.segment.segment_id,
-                    "pending_spool_writes": len(pending_spool_writes),
-                },
+                "audio spool recovered; resuming recording",
+                metadata={"spool_ratio": spool_ratio},
             )
-            continue
-        if stop_requested and not stop_capture(paused=False):
-            time.sleep(0.05)
-            continue
-        if stop_requested:
-            running = False
-            break
-        if stop_capture_pending:
-            if stop_capture(paused=True):
-                stop_capture_pending = False
-            else:
-                time.sleep(0.05)
-                continue
-        if stream_flush_pending:
-            if not flush_current():
-                time.sleep(0.05)
-                continue
-            stream_flush_pending = False
-            stream_origin = None
-            last_chunk_end_utc = None
-        if pending_route_request is not None and apply_pending_route(now):
-            continue
+        return not router.start_current_route(now)
 
-        if now >= next_route_check:
-            next_route_check = now + 2.0
-            include_preferred = not (
-                selection.mode == MicrophoneMode.FIXED
-                and active_route == InputRoute.FALLBACK
-            )
-            try:
-                tracked = resolve_route(include_preferred=include_preferred)
-            except Exception as exc:
-                tracked = _InputRouteResolution(
-                    candidates=(),
-                    preferred_input_name=preferred_name(),
-                    preferred_input_available=False,
-                    reason=f"microphone catalog refresh failed: {exc}",
-                )
-            if tracked.preferred_input_available != preferred_input_available:
-                preferred_input_available = tracked.preferred_input_available
-                input_route_reason = route_reason(tracked, active_route)
-                publish_route()
-            if desired_recording and capture is not None and getattr(capture, "running", False):
-                tracked_candidate = tracked.candidates[0] if tracked.candidates else None
-                target_changed = (
-                    tracked_candidate is None
-                    or active_fingerprint is None
-                    or _device_key(tracked_candidate.fingerprint)
-                    != _device_key(active_fingerprint)
-                    or tracked_candidate.route != active_route
-                )
-                if target_changed:
-                    request = InputRouteRequest(
-                        request_id=f"auto-{uuid.uuid4()}",
-                        selection=selection,
-                    )
-                    seen_route_request_ids.add(request.request_id)
-                    pending_route_request = request
-                    pending_include_preferred = include_preferred
-                    publish_route(request_id=request.request_id, switching=True)
-                    continue
-        if desired_recording and not getattr(capture, "running", False):
-            if now < next_start_attempt:
-                time.sleep(min(0.05, next_start_attempt - now))
-                continue
-            if stream_origin is not None:
-                if not flush_current():
-                    next_start_attempt = now + retry_delay
-                    continue
-                stream_origin = None
-                last_chunk_end_utc = None
-                _status(
-                    event_queue,
-                    WorkerKind.RECORDER,
-                    WorkerState.DEGRADED,
-                    "microphone stream became inactive; buffered speech was flushed",
-                    severity=Severity.WARNING,
-                )
-            spool_ratio = float(getattr(spool, "usage_ratio", 0.0))
-            recovered_below_hysteresis = spool_ratio < config.spool_warning_ratio
-            if not spool_has_headroom() or (
-                spool_capacity_blocked and not recovered_below_hysteresis
-            ):
-                if not spool_capacity_blocked:
-                    _status(
-                        event_queue,
-                        WorkerKind.RECORDER,
-                        WorkerState.ERROR,
-                        "audio spool lacks headroom for a complete segment; recording stopped",
-                        severity=Severity.ERROR,
-                        metadata={
-                            "spool_hard_limit": True,
-                            "reserved_bytes": reserve_bytes,
-                        },
-                    )
-                spool_capacity_blocked = True
-                next_start_attempt = now + 1.0
-                continue
-            if spool_capacity_blocked:
-                spool_capacity_blocked = False
-                _status(
-                    event_queue,
-                    WorkerKind.RECORDER,
-                    WorkerState.READY,
-                    "audio spool recovered; resuming recording",
-                    metadata={"spool_ratio": spool_ratio},
-                )
-            if not start_current_route(now):
-                continue
+    def guard_mid_stream_headroom() -> bool:
+        """Stop between segments if the spool ran out while we were recording.
 
-        if not desired_recording or not getattr(capture, "running", False):
-            time.sleep(0.05)
-            continue
+        No hysteresis here, unlike the pre-start gate: audio is already flowing, so
+        the stream stops immediately rather than waiting for usage to fall back.
+        """
+        if not (segment_state.current_id is None and not spool_writer.has_headroom()):
+            return False
+        with suppress(Exception):
+            route_state.capture.stop()
+        segment_state.clear_stream_clock()
+        spool_writer.report_hard_limit(
+            "audio spool lacks headroom for the next segment; recording stopped"
+        )
+        route_state.next_start_attempt = monotonic() + 1.0
+        return True
 
-        if current_id is None and not spool_has_headroom():
-            spool_capacity_blocked = True
-            with suppress(Exception):
-                capture.stop()
-            stream_origin = None
-            last_chunk_end_utc = None
-            _status(
-                event_queue,
-                WorkerKind.RECORDER,
-                WorkerState.ERROR,
-                "audio spool lacks headroom for the next segment; recording stopped",
-                severity=Severity.ERROR,
-                metadata={"spool_hard_limit": True, "reserved_bytes": reserve_bytes},
-            )
-            next_start_attempt = monotonic() + 1.0
-            continue
-
+    def read_chunk() -> AudioChunk | None:
+        """Take the next chunk of audio, or None when the iteration should end."""
         try:
-            if deferred_gap_chunk is not None:
-                chunk = deferred_gap_chunk
-                deferred_gap_chunk = None
-            else:
-                chunk = capture.read(timeout=0.1)
+            if loop_state.deferred_gap_chunk is not None:
+                chunk = loop_state.deferred_gap_chunk
+                loop_state.deferred_gap_chunk = None
+                return chunk
+            return route_state.capture.read(timeout=0.1)
         except queue.Empty:
-            continue
+            return None
         except Exception as exc:
-            stream_flush_pending = not flush_current()
+            loop_state.stream_flush_pending = not flush_current()
             with suppress(Exception):
-                capture.stop()
-            if not stream_flush_pending:
-                stream_origin = None
-                last_chunk_end_utc = None
-            next_start_attempt = monotonic() + retry_delay
+                route_state.capture.stop()
+            if not loop_state.stream_flush_pending:
+                segment_state.clear_stream_clock()
+            route_state.next_start_attempt = monotonic() + retry_delay
             _status(
                 event_queue,
                 WorkerKind.RECORDER,
@@ -1919,19 +1151,24 @@ def _recorder_loop(
                 f"microphone stream failed; reconnecting: {exc}",
                 severity=Severity.WARNING,
             )
-            continue
+            return None
 
+    def track_stream_clock(chunk: AudioChunk) -> bool:
+        """Anchor the chunk to the stream clock, restarting it across a sleep gap.
+
+        A wall-clock jump means the machine slept or the device stalled, so sample
+        offsets from the old origin would date the next segment wrongly.
+        """
         chunk_duration = len(chunk.samples) / chunk.sample_rate
-        if last_chunk_end_utc is not None:
-            wall_gap = (chunk.started_at_utc - last_chunk_end_utc).total_seconds()
-            gap_threshold = max(1.0, 3 * chunk_duration)
-            if wall_gap > gap_threshold:
+        if segment_state.last_chunk_end_utc is not None:
+            wall_gap = (chunk.started_at_utc - segment_state.last_chunk_end_utc).total_seconds()
+            if wall_gap > max(1.0, 3 * chunk_duration):
                 if not flush_current():
-                    stream_flush_pending = True
-                    deferred_gap_chunk = chunk
+                    loop_state.stream_flush_pending = True
+                    loop_state.deferred_gap_chunk = chunk
                     with suppress(Exception):
-                        capture.stop()
-                    next_start_attempt = monotonic() + retry_delay
+                        route_state.capture.stop()
+                    route_state.next_start_attempt = monotonic() + retry_delay
                     _status(
                         event_queue,
                         WorkerKind.RECORDER,
@@ -1940,8 +1177,8 @@ def _recorder_loop(
                         severity=Severity.WARNING,
                         metadata={"sleep_gap_seconds": wall_gap},
                     )
-                    continue
-                stream_origin = None
+                    return True
+                segment_state.stream_origin = None
                 _status(
                     event_queue,
                     WorkerKind.RECORDER,
@@ -1949,11 +1186,16 @@ def _recorder_loop(
                     "audio clock gap detected; streaming state was restarted",
                     metadata={"sleep_gap_seconds": wall_gap},
                 )
-        if stream_origin is None:
-            stream_origin = chunk.started_at_utc
-        last_chunk_end_utc = chunk.started_at_utc + timedelta(seconds=chunk_duration)
+        if segment_state.stream_origin is None:
+            segment_state.stream_origin = chunk.started_at_utc
+        segment_state.last_chunk_end_utc = chunk.started_at_utc + timedelta(
+            seconds=chunk_duration
+        )
+        return False
+
+    def report_capture_health(chunk: AudioChunk) -> None:
         if chunk.dropped_frames or chunk.status:
-            capture_degraded = True
+            loop_state.capture_degraded = True
             _status(
                 event_queue,
                 WorkerKind.RECORDER,
@@ -1965,8 +1207,8 @@ def _recorder_loop(
                     "portaudio_status": chunk.status,
                 },
             )
-        elif capture_degraded:
-            capture_degraded = False
+        elif loop_state.capture_degraded:
+            loop_state.capture_degraded = False
             _status(
                 event_queue,
                 WorkerKind.RECORDER,
@@ -1974,12 +1216,14 @@ def _recorder_loop(
                 "audio capture recovered",
             )
 
+    def accept_into_vad(chunk: AudioChunk) -> tuple[list[SpeechAudio], bool] | None:
+        """Run VAD over the chunk. None means the pipeline failed and we auto-paused."""
         try:
             was_speech_active = bool(getattr(vad, "is_speech_detected", False))
-            if current_id is None and not was_speech_active:
-                remember_preview_preroll(chunk)
+            if segment_state.current_id is None and not was_speech_active:
+                previews.remember_preroll(chunk)
             completed = vad.accept(chunk.samples)
-            speech_active = bool(getattr(vad, "is_speech_detected", False))
+            return completed, bool(getattr(vad, "is_speech_detected", False))
         except Exception as exc:
             _status(
                 event_queue,
@@ -1988,21 +1232,77 @@ def _recorder_loop(
                 f"VAD pipeline failed: {exc}",
                 severity=Severity.ERROR,
             )
-            desired_recording = False
-            stop_capture_pending = not stop_capture(paused=True)
+            loop_state.desired_recording = False
+            loop_state.stop_capture_pending = not stop_capture(paused=True)
+            return None
+
+    def open_segment_if_speech_started(
+        chunk: AudioChunk,
+        completed: list[SpeechAudio],
+        speech_active: bool,
+    ) -> bool:
+        """Start a segment, dating it from the pre-roll so it begins at the first word."""
+        if not (segment_state.current_id is None and bool(completed or speech_active)):
+            return False
+        if preview_state.preroll:
+            speech_started_at = preview_state.preroll[0].started_at_utc
+        elif completed:
+            speech_started_at = segment_state.stream_origin + timedelta(
+                seconds=completed[0].start_sample / config.audio_sample_rate
+            )
+        else:
+            speech_started_at = chunk.started_at_utc
+        ensure_segment(speech_started_at)
+        return True
+
+    router.publish_route()
+
+    while loop_state.running:
+        loop_state.iterations += 1
+        if max_iterations is not None and loop_state.iterations > max_iterations:
+            break
+
+        drain_commands()
+        if not loop_state.running:
+            break
+        now = monotonic()
+        spool_writer.poll_warning_recovery(now)
+        if spool_state.pending_writes:
+            spool_writer.drain_pending_write(now)
+            continue
+        if loop_state.stop_requested and not stop_capture(paused=False):
+            time.sleep(0.05)
+            continue
+        if loop_state.stop_requested:
+            loop_state.running = False
+            break
+        if retry_pending_flushes():
+            continue
+        if route_state.pending_route_request is not None and router.apply_pending_route(now):
+            continue
+        if poll_device_watchdog(now):
+            continue
+        if ensure_capture_started(now):
             continue
 
-        starting_segment = current_id is None and bool(completed or speech_active)
-        if starting_segment:
-            if preview_preroll:
-                speech_started_at = preview_preroll[0].started_at_utc
-            elif completed:
-                speech_started_at = stream_origin + timedelta(
-                    seconds=completed[0].start_sample / config.audio_sample_rate
-                )
-            else:
-                speech_started_at = chunk.started_at_utc
-            ensure_segment(speech_started_at)
+        if not loop_state.desired_recording or not getattr(route_state.capture, "running", False):
+            time.sleep(0.05)
+            continue
+        if guard_mid_stream_headroom():
+            continue
+
+        chunk = read_chunk()
+        if chunk is None:
+            continue
+        if track_stream_clock(chunk):
+            continue
+        report_capture_health(chunk)
+
+        accepted = accept_into_vad(chunk)
+        if accepted is None:
+            continue
+        completed, speech_active = accepted
+        starting_segment = open_segment_if_speech_started(chunk, completed, speech_active)
 
         rms_dbfs, peak_dbfs = _audio_levels_dbfs(chunk.samples)
         _emit(
@@ -2011,110 +1311,36 @@ def _recorder_loop(
                 rms_dbfs=rms_dbfs,
                 peak_dbfs=peak_dbfs,
                 speech_active=speech_active,
-                segment_id=current_id,
-                measured_at_utc=last_chunk_end_utc or chunk.started_at_utc,
+                segment_id=segment_state.current_id,
+                measured_at_utc=segment_state.last_chunk_end_utc or chunk.started_at_utc,
             ),
             replaceable=True,
         )
 
-        if current_id is not None and current_started_at is not None:
-            if starting_segment and preview_preroll:
-                chunks_to_preview = list(preview_preroll)
-                clear_preview_preroll()
-            else:
-                samples = (
-                    chunk.samples.copy()
-                    if callable(getattr(chunk.samples, "copy", None))
-                    else chunk.samples
-                )
-                chunks_to_preview = [
-                    _PreviewPrerollChunk(
-                        samples,
-                        chunk.sample_rate,
-                        chunk.started_at_utc,
-                    )
-                ]
-            for preview_chunk in chunks_to_preview:
-                if inline_preview is None:
-                    offer_preview(
-                        PreviewAudioChunk(
-                            segment_id=current_id,
-                            samples=preview_chunk.samples,
-                            sample_rate=preview_chunk.sample_rate,
-                            segment_started_at_utc=current_started_at,
-                        )
-                    )
-                    continue
-                try:
-                    hypothesis: PreviewHypothesis = inline_preview.accept(
-                        preview_chunk.samples,
-                        sample_rate=preview_chunk.sample_rate,
-                    )
-                    raw_tail, normalized_tail = _hypothesis_texts(hypothesis)
-                    current_preview = (preview_prefix + normalized_tail).strip()
-                    current_preview_raw = (preview_raw_prefix + raw_tail).strip()
-                    if hypothesis.is_endpoint:
-                        preview_prefix = current_preview
-                        preview_raw_prefix = current_preview_raw
-                    due = monotonic() - last_preview_emit >= (
-                        config.preview_interval_ms / 1000
-                    )
-                    changed_since_emit = (
-                        current_preview != last_emitted_preview
-                        or current_preview_raw != last_emitted_preview_raw
-                    )
-                    should_emit = current_preview and (
-                        (changed_since_emit and (not preview_has_emitted or due))
-                        or hypothesis.is_endpoint
-                    )
-                    if should_emit and _emit(
-                        event_queue,
-                        PartialUpdate(
-                            segment_id=current_id,
-                            text=current_preview,
-                            raw_text=current_preview_raw,
-                            started_at_utc=current_started_at,
-                        ),
-                        replaceable=True,
-                    ):
-                        last_preview_emit = monotonic()
-                        preview_has_emitted = True
-                        last_emitted_preview = current_preview
-                        last_emitted_preview_raw = current_preview_raw
-                except Exception as exc:
-                    _status(
-                        event_queue,
-                        WorkerKind.PREVIEW,
-                        WorkerState.DEGRADED,
-                        f"streaming preview failed; durable capture continues: {exc}",
-                        severity=Severity.WARNING,
-                    )
+        if segment_state.current_id is not None and segment_state.current_started_at is not None:
+            # A starting segment replays its pre-roll so the preview begins at the
+            # first word; otherwise only the chunk just read is previewed.
+            previews.feed(
+                previews.take_preroll()
+                if starting_segment and preview_state.preroll
+                else [as_preview_chunk(chunk)],
+                segment_id=segment_state.current_id,
+                segment_started_at=segment_state.current_started_at,
+                monotonic=monotonic,
+            )
 
         for index, speech in enumerate(completed):
-            flushed = current_preview
-            flushed_raw = current_preview_raw
-            if inline_preview is not None:
-                try:
-                    tail = inline_preview.finish()
-                    raw_tail, normalized_tail = _hypothesis_texts(tail)
-                    flushed = (
-                        (preview_prefix + normalized_tail).strip() or current_preview
-                    )
-                    flushed_raw = (
-                        (preview_raw_prefix + raw_tail).strip()
-                        or current_preview_raw
-                        or flushed
-                    )
-                except Exception:
-                    pass
-            elif index:
-                preview_dropped = True
+            flushed, flushed_raw = previews.finish_for_segment()
+            if inline_preview is None and index:
+                # Out-of-process preview cannot be split across several segments
+                # completing in one chunk, so drop the preview for the extras.
+                preview_state.dropped = True
             emit_speech_segment(speech, flushed, flushed_raw)
 
     try:
-        if getattr(capture, "running", False):
+        if getattr(route_state.capture, "running", False):
             flush_current()
-            capture.stop()
+            route_state.capture.stop()
     finally:
         if inline_preview is not None:
             with suppress(Exception):
@@ -3073,5 +2299,9 @@ __all__ = [
     "RecorderShutdownPending",
     "RealtimeModelProbe",
     "WorkerBackpressure",
+    # Re-exported from `input_routing` so the recorder's routing types stay reachable
+    # from the module that owns the loop they belong to.
+    "_CaptureCandidate",
+    "_InputRouteResolution",
     "probe_realtime_models",
 ]
