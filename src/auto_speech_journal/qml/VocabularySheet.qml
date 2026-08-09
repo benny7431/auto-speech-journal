@@ -2,10 +2,12 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
+import "."
+
 ColumnLayout {
     id: root
     objectName: "vocabularySheet"
-    spacing: 13
+    spacing: Theme.spaceMd
 
     required property var journal
 
@@ -21,7 +23,7 @@ ColumnLayout {
         Text {
             Layout.fillWidth: true
             text: "自動學習使用者修正"
-            color: "#493F35"
+            color: Theme.inkStrong
             font.family: journal.systemFontFamily
             font.pixelSize: root.px(17)
             font.weight: Font.DemiBold
@@ -43,23 +45,29 @@ ColumnLayout {
         Layout.fillWidth: true
         text: "停用後仍會保留修正文字與既有字典，只停止從後續修正學習新詞。辨識提示目前使用累計 2 次以上的詞語。"
         wrapMode: Text.Wrap
-        color: "#75685B"
+        color: Theme.inkMuted
         font.family: journal.systemFontFamily
         font.pixelSize: root.px(14)
     }
     Rectangle {
         Layout.fillWidth: true
         height: 1
-        color: "#D8CBBA"
+        color: Theme.line
     }
     Text {
         objectName: "vocabularyEmpty"
         Layout.fillWidth: true
         visible: journal.vocabularyEntries.length === 0
         text: "目前沒有已學詞語"
-        color: "#95887A"
+        color: Theme.inkFaint
         font.family: journal.systemFontFamily
         font.pixelSize: root.px(16)
+    }
+    // With no terms the list contributes nothing, so the slack has to land
+    // somewhere deliberate rather than being shared out between every row.
+    Item {
+        Layout.fillHeight: true
+        visible: journal.vocabularyEntries.length === 0
     }
     ListView {
         id: vocabularyList
@@ -78,10 +86,10 @@ ColumnLayout {
             objectName: "vocabularyEntry"
             width: ListView.view.width
             height: Math.max(48, vocabularyTerm.implicitHeight + 16)
-            radius: 8
-            color: "#55ECE3D4"
-            border.width: 1
-            border.color: "#D8CBBA"
+            radius: Theme.radiusSm
+            color: Theme.paperRaised
+            border.width: Theme.hairline
+            border.color: Theme.line
 
             RowLayout {
                 anchors.fill: parent
@@ -94,14 +102,14 @@ ColumnLayout {
                     Layout.fillWidth: true
                     text: vocabularyEntry.modelData.term
                     elide: Text.ElideRight
-                    color: "#493F35"
+                    color: Theme.inkStrong
                     font.family: journal.systemFontFamily
                     font.pixelSize: root.px(17)
                 }
                 Text {
                     objectName: "vocabularyCount"
                     text: vocabularyEntry.modelData.count + " 次"
-                    color: "#776B5E"
+                    color: Theme.inkMuted
                     font.family: journal.systemFontFamily
                     font.pixelSize: root.px(14)
                 }

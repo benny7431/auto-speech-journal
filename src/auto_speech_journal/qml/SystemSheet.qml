@@ -1,9 +1,22 @@
 import QtQuick
+import QtQuick.Controls
 
-Column {
+import "."
+
+/*
+ * Read-only runtime status, plus the two whole-application actions.
+ *
+ * Wrapped in a Flickable because a bare Column here has no bottom anchor: at the
+ * largest journal font in a short window the microphone notice used to run off
+ * the bottom of the drawer with nothing to reveal it.
+ */
+Flickable {
     id: root
     objectName: "systemSheet"
-    spacing: 13
+    clip: true
+    contentWidth: width
+    contentHeight: body.implicitHeight
+    boundsBehavior: Flickable.StopAtBounds
 
     required property var journal
 
@@ -13,26 +26,77 @@ Column {
         return Math.max(1, Math.round(size * journal.uiFontScale))
     }
 
+    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-    Text { text: journal.stateText; color: "#493F35"; font.family: journal.systemFontFamily; font.pixelSize: root.px(22) }
-    Text { width: parent.width; text: journal.statusMessage; wrapMode: Text.Wrap; color: "#6F6255"; font.family: journal.systemFontFamily; font.pixelSize: root.px(16) }
-    Rectangle { width: parent.width; height: 1; color: "#D8CBBA" }
-    Text { text: "場景狀態：" + journal.sceneKey; color: "#6F6255"; font.family: journal.systemFontFamily; font.pixelSize: root.px(16) }
-    Text { text: journal.backlogText; color: "#6F6255"; font.family: journal.systemFontFamily; font.pixelSize: root.px(16) }
-    Text {
-        objectName: "systemMicrophoneStatus"
-        text: "麥克風偏好：" + journal.preferredInputName +
-              "\n目前收音：" + (journal.activeInputName || "尚未開始") +
-              (journal.inputRouteNoticeText
-                  ? "\n" + journal.inputRouteNoticeText
-                  : "")
-        width: parent.width
-        wrapMode: Text.Wrap
-        color: journal.inputFallbackActive ? "#9A642E" : "#6F6255"
-        font.family: journal.systemFontFamily
-        font.pixelSize: root.px(16)
+    Column {
+        id: body
+        width: root.width - 10
+        spacing: Theme.spaceMd
+
+        Text {
+            width: parent.width
+            text: root.journal.stateText
+            wrapMode: Text.Wrap
+            color: Theme.inkStrong
+            font.family: root.journal.systemFontFamily
+            font.pixelSize: root.px(20)
+            font.weight: Font.DemiBold
+        }
+        Text {
+            width: parent.width
+            text: root.journal.statusMessage
+            wrapMode: Text.Wrap
+            color: Theme.inkBody
+            font.family: root.journal.systemFontFamily
+            font.pixelSize: root.px(16)
+        }
+        Rectangle { width: parent.width; height: Theme.hairline; color: Theme.line }
+        Text {
+            width: parent.width
+            text: "場景狀態：" + root.journal.sceneKey
+            wrapMode: Text.Wrap
+            color: Theme.inkBody
+            font.family: root.journal.systemFontFamily
+            font.pixelSize: root.px(16)
+        }
+        Text {
+            width: parent.width
+            text: root.journal.backlogText
+            wrapMode: Text.Wrap
+            color: Theme.inkBody
+            font.family: root.journal.systemFontFamily
+            font.pixelSize: root.px(16)
+        }
+        Text {
+            objectName: "systemMicrophoneStatus"
+            width: parent.width
+            text: "麥克風偏好：" + root.journal.preferredInputName +
+                  "\n目前收音：" + (root.journal.activeInputName || "尚未開始") +
+                  (root.journal.inputRouteNoticeText
+                      ? "\n" + root.journal.inputRouteNoticeText
+                      : "")
+            wrapMode: Text.Wrap
+            color: root.journal.inputFallbackActive ? Theme.warning : Theme.inkBody
+            font.family: root.journal.systemFontFamily
+            font.pixelSize: root.px(16)
+        }
+        Text {
+            width: parent.width
+            text: "今日資料版本：" + root.journal.timelineRevision
+            wrapMode: Text.Wrap
+            color: Theme.inkBody
+            font.family: root.journal.systemFontFamily
+            font.pixelSize: root.px(16)
+        }
+        PaperButton {
+            width: parent.width
+            text: "開啟紀錄資料夾"
+            onClicked: root.journal.openRecordsFolder()
+        }
+        PaperButton {
+            width: parent.width
+            text: "結束程式"
+            onClicked: root.exitRequested()
+        }
     }
-    Text { text: "今日資料版本：" + journal.timelineRevision; color: "#6F6255"; font.family: journal.systemFontFamily; font.pixelSize: root.px(16) }
-    PaperButton { width: parent.width; text: "開啟紀錄資料夾"; onClicked: journal.openRecordsFolder() }
-    PaperButton { width: parent.width; text: "結束程式"; onClicked: root.exitRequested() }
 }
