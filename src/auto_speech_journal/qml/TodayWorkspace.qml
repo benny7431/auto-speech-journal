@@ -1,5 +1,13 @@
 import QtQuick
 
+import "."
+
+/*
+ * The expanded journal: a control strip over a scrolling list of segment cards.
+ *
+ * The page is deliberately plain. The month tint is the only decoration and it
+ * sits under everything at 5% so the cards, not the background, carry the eye.
+ */
 Item {
     id: root
     objectName: "todayWorkspace"
@@ -21,47 +29,45 @@ Item {
         id: workspaceCanvas
         objectName: "paperSpread"
         anchors.fill: parent
-        color: "#F4EEE3"
+        color: Theme.paper
         border.width: 0
         clip: true
 
-        // A single low-opacity month tint is the whole seasonal signal now that
-        // the scene photographs are gone. It sits under the content rather than
-        // over it, so no compensating paper wash is needed to keep text legible.
         Rectangle {
             anchors.fill: parent
             color: root.monthTint
             opacity: 0.05
         }
 
+        // The control bar shares the timeline's measure so the workspace reads as
+        // one column rather than a full-width toolbar over a narrow page.
+        readonly property real columnWidth: Math.min(
+            width - 2 * Theme.spaceXl, Theme.readingMeasure
+        )
+
         TodayLiveBar {
             id: liveBar
-            anchors.left: parent.left
-            anchors.leftMargin: 22
-            anchors.right: parent.right
-            anchors.rightMargin: 22
+            anchors.horizontalCenter: parent.horizontalCenter
             anchors.top: parent.top
-            anchors.topMargin: root.topInset + 12
+            anchors.topMargin: root.topInset + Theme.spaceSm
+            width: workspaceCanvas.columnWidth
             height: implicitHeight
             journal: root.journal
             systemFontFamily: root.systemFontFamily
             diaryFontFamily: root.diaryFontFamily
             fontScale: root.fontScale
-            accentColor: root.monthTint
             motionEnabled: root.motionEnabled
             onOpenSheet: function(sheetKey) { root.openSheet(sheetKey) }
         }
 
         SoundRiver {
             id: soundRiver
-            anchors.left: parent.left
-            anchors.leftMargin: 30
-            anchors.right: parent.right
-            anchors.rightMargin: 26
+            anchors.horizontalCenter: parent.horizontalCenter
+            width: workspaceCanvas.columnWidth
             anchors.top: liveBar.bottom
-            anchors.topMargin: 13
+            anchors.topMargin: Theme.spaceXl
             anchors.bottom: parent.bottom
-            anchors.bottomMargin: 18
+            anchors.bottomMargin: Theme.spaceLg
             journal: root.journal
             systemFontFamily: root.systemFontFamily
             diaryFontFamily: root.diaryFontFamily
