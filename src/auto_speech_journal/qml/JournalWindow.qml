@@ -115,10 +115,11 @@ ApplicationWindow {
     Rectangle {
         id: shell
         anchors.fill: parent
-        radius: journal.expanded ? 18 : 14
-        color: "#F4EEE3"
-        border.width: 1
-        border.color: "#CFC2AF"
+        radius: journal.expanded ? Theme.radiusExpandedWindow
+                                 : Theme.radiusCompactWindow
+        color: Theme.paper
+        border.width: Theme.hairline
+        border.color: Theme.line
         clip: true
 
         Rectangle {
