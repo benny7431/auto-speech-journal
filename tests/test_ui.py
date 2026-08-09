@@ -11,7 +11,17 @@ os.environ.setdefault("QT_QUICK_BACKEND", "software")
 os.environ.setdefault("QSG_RHI_BACKEND", "software")
 
 import pytest
-from PySide6.QtCore import QObject, QPoint, QPointF, QRect, QSettings, QSize, Qt
+from PySide6.QtCore import (
+    QObject,
+    QPoint,
+    QPointF,
+    QRect,
+    QSettings,
+    QSize,
+    Qt,
+    QtMsgType,
+    qInstallMessageHandler,
+)
 from PySide6.QtGui import QWindow
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
@@ -194,20 +204,53 @@ def journal_window(qtbot, tmp_path):
     controller = FakeController(str(tmp_path))
     settings = QSettings(str(tmp_path / "window.ini"), QSettings.Format.IniFormat)
     settings.clear()
-    window = _create_main_window(
-        controller,
-        application,
-        window_settings=settings,
-        microphone_device_provider=lambda: [],
+
+    # A broken QML binding is only a warning on stderr, which no CI log reader
+    # ever sees. Splitting the window into components multiplies the ways a
+    # reference can go stale across a file boundary, so fail the test instead.
+    #
+    # Only genuine resolution failures count. Two other classes of message are
+    # environmental and predate this fixture: the offscreen platform complains
+    # about font directories and window masks, and Qt Quick Controls warns about
+    # every customized control because QQuickStyle.setStyle("Basic") is a no-op
+    # once another test in the process has already loaded Controls.
+    complaints: list[str] = []
+    levels = {QtMsgType.QtWarningMsg, QtMsgType.QtCriticalMsg, QtMsgType.QtFatalMsg}
+    signals = (
+        "TypeError",
+        "ReferenceError",
+        "Unable to assign",
+        "Cannot assign",
+        "non-existent property",
+        "is not a type",
+        "Binding loop",
+        "required property",
     )
-    window.show()
-    qtbot.waitUntil(window.isVisible)
-    yield window, controller, settings
-    view_model = window._journal_view_model
-    view_model._poll_timer.stop()
-    view_model._allow_close = True
-    window.close()
-    window.deleteLater()
+
+    def capture(mode, _context, message):
+        if mode in levels and any(signal in message for signal in signals):
+            complaints.append(message)
+
+    previous_handler = qInstallMessageHandler(capture)
+    try:
+        window = _create_main_window(
+            controller,
+            application,
+            window_settings=settings,
+            microphone_device_provider=lambda: [],
+        )
+        window.show()
+        qtbot.waitUntil(window.isVisible)
+        yield window, controller, settings
+        view_model = window._journal_view_model
+        view_model._poll_timer.stop()
+        view_model._allow_close = True
+        window.close()
+        window.deleteLater()
+    finally:
+        qInstallMessageHandler(previous_handler)
+
+    assert not complaints, "QML reported problems:\n" + "\n".join(complaints)
 
 
 def _role(model, name: str) -> int:
