@@ -319,6 +319,7 @@ class _TimelineRow:
     hour_key: str
     hour_label: str
     is_hour_start: bool
+    hour_segment_count: int
     time_label: str
     text: str
     status_label: str
@@ -332,7 +333,8 @@ class TimelineListModel(QAbstractListModel):
     HourKeyRole = SegmentIdRole + 1
     HourLabelRole = HourKeyRole + 1
     IsHourStartRole = HourLabelRole + 1
-    TimeLabelRole = IsHourStartRole + 1
+    HourSegmentCountRole = IsHourStartRole + 1
+    TimeLabelRole = HourSegmentCountRole + 1
     TextRole = TimeLabelRole + 1
     StatusLabelRole = TextRole + 1
     EditableRole = StatusLabelRole + 1
@@ -346,6 +348,7 @@ class TimelineListModel(QAbstractListModel):
         HourKeyRole: b"hourKey",
         HourLabelRole: b"hourLabel",
         IsHourStartRole: b"isHourStart",
+        HourSegmentCountRole: b"hourSegmentCount",
         TimeLabelRole: b"timeLabel",
         TextRole: b"segmentText",
         StatusLabelRole: b"statusLabel",
@@ -381,6 +384,7 @@ class TimelineListModel(QAbstractListModel):
             self.HourKeyRole: row.hour_key,
             self.HourLabelRole: row.hour_label,
             self.IsHourStartRole: row.is_hour_start,
+            self.HourSegmentCountRole: row.hour_segment_count,
             self.TimeLabelRole: row.time_label,
             self.TextRole: row.text,
             self.StatusLabelRole: row.status_label,
@@ -2575,13 +2579,15 @@ class JournalViewModel(QObject):
         for hour in tuple(getattr(timeline, "hours", ()) or ()):
             hour_key = str(getattr(hour, "hour_key", "") or "")
             hour_label = str(getattr(hour, "label", "") or "")
-            for index, segment in enumerate(tuple(getattr(hour, "segments", ()) or ())):
+            segments = tuple(getattr(hour, "segments", ()) or ())
+            for index, segment in enumerate(segments):
                 rows.append(
                     _TimelineRow(
                         segment_id=str(getattr(segment, "segment_id", "") or ""),
                         hour_key=str(getattr(segment, "hour_key", hour_key) or hour_key),
                         hour_label=hour_label or JournalViewModel._hour_label(hour_key),
                         is_hour_start=index == 0,
+                        hour_segment_count=len(segments),
                         time_label=str(getattr(segment, "time_label", "") or ""),
                         text=str(
                             getattr(
@@ -2616,6 +2622,7 @@ class JournalViewModel(QObject):
                 hour_key=hour_key,
                 hour_label=JournalViewModel._hour_label(hour_key),
                 is_hour_start=True,
+                hour_segment_count=1,
                 time_label="",
                 text=text,
                 status_label="已定稿",

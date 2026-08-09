@@ -2,6 +2,15 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
+import "."
+
+/*
+ * One saved segment, drawn as a card, optionally preceded by its hour header.
+ *
+ * The header belongs to the delegate rather than a ListView section so that
+ * collapsing an hour is a pure height change on the rows beneath it - the model
+ * keeps its flat shape and the view keeps its scroll-position logic.
+ */
 FocusScope {
     id: root
     objectName: "timelineRow"
@@ -15,163 +24,167 @@ FocusScope {
     required property bool editable
     required property bool editing
     required property bool isHourStart
+    required property int hourSegmentCount
     required property string draftText
     required property string lastError
     required property string systemFontFamily
     required property string diaryFontFamily
     property real fontScale: 1
+    property bool collapsed: false
+    property color accentColor: Theme.accent
 
     signal beginEdit(string segmentId)
     signal updateDraft(string segmentId, string text)
     signal saveEdit(string segmentId)
     signal cancelEdit(string segmentId)
+    signal toggleHour(string hourLabel)
 
-    readonly property real railX: 82
-    readonly property real contentX: 112
-    readonly property real headingHeight: isHourStart ? 42 : 0
+    readonly property real headerHeight: isHourStart ? 40 : 0
 
     function px(size) {
         return Math.max(1, Math.round(size * fontScale))
     }
 
-    activeFocusOnTab: editable && !editing
-    height: headingHeight + segmentSurface.height
+    activeFocusOnTab: editable && !editing && !collapsed
+    height: headerHeight + (collapsed ? 0 : card.height + Theme.spaceSm)
+
     Keys.onReturnPressed: function(event) {
-        if (editable && !editing) {
+        if (editable && !editing && !collapsed) {
             root.beginEdit(segmentId)
             event.accepted = true
         }
     }
 
-    Rectangle {
-        x: root.railX
-        y: 0
-        width: 1
-        height: parent.height
-        color: "#3D718A78"
-    }
-
+    // -- hour header ---------------------------------------------------------
     Item {
-        id: hourHeading
+        id: hourHeader
+        objectName: "timelineHourHeader"
         width: parent.width
-        height: root.headingHeight
+        height: root.headerHeight
         visible: root.isHourStart
 
-        Text {
-            objectName: "timelineHourLabel"
-            x: 0
-            anchors.verticalCenter: parent.verticalCenter
-            width: root.railX - 15
-            text: root.hourLabel
-            horizontalAlignment: Text.AlignRight
-            color: "#5C584F"
-            font.family: root.systemFontFamily
-            font.pixelSize: root.px(21)
-            font.weight: Font.DemiBold
-        }
-
-        Rectangle {
-            x: root.railX - 5
-            anchors.verticalCenter: parent.verticalCenter
-            width: 11
-            height: 11
-            radius: 6
-            color: "#F8F1E8"
-            border.width: 2
-            border.color: "#718A78"
-        }
-
-        Rectangle {
-            x: root.railX + 14
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            height: 1
-            color: "#26718A78"
-        }
-    }
-
-    Rectangle {
-        id: segmentSurface
-        objectName: "timelineSegmentSurface"
-        x: root.contentX
-        y: root.headingHeight
-        width: Math.max(0, parent.width - x - 12)
-        height: root.editing ? Math.max(194, editorColumn.implicitHeight + 30) :
-                               Math.max(88, readerColumn.implicitHeight + 28)
-        radius: 18
-        color: root.editing ? "#DCF7F1E8" : "transparent"
-        border.width: 0
-
-        Behavior on color {
-            enabled: !root.editing
-            ColorAnimation { duration: 180 }
+        TapHandler {
+            onTapped: root.toggleHour(root.hourLabel)
         }
 
         HoverHandler {
-            id: segmentHover
+            id: headerHover
             acceptedDevices: PointerDevice.Mouse
-        }
-
-        Canvas {
-            id: mistCanvas
-            x: -30
-            y: -20
-            width: parent.width + 60
-            height: parent.height + 40
-            visible: !root.editing
-            opacity: segmentHover.hovered || root.activeFocus ? 0.98 : 0.82
-
-            onWidthChanged: requestPaint()
-            onHeightChanged: requestPaint()
-            onPaint: {
-                const ctx = getContext("2d")
-                ctx.reset()
-                if (width <= 0 || height <= 0)
-                    return
-
-                const failed = root.segmentState === "failed"
-                const center = failed ? "rgba(255,244,239,0.68)" :
-                                        "rgba(255,253,248,0.64)"
-                const middle = failed ? "rgba(255,248,242,0.28)" :
-                                        "rgba(255,253,248,0.26)"
-
-                function paintHalo(cx, cy, rx, ry, alpha) {
-                    ctx.save()
-                    ctx.translate(cx, cy)
-                    ctx.scale(rx, ry)
-                    const mist = ctx.createRadialGradient(0, 0, 0, 0, 0, 1)
-                    mist.addColorStop(0, center)
-                    mist.addColorStop(0.48, middle)
-                    mist.addColorStop(0.82, "rgba(255,253,248,0.08)")
-                    mist.addColorStop(1, "rgba(255,253,248,0)")
-                    ctx.globalAlpha = alpha
-                    ctx.fillStyle = mist
-                    ctx.fillRect(-1, -1, 2, 2)
-                    ctx.restore()
-                }
-
-                paintHalo(width * 0.46, height * 0.51,
-                          width * 0.50, height * 0.62, 1)
-                paintHalo(width * 0.30, height * 0.58,
-                          width * 0.31, height * 0.74, 0.36)
-            }
-        }
-
-        Connections {
-            target: root
-            function onSegmentStateChanged() { mistCanvas.requestPaint() }
+            cursorShape: Qt.PointingHandCursor
         }
 
         Rectangle {
+            anchors.fill: parent
+            anchors.topMargin: Theme.spaceXs
+            anchors.bottomMargin: Theme.spaceXs
+            radius: Theme.radiusSm
+            color: headerHover.hovered ? Theme.wash(Theme.ink, 0.04) : "transparent"
+        }
+
+        Row {
             anchors.left: parent.left
-            anchors.leftMargin: 14
-            anchors.top: parent.top
-            anchors.topMargin: 15
-            width: 4
-            height: 4
+            anchors.leftMargin: Theme.spaceSm
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Theme.spaceSm
+
+            // Drawn rather than typed: the journal font is user-selectable and
+            // the handwriting families have no geometric-shape glyphs, so a "▾"
+            // renders as tofu in exactly the fonts this app is built around.
+            Canvas {
+                id: disclosure
+                objectName: "timelineHourDisclosure"
+                anchors.verticalCenter: parent.verticalCenter
+                width: 10
+                height: 10
+                rotation: root.collapsed ? -90 : 0
+
+                property color strokeColor: Theme.inkMuted
+                onStrokeColorChanged: requestPaint()
+
+                Behavior on rotation {
+                    NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
+                }
+
+                onPaint: {
+                    const ctx = getContext("2d")
+                    ctx.reset()
+                    ctx.strokeStyle = strokeColor
+                    ctx.lineWidth = 1.5
+                    ctx.lineCap = "round"
+                    ctx.lineJoin = "round"
+                    ctx.beginPath()
+                    ctx.moveTo(2, 3.5)
+                    ctx.lineTo(5, 7)
+                    ctx.lineTo(8, 3.5)
+                    ctx.stroke()
+                }
+            }
+
+            Rectangle {
+                anchors.verticalCenter: parent.verticalCenter
+                width: 7
+                height: 7
+                radius: 4
+                color: root.accentColor
+                opacity: 0.7
+            }
+
+            Text {
+                objectName: "timelineHourLabel"
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.hourLabel
+                color: Theme.inkBody
+                font.family: root.systemFontFamily
+                font.pixelSize: root.px(16)
+                font.weight: Font.DemiBold
+            }
+        }
+
+        Text {
+            objectName: "timelineHourCount"
+            anchors.right: parent.right
+            anchors.rightMargin: Theme.spaceSm
+            anchors.verticalCenter: parent.verticalCenter
+            text: root.hourSegmentCount + " 則"
+            color: Theme.inkMuted
+            font.family: root.systemFontFamily
+            font.pixelSize: root.px(13)
+        }
+    }
+
+    // -- segment card --------------------------------------------------------
+    Rectangle {
+        id: card
+        objectName: "timelineSegmentSurface"
+        anchors.left: parent.left
+        anchors.right: parent.right
+        y: root.headerHeight
+        visible: !root.collapsed
+        height: root.editing
+                ? Math.max(190, editorColumn.implicitHeight + 2 * Theme.spaceLg)
+                : Math.max(88, readerColumn.implicitHeight + 2 * Theme.spaceLg)
+        radius: Theme.radiusMd
+        color: Theme.paperRaised
+        border.width: Theme.hairline
+        border.color: root.activeFocus || cardHover.hovered ? Theme.accentSoft : Theme.line
+
+        HoverHandler {
+            id: cardHover
+            acceptedDevices: PointerDevice.Mouse
+        }
+
+        // A state stripe down the leading edge: quiet when settled, coloured
+        // when the segment still needs something from the user.
+        Rectangle {
+            width: 3
+            height: parent.height - 2 * Theme.spaceMd
+            anchors.left: parent.left
+            anchors.leftMargin: Theme.hairline
+            anchors.verticalCenter: parent.verticalCenter
             radius: 2
-            color: root.segmentState === "failed" ? "#B85C4A" : "#718A78"
-            opacity: 0.72
+            color: Theme.segmentColor(root.segmentState)
+            opacity: root.segmentState === "failed" || root.segmentState === "retry"
+                     ? 0.9 : 0.35
         }
 
         Column {
@@ -180,26 +193,24 @@ FocusScope {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: parent.top
-            anchors.margins: 14
-            anchors.leftMargin: 28
-            spacing: 9
+            anchors.margins: Theme.spaceLg
+            spacing: Theme.spaceSm
 
             RowLayout {
                 width: parent.width
-                spacing: 7
+                spacing: Theme.spaceSm
 
                 Text {
                     objectName: "timelineTimeLabel"
                     text: root.timeLabel
-                    color: "#746F66"
+                    color: Theme.inkMuted
                     font.family: root.systemFontFamily
                     font.pixelSize: root.px(13)
                 }
                 Text {
                     objectName: "timelineStatusLabel"
-                    text: "·  " + root.statusLabel
-                    color: root.segmentState === "failed" ? "#9C4F40" :
-                           root.segmentState === "retry" ? "#8A704A" : "#586E5D"
+                    text: root.statusLabel
+                    color: Theme.segmentColor(root.segmentState)
                     font.family: root.systemFontFamily
                     font.pixelSize: root.px(12)
                 }
@@ -214,7 +225,7 @@ FocusScope {
                         objectName: "timelineCorrectionButton"
                         anchors.fill: parent
                         visible: root.editable &&
-                                 (segmentHover.hovered || root.activeFocus || activeFocus)
+                                 (cardHover.hovered || root.activeFocus || activeFocus)
                         enabled: visible
                         flat: true
                         text: "修正"
@@ -224,9 +235,11 @@ FocusScope {
                         onClicked: root.beginEdit(root.segmentId)
 
                         background: Rectangle {
-                            radius: 10
-                            color: correctionButton.down ? "#24718A78" :
-                                   correctionButton.hovered ? "#18718A78" : "transparent"
+                            radius: Theme.radiusSm
+                            color: correctionButton.down
+                                   ? Theme.wash(Theme.accent, 0.16)
+                                   : correctionButton.hovered
+                                     ? Theme.wash(Theme.accent, 0.09) : "transparent"
                         }
                     }
                 }
@@ -237,7 +250,7 @@ FocusScope {
                 width: parent.width
                 text: root.segmentText || "（此片段尚無可顯示文字）"
                 wrapMode: Text.Wrap
-                color: root.segmentText ? "#363730" : "#8F8A80"
+                color: root.segmentText ? Theme.ink : Theme.inkFaint
                 font.family: root.diaryFontFamily
                 font.pixelSize: root.px(17)
                 lineHeight: 1.34
@@ -249,7 +262,7 @@ FocusScope {
                 width: parent.width
                 text: "注意：" + root.lastError
                 wrapMode: Text.Wrap
-                color: "#9C4F40"
+                color: Theme.danger
                 font.family: root.systemFontFamily
                 font.pixelSize: root.px(13)
             }
@@ -261,18 +274,14 @@ FocusScope {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: parent.top
-            anchors.margins: 15
-            spacing: 10
+            anchors.margins: Theme.spaceLg
+            spacing: Theme.spaceMd
 
-            RowLayout {
-                width: parent.width
-                Text {
-                    text: root.timeLabel + "  ·  修正已保存片段"
-                    color: "#5C675B"
-                    font.family: root.systemFontFamily
-                    font.pixelSize: root.px(13)
-                }
-                Item { Layout.fillWidth: true }
+            Text {
+                text: root.timeLabel + "  ·  修正已保存片段"
+                color: Theme.inkBody
+                font.family: root.systemFontFamily
+                font.pixelSize: root.px(13)
             }
 
             TextArea {
@@ -282,19 +291,19 @@ FocusScope {
                 height: 92
                 text: root.draftText
                 wrapMode: TextEdit.Wrap
-                color: "#363730"
+                color: Theme.ink
                 font.family: root.diaryFontFamily
                 font.pixelSize: root.px(17)
                 selectByMouse: true
-                leftPadding: 12
-                rightPadding: 12
-                topPadding: 10
-                bottomPadding: 10
+                leftPadding: Theme.spaceMd
+                rightPadding: Theme.spaceMd
+                topPadding: Theme.spaceSm
+                bottomPadding: Theme.spaceSm
                 background: Rectangle {
-                    radius: 12
-                    color: "#F5FFFDF8"
-                    border.width: 1
-                    border.color: editArea.activeFocus ? "#718A78" : "#AAB9A8"
+                    radius: Theme.radiusSm
+                    color: Theme.paper
+                    border.width: Theme.hairline
+                    border.color: editArea.activeFocus ? Theme.accent : Theme.accentSoft
                 }
                 onTextChanged: {
                     if (activeFocus)
@@ -307,7 +316,7 @@ FocusScope {
             }
 
             Row {
-                spacing: 8
+                spacing: Theme.spaceSm
 
                 Button {
                     id: saveButton
@@ -318,12 +327,12 @@ FocusScope {
                     font.pixelSize: root.px(13)
                     onClicked: root.saveEdit(root.segmentId)
                     background: Rectangle {
-                        radius: 10
-                        color: saveButton.down ? "#5F7865" : "#718A78"
+                        radius: Theme.radiusSm
+                        color: saveButton.down ? Theme.accentDeep : Theme.accent
                     }
                     contentItem: Text {
                         text: saveButton.text
-                        color: "#FFFDF8"
+                        color: Theme.paperRaised
                         font: saveButton.font
                         horizontalAlignment: Text.AlignHCenter
                         verticalAlignment: Text.AlignVCenter
@@ -340,9 +349,11 @@ FocusScope {
                     font.pixelSize: root.px(13)
                     onClicked: root.cancelEdit(root.segmentId)
                     background: Rectangle {
-                        radius: 10
-                        color: cancelButton.down ? "#1D718A78" :
-                               cancelButton.hovered ? "#12718A78" : "transparent"
+                        radius: Theme.radiusSm
+                        color: cancelButton.down
+                               ? Theme.wash(Theme.accent, 0.14)
+                               : cancelButton.hovered
+                                 ? Theme.wash(Theme.accent, 0.08) : "transparent"
                     }
                 }
             }
@@ -353,7 +364,7 @@ FocusScope {
                 width: parent.width
                 text: "注意：" + root.lastError
                 wrapMode: Text.Wrap
-                color: "#9C4F40"
+                color: Theme.danger
                 font.family: root.systemFontFamily
                 font.pixelSize: root.px(13)
             }

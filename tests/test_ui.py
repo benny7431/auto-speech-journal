@@ -821,7 +821,7 @@ def test_redesigned_workspace_uses_plain_paper_and_single_river(
     secondary_actions = window.findChild(QObject, "secondaryActionRow")
     expanded_content = window.findChild(QObject, "expandedContent")
     live_bar = window.findChild(QObject, "todayLiveBar")
-    workspace_status = window.findChild(QObject, "workspaceStatusRow")
+    workspace_date = window.findChild(QObject, "workspaceDate")
     workspace_state = window.findChild(QObject, "workspaceStateText")
     workspace_backlog = window.findChild(QObject, "workspaceBacklogText")
 
@@ -834,22 +834,25 @@ def test_redesigned_workspace_uses_plain_paper_and_single_river(
     assert float(paper_spread.property("y")) == pytest.approx(0.0, abs=0.5)
     assert close_button.property("text") == "×"
 
+    # The date moved into the title bar so the live bar is one control row.
+    assert workspace_date.property("visible") is True
+    assert float(workspace_date.property("y")) < float(title_bar.property("height"))
+
     assert live_trace is not None
     assert live_trace.inherits("QQuickItem")
-    assert not live_trace.inherits("QQuickRectangle")
     assert window.findChild(QObject, "workspaceStatusMark") is None
     assert window.findChild(QObject, "workspaceStatusMessage") is None
-    assert workspace_state.parent() == workspace_status
-    assert workspace_backlog.parent() == workspace_status
-    assert float(workspace_status.property("x")) > float(live_bar.property("width")) / 2
-    assert float(workspace_status.property("x")) + float(
-        workspace_status.property("width")
-    ) == pytest.approx(float(live_bar.property("width")) - 22, abs=0.5)
+    assert window.findChild(QObject, "workspaceStatusRow") is None
+
+    # Status reads left, controls read right, on one baseline.
     assert primary_actions is not None
     assert secondary_actions is not None
-    assert float(workspace_status.property("y")) >= (
-        float(primary_actions.property("y"))
-        + float(primary_actions.property("height"))
+    status_dot = window.findChild(QObject, "workspaceStatusDot")
+    assert status_dot is not None
+    assert float(workspace_state.property("x")) < float(live_bar.property("width")) / 2
+    assert float(workspace_backlog.property("x")) > float(workspace_state.property("x"))
+    assert float(secondary_actions.property("x")) > float(
+        workspace_backlog.property("x")
     )
 
     expanded_pause = window.findChild(QObject, "expandedPauseButton")
@@ -861,20 +864,26 @@ def test_redesigned_workspace_uses_plain_paper_and_single_river(
 
     for object_name in ("settingsButton", "systemButton", "hoursButton"):
         button = window.findChild(QObject, object_name)
-        assert button.parent() == secondary_actions
         assert button.property("flat") is True
 
     timeline = window.findChild(QObject, "timelineList")
     timeline_title = window.findChild(QObject, "timelineTitle")
+    timeline_column = window.findChild(QObject, "timelineColumn")
     assert timeline.property("idleSegmentColor").alpha() == 0
     assert float(timeline.property("segmentBorderWidth")) == pytest.approx(0.0)
-    assert float(timeline.property("spacing")) == pytest.approx(6.0)
+    # Cards carry their own separation, so the view adds none.
+    assert float(timeline.property("spacing")) == pytest.approx(0.0)
     assert window.findChild(QObject, "timelineSubtitle") is None
     assert float(timeline.property("y")) == pytest.approx(
         float(timeline_title.property("y"))
         + float(timeline_title.property("height"))
-        + 10,
+        + 12,
         abs=0.5,
+    )
+    # Journal text is capped to a readable measure instead of the window width.
+    assert float(timeline_column.property("width")) <= 880.5
+    assert float(timeline_column.property("width")) <= float(
+        paper_spread.property("width")
     )
     assert window.property("uiFontFamily") == QApplication.instance().font().family()
     assert window.findChild(QObject, "compactWaveform") is None
@@ -899,13 +908,16 @@ def test_internal_typography_is_enlarged_without_crowding_fixed_layouts(
     qtbot.wait(40)
     qtbot.waitUntil(lambda: bool(_visual_items(window, "timelineRow")))
 
+    # Each value is round(base * 1.125) for the fixture's 18px journal font. The
+    # date and hour label stepped down when they became secondary to the segment
+    # text, which is now the largest thing on the page after the title.
     expected_sizes = {
-        "workspaceDate": 27,
+        "workspaceDate": 18,
         "workspaceStateText": 20,
         "workspaceBacklogText": 17,
         "workspaceLiveLabel": 15,
-        "workspacePartialText": 19,
-        "timelineTitle": 32,
+        "workspacePartialText": 18,
+        "timelineTitle": 25,
         "sheetTitle": 32,
         "previewSpin": 18,
     }
@@ -913,7 +925,8 @@ def test_internal_typography_is_enlarged_without_crowding_fixed_layouts(
         assert _pixel_size(window.findChild(QObject, object_name)) == pixel_size
 
     delegate_sizes = {
-        "timelineHourLabel": 24,
+        "timelineHourLabel": 18,
+        "timelineHourCount": 15,
         "timelineTimeLabel": 15,
         "timelineStatusLabel": 14,
         "timelineSegmentText": 19,
@@ -1029,6 +1042,78 @@ def test_live_bar_collapses_when_only_waiting_placeholder_remains(journal_window
     assert live_bar.property("hasPartial") is False
     assert float(live_bar.property("implicitHeight")) < expanded_height
     assert window.findChild(QObject, "workspaceLiveLabel").property("text") == "即時預覽"
+
+
+def test_hour_header_reports_its_segment_count(journal_window):
+    window, controller, _ = journal_window
+    model = window._journal_view_model.timelineModel
+    role = _role(model, "hourSegmentCount")
+
+    # Every row in an hour carries that hour's total, so the header can show it
+    # without the view having to walk the model.
+    assert model.data(model.index(0), role) == 2
+    assert model.data(model.index(1), role) == 2
+
+    controller.segments.append(
+        TimelineSegmentView(
+            segment_id="morning-3",
+            time_label="[09:41:00]",
+            text="同一小時的第三段",
+            status_label="已定稿",
+            editable=True,
+            hour_key="2026-07-12_09",
+            state=SegmentState.FINAL_READY,
+        )
+    )
+    controller.snapshot = replace(
+        controller.snapshot,
+        timeline_revision=controller.snapshot.timeline_revision + 1,
+    )
+    window._journal_view_model.refresh(force_timeline=True)
+
+    assert model.rowCount() == 3
+    assert [model.data(model.index(row), role) for row in range(3)] == [3, 3, 3]
+
+
+def test_collapsing_an_hour_hides_its_cards_but_keeps_the_header(
+    journal_window, qtbot
+):
+    window, _, _ = journal_window
+    window._journal_view_model.toggleExpanded()
+    qtbot.wait(40)
+    qtbot.waitUntil(lambda: bool(_visual_items(window, "timelineRow")))
+
+    river = window.findChild(QObject, "soundRiver")
+    rows = _visual_items(window, "timelineRow")
+    expanded_heights = [float(row.property("height")) for row in rows]
+    assert all(height > 0 for height in expanded_heights)
+
+    # Click the header the way a reader would, rather than poking the property.
+    header = _visual_items(window, "timelineHourHeader")[0]
+    _click_quick_item(window, header)
+    qtbot.wait(60)
+
+    assert river.property("collapsedHours").toVariant() == {"09:00": True}
+    visible_surfaces = [
+        item
+        for item in _visual_items(window, "timelineSegmentSurface")
+        if item.property("visible") is True
+    ]
+    assert visible_surfaces == []
+    assert float(header.property("height")) > 0
+    collapsed_heights = [
+        float(row.property("height")) for row in _visual_items(window, "timelineRow")
+    ]
+    assert all(
+        collapsed < expanded
+        for collapsed, expanded in zip(collapsed_heights, expanded_heights, strict=True)
+    )
+
+    _click_quick_item(window, header)
+    qtbot.wait(60)
+    assert [
+        float(row.property("height")) for row in _visual_items(window, "timelineRow")
+    ] == expanded_heights
 
 
 def test_timeline_model_groups_hours_and_preserves_active_draft(journal_window):
@@ -1293,7 +1378,7 @@ def test_settings_can_switch_local_font_and_size_without_restarting(
 
     family = view_model.availableFontFamilies[0]
     assert view_model.applyAppearance(family, 22) is True
-    qtbot.waitUntil(lambda: _pixel_size(window.findChild(QObject, "timelineTitle")) == 39)
+    qtbot.waitUntil(lambda: _pixel_size(window.findChild(QObject, "timelineTitle")) == 30)
 
     assert view_model.uiFontFamily == family
     assert view_model.uiFontSize == 22
@@ -1377,15 +1462,18 @@ def test_max_font_size_keeps_widest_local_font_inside_fixed_boundaries(
         _assert_guarded_button_content_fits(window)
 
         date_item = window.findChild(QObject, "workspaceDate")
-        status_row = window.findChild(QObject, "workspaceStatusRow")
+        title_bar = window.findChild(QObject, "titleBar")
+        close_button = window.findChild(QObject, "closeButton")
         assert float(date_item.property("contentWidth")) <= (
             float(date_item.property("width")) + 0.5
         )
-        assert float(status_row.property("y")) >= (
-            float(date_item.property("y"))
-            + float(date_item.property("height"))
-            + 9.5
+        # Brand, title and date share the title bar with the close button; at the
+        # largest font in the widest family they must still not collide.
+        date_right = float(date_item.mapToItem(title_bar, QPointF(0, 0)).x()) + float(
+            date_item.property("width")
         )
+        close_left = float(close_button.mapToItem(title_bar, QPointF(0, 0)).x())
+        assert date_right <= close_left + 0.5
         live_label = window.findChild(QObject, "workspaceLiveLabel")
         partial_text = window.findChild(QObject, "workspacePartialText")
         assert float(partial_text.property("y")) >= (

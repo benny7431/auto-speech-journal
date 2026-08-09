@@ -3,6 +3,8 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Window
 
+import "."
+
 ApplicationWindow {
     id: window
     objectName: "journalWindow"
@@ -186,10 +188,24 @@ ApplicationWindow {
                     objectName: "brandTitle"
                     Layout.alignment: Qt.AlignVCenter
                     text: "聲跡日記"
-                    color: "#493F35"
+                    color: Theme.inkStrong
                     font.family: window.diaryFontFamily
                     font.pixelSize: window.fontPx(journal.expanded ? 22 : 18)
                     font.weight: Font.DemiBold
+                }
+
+                // The date used to headline the live bar, which pushed the whole
+                // workspace down. It reads just as well as a title-bar subtitle
+                // and gives the timeline back that vertical space.
+                Text {
+                    objectName: "workspaceDate"
+                    Layout.alignment: Qt.AlignVCenter
+                    Layout.leftMargin: Theme.spaceSm
+                    visible: journal.expanded
+                    text: journal.dateLabel
+                    color: Theme.inkMuted
+                    font.family: window.diaryFontFamily
+                    font.pixelSize: window.fontPx(16)
                 }
             }
 
