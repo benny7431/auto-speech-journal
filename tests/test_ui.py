@@ -925,7 +925,7 @@ def test_internal_typography_is_enlarged_without_crowding_fixed_layouts(
         "workspaceBacklogText": 17,
         "workspaceLiveLabel": 15,
         "workspacePartialText": 18,
-        "timelineTitle": 25,
+        "timelineTitle": 29,
         "sheetTitle": 25,
         "previewSpin": 18,
     }
@@ -934,22 +934,29 @@ def test_internal_typography_is_enlarged_without_crowding_fixed_layouts(
 
     delegate_sizes = {
         "timelineHourLabel": 18,
-        "timelineHourCount": 15,
+        "timelineHourCount": 14,
         "timelineTimeLabel": 15,
-        "timelineStatusLabel": 14,
-        "timelineSegmentText": 19,
+        "timelineSegmentText": 21,
     }
     for object_name, pixel_size in delegate_sizes.items():
         assert _pixel_size(_visual_items(window, object_name)[0]) == pixel_size
 
-    segment_surfaces = _visual_items(window, "timelineSegmentSurface")
-    assert segment_surfaces
-    assert all(float(surface.property("height")) >= 88 for surface in segment_surfaces)
+    # Height follows content now. The old floor of 88px per segment gave an eight
+    # character utterance the same room as a three line one, which is most of why
+    # a real day did not fit on screen.
+    segment_texts = _visual_items(window, "timelineSegmentText")
+    assert segment_texts
+    for text_item in segment_texts:
+        owner = text_item.parent().parent()
+        assert float(owner.property("height")) >= float(
+            text_item.property("contentHeight")
+        )
+        assert float(owner.property("height")) < 88
 
     window._journal_view_model.beginEdit("morning-1")
     qtbot.wait(40)
     segment_surfaces = _visual_items(window, "timelineSegmentSurface")
-    assert any(float(surface.property("height")) >= 194 for surface in segment_surfaces)
+    assert any(float(surface.property("height")) >= 150 for surface in segment_surfaces)
 
 
 def test_correction_button_uses_a_stable_reserved_slot(journal_window, qtbot):
@@ -972,10 +979,14 @@ def test_correction_button_uses_a_stable_reserved_slot(journal_window, qtbot):
         for child in header.childItems()
         if child.objectName() == "timelineTimeLabel"
     )
-    status_label = next(
+    segment_text = next(
         child
         for child in header.childItems()
-        if child.objectName() == "timelineStatusLabel"
+        if child.objectName() == "timelineSegmentText"
+        or any(
+            grandchild.objectName() == "timelineSegmentText"
+            for grandchild in child.childItems()
+        )
     )
 
     button.setProperty("visible", False)
@@ -983,8 +994,8 @@ def test_correction_button_uses_a_stable_reserved_slot(journal_window, qtbot):
     before = (
         float(time_label.property("x")),
         float(time_label.property("width")),
-        float(status_label.property("x")),
-        float(status_label.property("width")),
+        float(segment_text.property("x")),
+        float(segment_text.property("width")),
         float(header.property("width")),
     )
     assert float(slot.property("width")) == pytest.approx(66.0, abs=0.5)
@@ -994,8 +1005,8 @@ def test_correction_button_uses_a_stable_reserved_slot(journal_window, qtbot):
     after = (
         float(time_label.property("x")),
         float(time_label.property("width")),
-        float(status_label.property("x")),
-        float(status_label.property("width")),
+        float(segment_text.property("x")),
+        float(segment_text.property("width")),
         float(header.property("width")),
     )
 
@@ -1131,7 +1142,11 @@ def test_collapsing_an_hour_hides_its_cards_but_keeps_the_header(
     assert all(height > 0 for height in expanded_heights)
 
     # Click the header the way a reader would, rather than poking the property.
-    header = _visual_items(window, "timelineHourHeader")[0]
+    header = next(
+        item
+        for item in _visual_items(window, "timelineHourHeader")
+        if float(item.property("height")) > 0
+    )
     _click_quick_item(window, header)
     qtbot.wait(60)
 
@@ -1420,7 +1435,7 @@ def test_settings_can_switch_local_font_and_size_without_restarting(
 
     family = view_model.availableFontFamilies[0]
     assert view_model.applyAppearance(family, 22) is True
-    qtbot.waitUntil(lambda: _pixel_size(window.findChild(QObject, "timelineTitle")) == 30)
+    qtbot.waitUntil(lambda: _pixel_size(window.findChild(QObject, "timelineTitle")) == 36)
 
     assert view_model.uiFontFamily == family
     assert view_model.uiFontSize == 22
