@@ -27,6 +27,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   pixels between runs of the same revision, and the gate matrix silently collapsed its
   `default` and `large` window sizes onto one clamped size.
 
+### Changed
+
+- The interface was rebuilt around cards on plain paper. The date moved into the
+  title bar so the workspace leads with one 64px control row instead of a 146px
+  card; saved segments became cards grouped under collapsible hour headers that
+  show their segment count; journal text is capped to a readable measure and
+  centred rather than stretching to the window; the compact recorder uses its
+  full width now that the scene strip is gone; and the settings drawer is grouped
+  into six titled sections with a pinned save action.
+- `qml/Theme.qml` is now the single source of colour, spacing and rhythm, with a
+  regression test asserting no colour literal survives in the rebuilt surfaces.
+- `SystemSheet` and `HoursSheet` scroll and clip. They previously had no bottom
+  anchor, so at the largest journal font their content ran off the drawer with
+  nothing to reveal it.
+
 ### Added
 
 - `tools/compare_ui_baselines.py`, which compares two baseline directories on peak per-channel
