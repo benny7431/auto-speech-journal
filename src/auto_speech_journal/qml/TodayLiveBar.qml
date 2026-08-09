@@ -44,35 +44,56 @@ Item {
         NumberAnimation { duration: 260; easing.type: Easing.OutCubic }
     }
 
-    component LiveButton: Button {
-        id: control
-        property bool emphasized: false
+    /* The one action of the bar: start or stop listening. */
+    component PrimaryButton: Button {
+        id: primary
         readonly property bool contentWidthGuard: true
-        implicitHeight: 34
-        implicitWidth: Math.max(72, label.implicitWidth + 24)
-        leftPadding: root.dense ? 8 : 12
-        rightPadding: leftPadding
-        flat: !emphasized
+        implicitHeight: 36
+        implicitWidth: Math.max(96, primaryLabel.implicitWidth + 32)
         font.family: root.systemFontFamily
-        font.pixelSize: root.px(13)
+        font.pixelSize: root.px(14)
 
         contentItem: Text {
-            id: label
-            text: control.text
-            color: control.emphasized ? Theme.paperRaised : Theme.inkBody
-            font: control.font
+            id: primaryLabel
+            text: primary.text
+            color: primary.enabled ? Theme.paperRaised : Theme.inkFaint
+            font: primary.font
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
         }
         background: Rectangle {
             radius: Theme.radiusSm
-            color: control.emphasized
-                   ? (control.down ? Theme.accentDeep : Theme.accent)
-                   : (control.down ? Theme.wash(Theme.accent, 0.14)
-                                   : control.hovered ? Theme.wash(Theme.accent, 0.08)
-                                                     : Theme.paperRaised)
-            border.width: control.emphasized ? 0 : Theme.hairline
-            border.color: Theme.line
+            color: !primary.enabled ? Theme.paperSunken
+                   : primary.down ? Theme.accentDeep : Theme.accent
+        }
+    }
+
+    /* Ways into the drawer. These are navigation, not actions, so they carry no
+     * chrome at all - four outlined buttons beside a filled one read as five
+     * equal choices and flattened the whole bar. */
+    component ToolButton: Button {
+        id: tool
+        readonly property bool contentWidthGuard: true
+        implicitHeight: 30
+        implicitWidth: Math.max(46, toolLabel.implicitWidth + leftPadding + rightPadding)
+        leftPadding: root.dense ? 5 : 9
+        rightPadding: leftPadding
+        flat: true
+        font.family: root.systemFontFamily
+        font.pixelSize: root.px(13)
+
+        contentItem: Text {
+            id: toolLabel
+            text: tool.text
+            color: tool.down ? Theme.ink : Theme.inkMuted
+            font: tool.font
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+        }
+        background: Rectangle {
+            radius: Theme.radiusSm
+            color: tool.down ? Theme.wash(Theme.ink, 0.10)
+                   : tool.hovered ? Theme.wash(Theme.ink, 0.05) : "transparent"
         }
     }
 
@@ -153,41 +174,49 @@ Item {
             anchors.right: parent.right
             anchors.rightMargin: Theme.spaceLg
             anchors.verticalCenter: parent.verticalCenter
-            spacing: Theme.spaceXs
+            spacing: 0
 
-            LiveButton {
+            ToolButton {
                 objectName: "settingsButton"
                 text: "設定"
                 onClicked: root.openSheet("settings")
             }
-            LiveButton {
+            ToolButton {
                 objectName: "systemButton"
                 text: "狀態"
                 onClicked: root.openSheet("system")
             }
-            LiveButton {
+            ToolButton {
                 objectName: "vocabularyButton"
                 text: "字典"
                 onClicked: root.openSheet("vocabulary")
             }
-            LiveButton {
+            ToolButton {
                 objectName: "hoursButton"
                 text: "時段"
                 onClicked: root.openSheet("hours")
             }
+
+            Rectangle {
+                Layout.leftMargin: Theme.spaceMd
+                Layout.rightMargin: Theme.spaceMd
+                Layout.preferredWidth: Math.max(1, Theme.hairline)
+                Layout.preferredHeight: 20
+                Layout.alignment: Qt.AlignVCenter
+                color: Theme.line
+            }
+
             Item {
                 objectName: "primaryActionRow"
                 Layout.preferredWidth: pauseButton.implicitWidth
                 Layout.preferredHeight: pauseButton.implicitHeight
-                Layout.leftMargin: Theme.spaceSm
 
-                LiveButton {
+                PrimaryButton {
                     id: pauseButton
                     objectName: "expandedPauseButton"
                     anchors.fill: parent
-                    emphasized: true
                     enabled: root.journal.recordingControlsEnabled
-                    text: root.journal.paused ? "繼續聽" : "暫停錄音"
+                    text: root.journal.paused ? "繼續聆聽" : "暫停錄音"
                     onClicked: root.journal.togglePause()
                 }
             }

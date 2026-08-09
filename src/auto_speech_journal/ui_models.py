@@ -409,6 +409,12 @@ class TimelineListModel(QAbstractListModel):
     def hasActiveEdit(self) -> bool:
         return bool(self._editing_id)
 
+    @Property(str, notify=countChanged)
+    def lastHourLabel(self) -> str:
+        """The hour of the most recent row, so the view can draw the rest of the day."""
+
+        return self._rows[-1].hour_label if self._rows else ""
+
     def replace_rows(self, rows: Sequence[_TimelineRow]) -> int:
         previous_ids = {row.segment_id for row in self._rows}
         valid_ids = {row.segment_id for row in rows}

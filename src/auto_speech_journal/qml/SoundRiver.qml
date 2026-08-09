@@ -7,7 +7,7 @@ import "."
  * Today's saved segments, as a list of cards grouped under collapsible hours.
  *
  * Collapse lives here rather than in the model. The model stays a flat list of
- * segments, so `positionViewAtEnd` and the scroll-preservation handshake below
+ * segments, so the jump-to-latest and scroll-preservation handshake below
  * keep working unchanged; a collapsed hour simply reports zero height for its
  * rows while its header stays visible.
  */
@@ -33,6 +33,24 @@ Item {
         return Math.max(1, Math.round(size * fontScale))
     }
 
+    /*
+     * The next few hours after the newest entry, as a hint that the day is still
+     * open. Deliberately not every hour to midnight: fourteen empty rules is both
+     * over-literal and long enough to dominate the scroll extent, which pushed
+     * the actual entries off the top when jumping to the latest one.
+     */
+    readonly property int upcomingHourCount: 3
+    readonly property var remainingHours: {
+        const last = journal.timelineModel.lastHourLabel
+        if (!last)
+            return []
+        const start = parseInt(last.slice(0, 2)) + 1
+        const hours = []
+        for (let hour = start; hour <= Math.min(23, start + upcomingHourCount - 1); ++hour)
+            hours.push(("0" + hour).slice(-2) + ":00")
+        return hours
+    }
+
     function isCollapsed(hourLabel) {
         return collapsedHours[hourLabel] === true
     }
@@ -47,8 +65,13 @@ Item {
         collapsedHours = next
     }
 
+    /*
+     * The newest entry, not the end of the content. The footer draws the hours
+     * still to come, so positioning at the end of the view would scroll the whole
+     * day off the top and land the reader on empty rules.
+     */
     function positionAtLatest() {
-        timelineList.positionViewAtEnd()
+        timelineList.positionViewAtIndex(timelineList.count - 1, ListView.End)
         userScrolledBack = false
         newSegmentsPill.visible = false
     }
@@ -59,7 +82,7 @@ Item {
         newSegmentsPill.visible = false
         journal.showAboutToOpen()
         Qt.callLater(function() {
-            timelineList.positionViewAtEnd()
+            root.positionAtLatest()
             timelineWasOpened = true
         })
     }
@@ -87,7 +110,7 @@ Item {
             const preservePosition = root.userScrolledBack ||
                                      root.journal.timelineModel.hasActiveEdit
             if (!root.timelineWasOpened || !preservePosition) {
-                Qt.callLater(function() { timelineList.positionViewAtEnd() })
+                Qt.callLater(function() { root.positionAtLatest() })
                 return
             }
 
@@ -121,7 +144,7 @@ Item {
             text: "今日聲跡"
             color: Theme.inkStrong
             font.family: root.diaryFontFamily
-            font.pixelSize: root.px(22)
+            font.pixelSize: root.px(26)
             font.weight: Font.DemiBold
         }
 
@@ -166,6 +189,52 @@ Item {
                 onSaveEdit: function(segmentId) { root.journal.saveEdit(segmentId) }
                 onCancelEdit: function(segmentId) { root.journal.cancelEdit(segmentId) }
                 onToggleHour: function(hourLabel) { root.toggleHour(hourLabel) }
+            }
+
+            /*
+             * The hours still ahead, drawn as empty rules. Without them the page
+             * simply stops and the rest of the window reads as a rendering bug
+             * rather than as a day that is not over yet.
+             */
+            footer: Column {
+                width: timelineList.width
+                visible: timelineList.count > 0
+                topPadding: Theme.spaceSm
+
+                Repeater {
+                    model: root.remainingHours
+
+                    delegate: Item {
+                        id: futureHour
+                        required property var modelData
+                        readonly property real gutter: Math.round(
+                            64 * Math.min(root.fontScale, 1.35)
+                        )
+                        width: timelineList.width
+                        height: Math.round(root.px(16) + 26)
+
+                        Text {
+                            anchors.left: parent.left
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: futureHour.gutter - Theme.spaceSm
+                            horizontalAlignment: Text.AlignRight
+                            text: futureHour.modelData
+                            color: Theme.inkFaint
+                            opacity: 0.5
+                            font.family: root.systemFontFamily
+                            font.pixelSize: root.px(13)
+                        }
+                        Rectangle {
+                            anchors.left: parent.left
+                            anchors.leftMargin: futureHour.gutter
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            height: Math.max(1, Theme.hairline)
+                            color: Theme.lineSoft
+                            opacity: 0.6
+                        }
+                    }
+                }
             }
 
             Text {
