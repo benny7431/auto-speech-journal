@@ -72,7 +72,7 @@ Face；日常錄音不需要把音訊或文字送到雲端。
 | 容易帶走 | 預設輸出一般 Markdown，不綁定專用閱讀器 |
 | 麥克風可切換 | 可固定使用某個 WASAPI 端點，或跟隨 Windows 預設，切換不需重開 App |
 | 選用登入自啟 | 首次設定明確同意後，才建立指向已安裝 App 的個人工作排程 |
-| 離線視覺 | 月份、狀態場景與粒子效果隨程式安裝，執行時不呼叫生成式影像服務 |
+| 離線視覺 | 介面只用紙面、字體與月份色調呈現，執行時不呼叫生成式影像服務 |
 
 ## 快速開始
 
@@ -285,7 +285,6 @@ uv run --no-sync pytest --cov=auto_speech_journal --cov-report=term-missing `
 uv run --no-sync ruff check src tests tools
 uv run --no-sync python -m auto_speech_journal self-test `
   --no-model-check --no-microphone-check
-uv run --no-sync python tools/validate_scene_assets.py --strict
 uv build
 uv run --no-sync python tools/verify_wheel_contents.py
 uv run --no-sync pre-commit run --all-files
@@ -293,7 +292,7 @@ uv run --no-sync python tools/render_readme_demo.py
 ```
 
 完整說明請見 [建置文件](docs/BUILDING.md)。`tools/replay_fault_recovery.py` 可重播當機
-邊界；場景、Demo 與打包 QA 工具集中在 `tools/`。
+邊界；基準圖、Demo 與打包 QA 工具集中在 `tools/`。
 
 <details>
 <summary><strong>專案結構</strong></summary>
@@ -307,11 +306,11 @@ src/auto_speech_journal/
 ├── preview_engine.py          # Sherpa-ONNX 串流預覽
 ├── finalizer_engine.py        # Faster-Whisper 最終辨識
 ├── storage.py, exporter.py    # SQLite 與 Markdown 匯出
-└── qml/, assets/              # 介面與離線視覺資產
+└── qml/, assets/              # 介面與品牌資產
 
 tests/                         # Pytest 回歸測試
 packaging/                     # PyInstaller、Inno Setup 與最小發布驗證
-tools/                         # 復原、資產、效能與打包 QA
+tools/                         # 復原、基準圖、效能與打包 QA
 install.ps1, uninstall.ps1     # 進階 source/CUDA 安裝與救援流程
 ```
 

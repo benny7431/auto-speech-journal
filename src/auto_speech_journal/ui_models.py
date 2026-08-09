@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import math
 import os
 import sys
@@ -11,7 +10,6 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import datetime
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -43,7 +41,6 @@ from .config import (
     MicrophoneSelection,
 )
 from .paths import AppPaths
-from .scene_assets import validate_runtime_scenes
 
 COMPACT_WIDTH = 440
 COMPACT_HEIGHT = 190
@@ -58,22 +55,7 @@ MICROPHONE_TEST_TIMEOUT_MS = 3_000
 SCENE_HOLD_SECONDS = 2.0
 SPI_GETCLIENTAREAANIMATION = 0x1042
 FONT_DIRECTORY_ENV = "AUTO_SPEECH_JOURNAL_FONT_DIR"
-SCENE_DIRECTORY_ENV = "AUTO_SPEECH_JOURNAL_SCENE_DIR"
 SUPPORTED_FONT_SUFFIXES = frozenset({".ttf", ".otf"})
-SCENE_STATE_KEYS = frozenset(
-    {
-        "starting",
-        "listening",
-        "capturing",
-        "finalizing",
-        "paused",
-        "degraded",
-        "error",
-        "stopped",
-    }
-)
-SCENE_MONTH_KEYS = frozenset(f"{value:02d}" for value in range(1, 13))
-SCENE_VARIANTS = frozenset({"compact", "workspace"})
 
 TAIPEI = ZoneInfo("Asia/Taipei")
 WEEKDAYS = ("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")
@@ -108,67 +90,6 @@ FONT_FAMILY_DISPLAY_NAMES = {
     "新蒂逍遙遊": "新蒂逍遙遊",
     "LXGW WenKai TC": "霞鶩文楷 TC v1.522",
 }
-
-
-def _packaged_variant_matrix_ready(directory: Path) -> bool:
-    """Keep partial v2 migrations dormant; prototypes use the explicit env root."""
-    manifest_path = directory / "manifest.json"
-    try:
-        manifest_stat = manifest_path.stat()
-    except OSError:
-        return False
-    return _packaged_variant_matrix_ready_cached(
-        directory.resolve(),
-        manifest_stat.st_mtime_ns,
-        manifest_stat.st_size,
-        validate_runtime_scenes,
-    )
-
-
-@lru_cache(maxsize=8)
-def _packaged_variant_matrix_ready_cached(
-    directory: Path,
-    _manifest_mtime_ns: int,
-    _manifest_size: int,
-    validator: Callable[..., list[str]],
-) -> bool:
-    try:
-        manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return False
-    if (
-        not isinstance(manifest, dict)
-        or manifest.get("schema_version") != 2
-        or manifest.get("asset_count") != 192
-    ):
-        return False
-    assets = manifest.get("assets")
-    if not isinstance(assets, list) or len(assets) != 192:
-        return False
-    keys: set[tuple[str, str, str]] = set()
-    for asset in assets:
-        if not isinstance(asset, dict) or asset.get("status") != "ready":
-            continue
-        month, state, variant = (
-            asset.get("month"),
-            asset.get("state"),
-            asset.get("variant"),
-        )
-        if (
-            isinstance(month, str)
-            and month in SCENE_MONTH_KEYS
-            and isinstance(state, str)
-            and state in SCENE_STATE_KEYS
-            and isinstance(variant, str)
-            and variant in SCENE_VARIANTS
-        ):
-            keys.add((month, state, variant))
-    if len(keys) != 192:
-        return False
-    # The installer and release gate perform full image decoding. The UI repeats
-    # the matrix, header and digest checks once per manifest revision so startup
-    # never blocks on decoding 192 large backgrounds.
-    return not validator(strict=True, root=directory, decode_images=False)
 
 
 def _font_directories() -> tuple[Path, ...]:
@@ -876,58 +797,6 @@ class JournalViewModel(QObject):
     def sceneKey(self) -> str:
         return self._scene_key
 
-    @Property(QUrl, notify=sceneChanged)
-    def compactSceneSource(self) -> QUrl:
-        return self._scene_source("compact")
-
-    @Property(QUrl, notify=sceneChanged)
-    def workspaceSceneSource(self) -> QUrl:
-        return self._scene_source("workspace")
-
-    @Property(QUrl, notify=sceneChanged)
-    def sceneSource(self) -> QUrl:
-        """Legacy alias retained for compact clients built against the v1 UI."""
-        return self.compactSceneSource
-
-    def _scene_source(self, variant: str) -> QUrl:
-        stem = f"{self._day.month:02d}-{self._scene_key}"
-        filename = f"{stem}-{variant}.webp"
-        month_directory = f"month-{self._day.month:02d}"
-        package_root = Path(__file__).resolve().parent
-        packaged_scene_root = package_root / "assets" / "scenes"
-
-        candidates: list[Path] = []
-        prototype_root = os.environ.get(SCENE_DIRECTORY_ENV, "").strip()
-        if prototype_root:
-            root = Path(prototype_root).expanduser().resolve(strict=False)
-            candidates.extend(
-                (
-                    root / filename,
-                    root / variant / f"{stem}.webp",
-                    root / month_directory / filename,
-                    root / month_directory / variant / f"{stem}.webp",
-                )
-            )
-
-        if _packaged_variant_matrix_ready(packaged_scene_root):
-            candidates.extend(
-                (
-                    packaged_scene_root / filename,
-                    packaged_scene_root / variant / f"{stem}.webp",
-                )
-            )
-        # Keep legacy paths as a last-resort fallback for incomplete development
-        # checkouts; production packages use the validated v2 candidates above.
-        candidates.extend(
-            (
-                packaged_scene_root / f"{stem}.webp",
-                package_root / "assets" / f"{stem}.webp",
-            )
-        )
-        for candidate in candidates:
-            if candidate.is_file():
-                return QUrl.fromLocalFile(str(candidate))
-        return QUrl()
 
     @Property(str, notify=dateChanged)
     def dateLabel(self) -> str:

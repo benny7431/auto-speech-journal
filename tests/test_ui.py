@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
@@ -659,14 +658,12 @@ def test_midnight_refresh_rolls_date_timeline_and_month_scene(journal_window):
 
     assert view_model.dayKey == "2026-07-31"
     assert view_model.monthLabel == "7 月聲景"
-    assert view_model.sceneSource.toLocalFile().endswith("07-listening-compact.webp")
 
     now[0] = datetime(2026, 8, 1, 0, 0, 1, tzinfo=ZoneInfo("Asia/Taipei"))
     view_model.refresh()
 
     assert view_model.dayKey == "2026-08-01"
     assert view_model.monthLabel == "8 月聲景"
-    assert view_model.sceneSource.toLocalFile().endswith("08-listening-compact.webp")
 
 
 def test_qml_window_switches_between_compact_and_centered_workspace(journal_window, qtbot):
@@ -680,7 +677,6 @@ def test_qml_window_switches_between_compact_and_centered_workspace(journal_wind
     assert window.flags() & Qt.WindowType.WindowStaysOnTopHint
     assert view_model._poll_timer.interval() == POLL_INTERVAL_MS
     assert window.findChild(QObject, "compactContent").property("visible") is True
-    assert window.findChild(QObject, "compactScene").property("cropMode") is True
     compact_mask = window.mask()
     assert window._rounded_corner_backend in {"dwm", "mask"}
     if window._rounded_corner_backend == "dwm":
@@ -708,7 +704,6 @@ def test_qml_window_switches_between_compact_and_centered_workspace(journal_wind
     assert window.maximumWidth() >= window.minimumWidth()
     assert window.maximumHeight() >= window.minimumHeight()
     assert window.findChild(QObject, "timelineList") is not None
-    assert window.findChild(QObject, "workspaceScene").property("cropMode") is True
     assert window.findChild(QObject, "settingsButton") is not None
     assert window.findChild(QObject, "hoursButton") is not None
     expanded_mask = window.mask()
@@ -732,12 +727,10 @@ def test_qml_window_switches_between_compact_and_centered_workspace(journal_wind
         assert window.mask().boundingRect() == QRect(0, 0, COMPACT_WIDTH, COMPACT_HEIGHT)
 
 
-def test_redesigned_workspace_uses_full_bleed_scene_and_single_river(
+def test_redesigned_workspace_uses_plain_paper_and_single_river(
     journal_window, qtbot
 ):
     window, _, _ = journal_window
-    compact_content = window.findChild(QObject, "compactContent")
-    compact_scene = window.findChild(QObject, "compactScene")
     compact_info = window.findChild(QObject, "compactInfo")
     compact_action_row = window.findChild(QObject, "compactActionRow")
     compact_backlog = window.findChild(QObject, "compactBacklogText")
@@ -747,22 +740,15 @@ def test_redesigned_workspace_uses_full_bleed_scene_and_single_river(
     close_button = window.findChild(QObject, "closeButton")
     qtbot.wait(20)
 
-    assert float(compact_scene.property("x")) == pytest.approx(0.0, abs=0.5)
     assert float(title_bar.property("height")) == pytest.approx(38.0, abs=0.5)
     assert title_bar.property("color").alpha() == 0
-    assert float(compact_scene.property("y")) == pytest.approx(
-        -float(title_bar.property("height")), abs=0.5
-    )
-    assert float(compact_scene.property("width")) == pytest.approx(242.0, abs=0.5)
-    assert float(compact_scene.property("height")) == pytest.approx(
-        float(compact_content.property("height")) + float(title_bar.property("height")),
-        abs=0.5,
-    )
     assert brand_icon.property("source").toLocalFile().endswith("journal-ink-icon.png")
     assert window.findChild(QObject, "minimizeButton") is None
     assert close_button.property("text") == "×"
-    assert float(compact_info.property("x")) == pytest.approx(146.0, abs=0.5)
-    assert float(compact_info.property("width")) == pytest.approx(286.0, abs=0.5)
+    # The scene strip used to take the left 242px; the text column now owns the
+    # whole window width minus a symmetric gutter.
+    assert float(compact_info.property("x")) == pytest.approx(14.0, abs=0.5)
+    assert float(compact_info.property("width")) == pytest.approx(412.0, abs=0.5)
     assert window.findChild(QObject, "compactStatusMark") is None
     assert window.findChild(QObject, "compactStateText") is None
     assert window.findChild(QObject, "compactStatusMessage") is None
@@ -791,7 +777,6 @@ def test_redesigned_workspace_uses_full_bleed_scene_and_single_river(
     primary_actions = window.findChild(QObject, "primaryActionRow")
     secondary_actions = window.findChild(QObject, "secondaryActionRow")
     expanded_content = window.findChild(QObject, "expandedContent")
-    workspace_scene = window.findChild(QObject, "workspaceScene")
     live_bar = window.findChild(QObject, "todayLiveBar")
     workspace_status = window.findChild(QObject, "workspaceStatusRow")
     workspace_state = window.findChild(QObject, "workspaceStateText")
@@ -804,9 +789,6 @@ def test_redesigned_workspace_uses_full_bleed_scene_and_single_river(
     assert float(title_bar.property("height")) == pytest.approx(50.0, abs=0.5)
     assert float(expanded_content.property("y")) == pytest.approx(0.0, abs=0.5)
     assert float(paper_spread.property("y")) == pytest.approx(0.0, abs=0.5)
-    assert float(workspace_scene.property("height")) == pytest.approx(
-        float(paper_spread.property("height")), abs=0.5
-    )
     assert close_button.property("text") == "×"
 
     assert live_trace is not None
@@ -1004,37 +986,6 @@ def test_live_bar_collapses_when_only_waiting_placeholder_remains(journal_window
     assert live_bar.property("hasPartial") is False
     assert float(live_bar.property("implicitHeight")) < expanded_height
     assert window.findChild(QObject, "workspaceLiveLabel").property("text") == "即時預覽"
-
-
-def test_pigment_absorption_uses_blooms_instead_of_wave_animation() -> None:
-    source = (
-        Path(__file__).resolve().parents[1]
-        / "src"
-        / "auto_speech_journal"
-        / "qml"
-        / "PigmentAbsorption.qml"
-    ).read_text(encoding="utf-8")
-
-    assert "Math.sin" not in source
-    assert "NumberAnimation on phase" not in source
-    assert "loops: Animation.Infinite" not in source
-
-
-def test_scene_art_has_no_pointer_driven_parallax() -> None:
-    qml_dir = (
-        Path(__file__).resolve().parents[1] / "src" / "auto_speech_journal" / "qml"
-    )
-    scene_source = (qml_dir / "SceneArt.qml").read_text(encoding="utf-8")
-    caller_source = "\n".join(
-        (qml_dir / filename).read_text(encoding="utf-8")
-        for filename in ("JournalWindow.qml", "TodayWorkspace.qml")
-    )
-
-    assert "HoverHandler" not in scene_source
-    assert "parallaxX" not in scene_source
-    assert "parallaxY" not in scene_source
-    assert "maximumParallax" not in scene_source
-    assert "maximumParallax" not in caller_source
 
 
 def test_timeline_model_groups_hours_and_preserves_active_draft(journal_window):
@@ -1419,10 +1370,9 @@ def test_native_close_collapses_workspace_then_minimizes_compact(journal_window,
     window.close()
     qtbot.wait(40)
     assert window.visibility() == QWindow.Visibility.Minimized
-    assert window.findChild(QObject, "compactScene").property("motionEnabled") is False
 
 
-def test_one_hundred_expand_collapse_cycles_do_not_duplicate_ambient_layer(
+def test_one_hundred_expand_collapse_cycles_do_not_duplicate_the_workspace(
     journal_window,
 ):
     window, _, _ = journal_window
@@ -1434,13 +1384,9 @@ def test_one_hundred_expand_collapse_cycles_do_not_duplicate_ambient_layer(
         view_model.collapseToCompact()
         QApplication.processEvents()
 
-    ambient_layers = window.findChildren(QObject, "ambientSoundRiver")
-    fallback_motes = window.findChildren(QObject, "softwareRiverMote")
     assert view_model.expanded is False
-    assert len(ambient_layers) == 1
-    assert len(fallback_motes) <= int(ambient_layers[0].property("fallbackMoteCount"))
-    assert ambient_layers[0].property("particleLayerLoaded") is False
-    assert ambient_layers[0].property("fallbackAnimationRunning") is False
+    assert len(window.findChildren(QObject, "todayWorkspace")) == 1
+    assert len(window.findChildren(QObject, "timelineList")) == 1
 
 
 def test_compact_position_is_persisted_independently(journal_window):

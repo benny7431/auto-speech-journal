@@ -36,7 +36,6 @@ from auto_speech_journal.ui import (  # noqa: E402
     _configure_application,
     _create_main_window,
 )
-from auto_speech_journal.ui_models import SCENE_DIRECTORY_ENV  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT / "artifacts" / "ui-baselines"
@@ -367,11 +366,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--month", type=int, choices=range(1, 13), default=1)
     parser.add_argument(
-        "--scene-dir",
-        type=Path,
-        help="optional v2 prototype scene root used through the runtime override",
-    )
-    parser.add_argument(
         "--gate-matrix",
         action="store_true",
         help="also render compact font and workspace size/font/long-text gate cases",
@@ -382,8 +376,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="render only the size/font/long-text gate cases",
     )
     args = parser.parse_args(argv)
-    if args.scene_dir is not None:
-        os.environ[SCENE_DIRECTORY_ENV] = str(args.scene_dir.resolve())
     outputs = (
         []
         if args.gate_matrix_only

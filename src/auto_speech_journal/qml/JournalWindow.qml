@@ -353,37 +353,10 @@ ApplicationWindow {
             anchors.bottom: parent.bottom
             visible: !journal.expanded
 
-            SceneArt {
-                id: compactArt
-                objectName: "compactScene"
-                anchors.left: parent.left
-                y: -titleBar.height
-                width: 242
-                height: parent.height + titleBar.height
-                sceneSource: journal.compactSceneSource
-                sceneKey: journal.sceneKey
-                cropMode: true
-                stabilizeStates: false
-                paperColor: shell.color
-                monthTint: window.monthTint
-                featherRight: true
-                featherBottom: false
-                rightFeatherStart: 0.52
-                reducedMotion: journal.reducedMotion
-                motionEnabled: window.motionAllowed && !journal.expanded
-            }
-
             Rectangle {
-                x: 0
-                y: -titleBar.height
-                width: parent.width
-                height: titleBar.height + 14
-                z: 1
-                gradient: Gradient {
-                    GradientStop { position: 0.0; color: "#EAF4EEE3" }
-                    GradientStop { position: 0.68; color: "#A8F4EEE3" }
-                    GradientStop { position: 1.0; color: "#00F4EEE3" }
-                }
+                anchors.fill: parent
+                color: window.monthTint
+                opacity: 0.05
             }
 
             Item {
@@ -391,9 +364,9 @@ ApplicationWindow {
                 objectName: "compactInfo"
                 z: 2
                 anchors.left: parent.left
-                anchors.leftMargin: journal.uiFontScale > 1.4 ? 136 : 146
+                anchors.leftMargin: 14
                 anchors.right: parent.right
-                anchors.rightMargin: 8
+                anchors.rightMargin: 14
                 anchors.top: parent.top
                 anchors.bottom: parent.bottom
 
@@ -428,21 +401,6 @@ ApplicationWindow {
                     font.pixelSize: window.fontPx(15)
                     lineHeight: 1.18
                     verticalAlignment: Text.AlignTop
-                }
-
-                PigmentAbsorption {
-                    x: 0
-                    y: 92
-                    width: parent.width
-                    height: 16
-                    z: 1
-                    audioLevel: journal.audioLevel
-                    vadActive: journal.speechActive
-                    washColor: "#789682"
-                    maximumOpacity: 0.06
-                    centerRatio: 0.5
-                    reducedMotion: journal.reducedMotion
-                    motionEnabled: window.motionAllowed && !journal.expanded
                 }
 
                 RowLayout {

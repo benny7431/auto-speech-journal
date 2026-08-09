@@ -75,7 +75,7 @@ or transcripts to a cloud service.
 | Portable output | Journals are ordinary Markdown files and do not require a proprietary reader |
 | Switchable microphone | Pin a WASAPI endpoint or follow the Windows default without restarting the app |
 | Optional sign-in startup | The first-run wizard creates a per-user task pointing to the installed App only after explicit consent |
-| Offline visuals | Monthly scenes, status scenes, and particle effects ship with the application and do not call generative image services at runtime |
+| Offline visuals | The interface is drawn from paper, type, and a monthly tint alone, and never calls a generative image service at runtime |
 
 ## Quick start
 
@@ -309,7 +309,6 @@ uv run --no-sync pytest --cov=auto_speech_journal --cov-report=term-missing `
 uv run --no-sync ruff check src tests tools
 uv run --no-sync python -m auto_speech_journal self-test `
   --no-model-check --no-microphone-check
-uv run --no-sync python tools/validate_scene_assets.py --strict
 uv build
 uv run --no-sync python tools/verify_wheel_contents.py
 uv run --no-sync pre-commit run --all-files
@@ -317,7 +316,7 @@ uv run --no-sync python tools/render_readme_demo.py
 ```
 
 See [Building](docs/BUILDING.md) for the complete workflow. `tools/replay_fault_recovery.py`
-replays crash boundaries; scene, demo, and packaging QA tools are under `tools/`.
+replays crash boundaries; baseline, demo, and packaging QA tools are under `tools/`.
 
 <details>
 <summary><strong>Project structure</strong></summary>
@@ -331,7 +330,7 @@ src/auto_speech_journal/
 ├── preview_engine.py          # Sherpa-ONNX streaming preview
 ├── finalizer_engine.py        # Faster-Whisper final recognition
 ├── storage.py, exporter.py    # SQLite and Markdown export
-└── qml/, assets/              # Interface and offline visual assets
+└── qml/, assets/              # Interface and brand assets
 
 tests/                         # Pytest regression tests
 packaging/                     # PyInstaller, Inno Setup, and minimal release validation
