@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .text_normalize import NormalizerFactory, OpenCcTextNormalizer
 from .transcript_quality import is_pathological_repetition
 from .types import CapturedSegment, FinalResult
 
@@ -22,7 +23,6 @@ class FinalizerEngineError(RuntimeError):
 
 
 ModelFactory = Callable[[str, str, str], Any]
-NormalizerFactory = Callable[[], Any]
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,13 +85,14 @@ class FasterWhisperFinalizer:
         self.deadline_ms = deadline_ms
         self.beam_size = beam_size
         self._model_factory = model_factory
-        self._normalizer_factory = normalizer_factory
+        self._normalizer = OpenCcTextNormalizer(
+            normalizer_factory, error_type=FinalizerEngineError
+        )
         self._monotonic = monotonic
         self._model: Any | None = None
         self._device = ""
         self._compute_type = ""
         self._dll_handles: list[Any] = []
-        self._normalizer: Any | None = None
         self._hotwords: tuple[str, ...] = ()
         self.last_fallback_reason: str | None = None
         self.last_deadline_exceeded = False
@@ -192,17 +193,10 @@ class FasterWhisperFinalizer:
             return text
 
     def _normalize(self, text: str) -> str:
-        if self._normalizer is None:
-            if self._normalizer_factory is not None:
-                self._normalizer = self._normalizer_factory()
-            else:
-                try:
-                    opencc = importlib.import_module("opencc")
-                except ImportError as exc:  # pragma: no cover - packaging failure
-                    raise FinalizerEngineError("OpenCC is not installed") from exc
-                self._normalizer = opencc.OpenCC("s2tw")
-        converter = getattr(self._normalizer, "convert", self._normalizer)
-        return str(converter(text)).strip()
+        # No empty-text shortcut here: ``transcribe`` already rejects a blank
+        # transcription before this point, so a missing OpenCC must still
+        # surface as a normalization failure rather than a silent "".
+        return self._normalizer.normalize(text)
 
     def _profile(self) -> str:
         profile = f"faster-whisper:{self._device}:{self._compute_type}:s2tw"
