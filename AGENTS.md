@@ -32,6 +32,29 @@ Use Pytest; name files `test_<area>.py` and cases `test_<behavior>`. Add focused
 
 The canonical public repository is `https://github.com/benny7431/auto-speech-journal`, configured locally as `origin`. The project has already been published there; GitHub is the shared source of truth for completed work, while SQLite remains the runtime authority for journal data.
 
-Use short imperative subjects, preferably Conventional Commits (for example, `fix: preserve spool recovery state`). Keep commits focused and include related tests. Pull requests should summarize behavior changes, list validation commands, note persistence or installation risks, link relevant issues, and include screenshots for UI changes.
+Write all human-authored Git and GitHub collaboration content in Traditional Chinese, including commit subjects and bodies, pull request titles and descriptions, review comments and replies, issue comments, and release notes. Keep code identifiers, command names, file paths, URLs, and Conventional Commit type or scope prefixes in their original form when needed. Use short imperative subjects, preferably Conventional Commits (for example, `fix: 保留暫存佇列復原狀態`). Keep commits focused and include related tests. Pull requests should summarize behavior changes, list validation commands, note persistence or installation risks, link relevant issues, and include screenshots for UI changes.
 
 Every major update MUST be committed and pushed to GitHub after its required validation passes. A major update includes a version milestone or substantial user-visible, architectural, persistence, installer, model-pipeline, or release-process change. Do not treat such work as complete while it exists only in the local worktree. Push it on a `codex/` branch, open a pull request, wait for required CI and CodeQL checks, and merge it into `main`. For a versioned release, also update the version and `CHANGELOG.md`, then create and push the corresponding release tag according to `docs/RELEASING.md`.
+
+After every pull request is merged on GitHub, the workflow is not complete until the local `main` is synchronized. Preserve any uncommitted changes first, then fetch `origin`, switch to the local `main`, fast-forward it with `git merge --ff-only origin/main`, and verify that `git rev-parse main` and `git rev-parse origin/main` return the same SHA. Do not end the session on a merged feature branch or a stale local `main`.
+
+## Session Handover
+
+Local working notes live in `工作筆記/` at the repository root. The whole directory is untracked and excluded by `.gitignore`; never commit anything inside it and never include it in a pull request. Write every file there in Traditional Chinese.
+
+At the end of every working session, rewrite both `工作筆記/事務交接.md` and `工作筆記/交接提示詞.md`. Do this unconditionally: write them even when the work is finished, even when nothing is being handed to anyone, and even when the next session is expected to be the same agent. The point is that the state of the work is never only in one agent's context.
+
+`工作筆記/事務交接.md` records what the next agent cannot reconstruct from the code and Git history alone:
+
+- Branch, base commit, HEAD, and how far ahead of `main` the work is.
+- Every commit in the session, oldest first, with a one-line purpose, and an explicit note for any commit that is a superseded intermediate step kept on purpose.
+- Which validation commands were actually run and their real results, stated as numbers. Distinguish what was verified from what was only assumed.
+- What was deliberately left undone, and why, separately from what simply was not reached.
+- Decisions that belong to the user rather than to an agent, with the conflicting evidence laid out instead of a guessed default.
+- Defects found in existing code along the way, whether or not they were fixed.
+
+`工作筆記/交接提示詞.md` is a single prompt that can be pasted into a fresh agent with no other context. State the task, point at `工作筆記/事務交接.md`, name the questions to ask the user before acting, and set explicit boundaries for what must not be changed, re-designed, squashed, or rewritten.
+
+Both files describe the state at the moment the session ended. Rewrite them; do not append to a previous session's copy.
+
+`工作筆記/構想與待辦.md` is a running backlog rather than a per-session file: ideas, deferred work, known limits, engineering debt, and the project's longer-term direction. Append to it whenever something surfaces that cannot or should not be done now; never rewrite it wholesale. Move finished items to the completed section with their version, and move rejected ones to the rejected section with a one-line reason instead of deleting them.
