@@ -2,19 +2,19 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import threading
 import time
 import urllib.error
 import urllib.request
-import uuid
 import webbrowser
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Protocol
 from urllib.parse import urlparse
+
+from .atomic_io import write_json_atomic
 
 DEFAULT_REPOSITORY = "benny7431/auto-speech-journal"
 DEFAULT_INTERVAL_SECONDS = 24 * 60 * 60
@@ -69,20 +69,6 @@ def _safe_release_url(value: object, repository: str) -> str | None:
     ):
         return value
     return None
-
-
-def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + f".{uuid.uuid4().hex}.tmp")
-    try:
-        with temporary.open("w", encoding="utf-8", newline="\n") as handle:
-            json.dump(payload, handle, ensure_ascii=True, indent=2)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 def _result_from_dict(raw: object) -> UpdateCheckResult | None:
@@ -155,7 +141,7 @@ class ReleaseCheckService:
 
     def _save_state(self, result: UpdateCheckResult) -> None:
         try:
-            _atomic_write_json(self.state_file, asdict(result))
+            write_json_atomic(self.state_file, asdict(result), ensure_ascii=True)
         except OSError:
             LOGGER.exception("Unable to persist update-check throttle state")
 
