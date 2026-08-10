@@ -9,13 +9,14 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "install.ps1"
 UNINSTALLER = ROOT / "uninstall.ps1"
+APP_CONTROL = ROOT / "app-control.ps1"
 
 
 def _source(path: Path) -> str:
     return path.read_text(encoding="utf-8-sig")
 
 
-@pytest.mark.parametrize("script", [INSTALLER, UNINSTALLER])
+@pytest.mark.parametrize("script", [INSTALLER, UNINSTALLER, APP_CONTROL])
 def test_windows_powershell_scripts_are_ps51_utf8_bom_and_parseable(script: Path) -> None:
     assert script.read_bytes().startswith(b"\xef\xbb\xbf")
     powershell = shutil.which("powershell.exe")
@@ -36,6 +37,29 @@ def test_windows_powershell_scripts_are_ps51_utf8_bom_and_parseable(script: Path
         timeout=15,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_shared_process_helpers_are_defined_once_and_dot_sourced_by_both_scripts() -> None:
+    shared = _source(APP_CONTROL)
+    helpers = ("Test-AppMutex", "Get-AppProcessIds", "Wait-AppStopped")
+    for helper in helpers:
+        assert f"function {helper}" in shared
+
+    for script in (INSTALLER, UNINSTALLER):
+        source = _source(script)
+        assert '. (Join-Path $PSScriptRoot "app-control.ps1")' in source
+        # The helpers must live in exactly one place, otherwise the two copies
+        # can drift apart again.
+        for helper in helpers:
+            assert f"function {helper}" not in source
+
+    # The helpers read $MutexName and $AppRoot from the caller scope, so both
+    # scripts must still define them before the dot-source runs.
+    for script in (INSTALLER, UNINSTALLER):
+        source = _source(script)
+        dot_source = source.index('. (Join-Path $PSScriptRoot "app-control.ps1")')
+        assert 0 < source.index("$MutexName =") < dot_source
+        assert 0 < source.index("$AppRoot =") < dot_source
 
 
 def test_source_installer_keeps_transactional_rollback() -> None:
