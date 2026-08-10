@@ -153,9 +153,16 @@ def test_release_is_one_unsigned_prerelease_job_with_checksums() -> None:
     assert "attest-build-provenance" not in release
     assert "gh attestation verify" not in release
     assert "--clobber" not in release
-    assert "Unknown publisher" in release
+    assert "Windows 安裝器重要提醒" in release
+    assert (
+        "Setup 安裝程式與隨附的應用程式執行檔皆未經 Authenticode 簽章。" in release
+    )
+    assert "Windows 可能顯示「未知的發行者」" in release
     assert "Microsoft Defender SmartScreen" in release
-    assert "Do not disable Microsoft Defender" in release
+    assert "請勿停用 Microsoft Defender；安裝前請先核對 SHA256SUMS.txt。" in release
+    assert "本預發行版包含每位使用者安裝的 Windows Setup" in release
+    assert "Important Windows installer notice" not in release
+    assert "Do not disable Microsoft Defender" not in release
     assert "commits/$env:GITHUB_SHA/check-runs" in release
     assert '"Windows / Python 3.11"' in release
     assert '"Python security-extended"' in release

@@ -44,7 +44,7 @@
 Face；日常錄音不需要把音訊或文字送到雲端。
 
 > [!IMPORTANT]
-> 目前是 `0.2.0` 預發行版，僅支援 Windows WASAPI、中文辨識與 `Asia/Taipei` 時區。
+> 目前是 `0.3.0` 預發行版，僅支援 Windows WASAPI、中文辨識與 `Asia/Taipei` 時區。
 > 安裝不需要先接上麥克風；第一次啟動 App 時再明確選擇收音來源。
 
 ## 目錄
@@ -72,7 +72,7 @@ Face；日常錄音不需要把音訊或文字送到雲端。
 | 容易帶走 | 預設輸出一般 Markdown，不綁定專用閱讀器 |
 | 麥克風可切換 | 可固定使用某個 WASAPI 端點，或跟隨 Windows 預設，切換不需重開 App |
 | 選用登入自啟 | 首次設定明確同意後，才建立指向已安裝 App 的個人工作排程 |
-| 離線視覺 | 月份、狀態場景與粒子效果隨程式安裝，執行時不呼叫生成式影像服務 |
+| 離線視覺 | 介面只用紙面、字體與月份色調呈現，執行時不呼叫生成式影像服務 |
 
 ## 快速開始
 
@@ -85,7 +85,7 @@ Face；日常錄音不需要把音訊或文字送到雲端。
 
 ### 2. 下載並安裝
 
-`v0.2.0` 允許正式發布未簽章的 `AutoSpeechJournal-Setup-0.2.0-x64.exe` 與內層 EXE。
+`v0.3.0` 允許正式發布未簽章的 `AutoSpeechJournal-Setup-0.3.0-x64.exe` 與內層 EXE。
 請只從 [GitHub Releases](https://github.com/benny7431/auto-speech-journal/releases) 下載正式資產，
 不要使用 PR 的內部 artifact。由於目前沒有 Authenticode 簽章，Windows 可能顯示
 「未知的發行者」或 Microsoft Defender SmartScreen 提示；請先比對 Release 提供的 SHA-256。
@@ -285,7 +285,6 @@ uv run --no-sync pytest --cov=auto_speech_journal --cov-report=term-missing `
 uv run --no-sync ruff check src tests tools
 uv run --no-sync python -m auto_speech_journal self-test `
   --no-model-check --no-microphone-check
-uv run --no-sync python tools/validate_scene_assets.py --strict
 uv build
 uv run --no-sync python tools/verify_wheel_contents.py
 uv run --no-sync pre-commit run --all-files
@@ -293,7 +292,7 @@ uv run --no-sync python tools/render_readme_demo.py
 ```
 
 完整說明請見 [建置文件](docs/BUILDING.md)。`tools/replay_fault_recovery.py` 可重播當機
-邊界；場景、Demo 與打包 QA 工具集中在 `tools/`。
+邊界；基準圖、Demo 與打包 QA 工具集中在 `tools/`。
 
 <details>
 <summary><strong>專案結構</strong></summary>
@@ -307,11 +306,11 @@ src/auto_speech_journal/
 ├── preview_engine.py          # Sherpa-ONNX 串流預覽
 ├── finalizer_engine.py        # Faster-Whisper 最終辨識
 ├── storage.py, exporter.py    # SQLite 與 Markdown 匯出
-└── qml/, assets/              # 介面與離線視覺資產
+└── qml/, assets/              # 介面與品牌資產
 
 tests/                         # Pytest 回歸測試
 packaging/                     # PyInstaller、Inno Setup 與最小發布驗證
-tools/                         # 復原、資產、效能與打包 QA
+tools/                         # 復原、基準圖、效能與打包 QA
 install.ps1, uninstall.ps1     # 進階 source/CUDA 安裝與救援流程
 ```
 
@@ -322,7 +321,7 @@ install.ps1, uninstall.ps1     # 進階 source/CUDA 安裝與救援流程
 - 僅支援 Windows WASAPI、Python 3.11、中文辨識與台北時區。
 - 麥克風清單包含 WASAPI 虛擬輸入，但不支援特殊 loopback capture；無法安全區分的
   同名端點不能固定綁定，請改用 Windows 預設或停用重複端點。
-- `v0.2.0` Setup 與內層 EXE 尚未簽章，Windows 可能顯示未知發行者或 SmartScreen 提示；
+- `v0.3.0` Setup 與內層 EXE 尚未簽章，Windows 可能顯示未知發行者或 SmartScreen 提示；
   簽章缺失目前不阻擋正式 Release。未來取得合適憑證後可重新加入簽章流程。
 - 專案原始碼與專案自有發行資產採 MIT License；第三方內容仍受各自條款約束。
 - 個人本機字體與其聲明不屬於發行內容。

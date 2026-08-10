@@ -46,7 +46,7 @@ only during first-run setup or an explicit model download; routine recording doe
 or transcripts to a cloud service.
 
 > [!IMPORTANT]
-> Version `0.2.0` is a pre-release. It supports Windows WASAPI, Chinese
+> Version `0.3.0` is a pre-release. It supports Windows WASAPI, Chinese
 > transcription, and the `Asia/Taipei` timezone only. A microphone does not need to be connected
 > during installation; the application asks you to select an input explicitly on first launch.
 
@@ -75,7 +75,7 @@ or transcripts to a cloud service.
 | Portable output | Journals are ordinary Markdown files and do not require a proprietary reader |
 | Switchable microphone | Pin a WASAPI endpoint or follow the Windows default without restarting the app |
 | Optional sign-in startup | The first-run wizard creates a per-user task pointing to the installed App only after explicit consent |
-| Offline visuals | Monthly scenes, status scenes, and particle effects ship with the application and do not call generative image services at runtime |
+| Offline visuals | The interface is drawn from paper, type, and a monthly tint alone, and never calls a generative image service at runtime |
 
 ## Quick start
 
@@ -88,8 +88,8 @@ or transcripts to a cloud service.
 
 ### 2. Download and install
 
-The official `v0.2.0` release may publish an unsigned
-`AutoSpeechJournal-Setup-0.2.0-x64.exe` with unsigned inner executables. Download release assets
+The official `v0.3.0` release may publish an unsigned
+`AutoSpeechJournal-Setup-0.3.0-x64.exe` with unsigned inner executables. Download release assets
 only from [GitHub Releases](https://github.com/benny7431/auto-speech-journal/releases), not from an
 internal PR artifact. Because the files currently have no Authenticode signature, Windows may show
 an **Unknown publisher** dialog or a Microsoft Defender SmartScreen prompt. Verify the published
@@ -309,7 +309,6 @@ uv run --no-sync pytest --cov=auto_speech_journal --cov-report=term-missing `
 uv run --no-sync ruff check src tests tools
 uv run --no-sync python -m auto_speech_journal self-test `
   --no-model-check --no-microphone-check
-uv run --no-sync python tools/validate_scene_assets.py --strict
 uv build
 uv run --no-sync python tools/verify_wheel_contents.py
 uv run --no-sync pre-commit run --all-files
@@ -317,7 +316,7 @@ uv run --no-sync python tools/render_readme_demo.py
 ```
 
 See [Building](docs/BUILDING.md) for the complete workflow. `tools/replay_fault_recovery.py`
-replays crash boundaries; scene, demo, and packaging QA tools are under `tools/`.
+replays crash boundaries; baseline, demo, and packaging QA tools are under `tools/`.
 
 <details>
 <summary><strong>Project structure</strong></summary>
@@ -331,7 +330,7 @@ src/auto_speech_journal/
 ├── preview_engine.py          # Sherpa-ONNX streaming preview
 ├── finalizer_engine.py        # Faster-Whisper final recognition
 ├── storage.py, exporter.py    # SQLite and Markdown export
-└── qml/, assets/              # Interface and offline visual assets
+└── qml/, assets/              # Interface and brand assets
 
 tests/                         # Pytest regression tests
 packaging/                     # PyInstaller, Inno Setup, and minimal release validation
@@ -347,7 +346,7 @@ install.ps1, uninstall.ps1     # Advanced source/CUDA installation and recovery
 - The microphone list includes WASAPI virtual inputs but does not support special loopback capture.
   Indistinguishable duplicate endpoints cannot be pinned; use the Windows default or disable the
   duplicate endpoint.
-- The `v0.2.0` Setup and inner executables are currently unsigned, so Windows may report an unknown
+- The `v0.3.0` Setup and inner executables are currently unsigned, so Windows may report an unknown
   publisher or show SmartScreen. Missing signatures do not block this release; signing can be added
   again after a suitable certificate becomes available.
 - Project source and first-party release assets use the MIT License; third-party content keeps its

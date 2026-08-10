@@ -23,7 +23,6 @@ uv run --no-sync pytest `
 uv run --no-sync pre-commit run --all-files
 uv run --no-sync python -m auto_speech_journal self-test `
   --no-model-check --no-microphone-check
-uv run --no-sync python tools/validate_scene_assets.py --strict
 ```
 
 模型測試使用 package 內的 `src/auto_speech_journal/runtime-models-v1.json`。清單只允許

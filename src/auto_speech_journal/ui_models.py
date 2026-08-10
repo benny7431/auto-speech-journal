@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import math
 import os
 import sys
@@ -11,7 +10,6 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import datetime
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -43,7 +41,6 @@ from .config import (
     MicrophoneSelection,
 )
 from .paths import AppPaths
-from .scene_assets import validate_runtime_scenes
 
 COMPACT_WIDTH = 440
 COMPACT_HEIGHT = 190
@@ -58,22 +55,7 @@ MICROPHONE_TEST_TIMEOUT_MS = 3_000
 SCENE_HOLD_SECONDS = 2.0
 SPI_GETCLIENTAREAANIMATION = 0x1042
 FONT_DIRECTORY_ENV = "AUTO_SPEECH_JOURNAL_FONT_DIR"
-SCENE_DIRECTORY_ENV = "AUTO_SPEECH_JOURNAL_SCENE_DIR"
 SUPPORTED_FONT_SUFFIXES = frozenset({".ttf", ".otf"})
-SCENE_STATE_KEYS = frozenset(
-    {
-        "starting",
-        "listening",
-        "capturing",
-        "finalizing",
-        "paused",
-        "degraded",
-        "error",
-        "stopped",
-    }
-)
-SCENE_MONTH_KEYS = frozenset(f"{value:02d}" for value in range(1, 13))
-SCENE_VARIANTS = frozenset({"compact", "workspace"})
 
 TAIPEI = ZoneInfo("Asia/Taipei")
 WEEKDAYS = ("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")
@@ -108,67 +90,6 @@ FONT_FAMILY_DISPLAY_NAMES = {
     "新蒂逍遙遊": "新蒂逍遙遊",
     "LXGW WenKai TC": "霞鶩文楷 TC v1.522",
 }
-
-
-def _packaged_variant_matrix_ready(directory: Path) -> bool:
-    """Keep partial v2 migrations dormant; prototypes use the explicit env root."""
-    manifest_path = directory / "manifest.json"
-    try:
-        manifest_stat = manifest_path.stat()
-    except OSError:
-        return False
-    return _packaged_variant_matrix_ready_cached(
-        directory.resolve(),
-        manifest_stat.st_mtime_ns,
-        manifest_stat.st_size,
-        validate_runtime_scenes,
-    )
-
-
-@lru_cache(maxsize=8)
-def _packaged_variant_matrix_ready_cached(
-    directory: Path,
-    _manifest_mtime_ns: int,
-    _manifest_size: int,
-    validator: Callable[..., list[str]],
-) -> bool:
-    try:
-        manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return False
-    if (
-        not isinstance(manifest, dict)
-        or manifest.get("schema_version") != 2
-        or manifest.get("asset_count") != 192
-    ):
-        return False
-    assets = manifest.get("assets")
-    if not isinstance(assets, list) or len(assets) != 192:
-        return False
-    keys: set[tuple[str, str, str]] = set()
-    for asset in assets:
-        if not isinstance(asset, dict) or asset.get("status") != "ready":
-            continue
-        month, state, variant = (
-            asset.get("month"),
-            asset.get("state"),
-            asset.get("variant"),
-        )
-        if (
-            isinstance(month, str)
-            and month in SCENE_MONTH_KEYS
-            and isinstance(state, str)
-            and state in SCENE_STATE_KEYS
-            and isinstance(variant, str)
-            and variant in SCENE_VARIANTS
-        ):
-            keys.add((month, state, variant))
-    if len(keys) != 192:
-        return False
-    # The installer and release gate perform full image decoding. The UI repeats
-    # the matrix, header and digest checks once per manifest revision so startup
-    # never blocks on decoding 192 large backgrounds.
-    return not validator(strict=True, root=directory, decode_images=False)
 
 
 def _font_directories() -> tuple[Path, ...]:
@@ -398,6 +319,7 @@ class _TimelineRow:
     hour_key: str
     hour_label: str
     is_hour_start: bool
+    hour_segment_count: int
     time_label: str
     text: str
     status_label: str
@@ -411,7 +333,8 @@ class TimelineListModel(QAbstractListModel):
     HourKeyRole = SegmentIdRole + 1
     HourLabelRole = HourKeyRole + 1
     IsHourStartRole = HourLabelRole + 1
-    TimeLabelRole = IsHourStartRole + 1
+    HourSegmentCountRole = IsHourStartRole + 1
+    TimeLabelRole = HourSegmentCountRole + 1
     TextRole = TimeLabelRole + 1
     StatusLabelRole = TextRole + 1
     EditableRole = StatusLabelRole + 1
@@ -425,6 +348,7 @@ class TimelineListModel(QAbstractListModel):
         HourKeyRole: b"hourKey",
         HourLabelRole: b"hourLabel",
         IsHourStartRole: b"isHourStart",
+        HourSegmentCountRole: b"hourSegmentCount",
         TimeLabelRole: b"timeLabel",
         TextRole: b"segmentText",
         StatusLabelRole: b"statusLabel",
@@ -460,6 +384,7 @@ class TimelineListModel(QAbstractListModel):
             self.HourKeyRole: row.hour_key,
             self.HourLabelRole: row.hour_label,
             self.IsHourStartRole: row.is_hour_start,
+            self.HourSegmentCountRole: row.hour_segment_count,
             self.TimeLabelRole: row.time_label,
             self.TextRole: row.text,
             self.StatusLabelRole: row.status_label,
@@ -483,6 +408,12 @@ class TimelineListModel(QAbstractListModel):
     @Property(bool, notify=editingChanged)
     def hasActiveEdit(self) -> bool:
         return bool(self._editing_id)
+
+    @Property(str, notify=countChanged)
+    def lastHourLabel(self) -> str:
+        """The hour of the most recent row, so the view can draw the rest of the day."""
+
+        return self._rows[-1].hour_label if self._rows else ""
 
     def replace_rows(self, rows: Sequence[_TimelineRow]) -> int:
         previous_ids = {row.segment_id for row in self._rows}
@@ -509,6 +440,17 @@ class TimelineListModel(QAbstractListModel):
 
     def row_for_id(self, segment_id: str) -> _TimelineRow | None:
         return next((row for row in self._rows if row.segment_id == segment_id), None)
+
+    @Slot(str, result=int)
+    def indexForSegmentId(self, segment_id: str) -> int:
+        return next(
+            (
+                index
+                for index, row in enumerate(self._rows)
+                if row.segment_id == segment_id
+            ),
+            -1,
+        )
 
     def begin_edit(self, segment_id: str) -> bool:
         row = self.row_for_id(segment_id)
@@ -876,58 +818,6 @@ class JournalViewModel(QObject):
     def sceneKey(self) -> str:
         return self._scene_key
 
-    @Property(QUrl, notify=sceneChanged)
-    def compactSceneSource(self) -> QUrl:
-        return self._scene_source("compact")
-
-    @Property(QUrl, notify=sceneChanged)
-    def workspaceSceneSource(self) -> QUrl:
-        return self._scene_source("workspace")
-
-    @Property(QUrl, notify=sceneChanged)
-    def sceneSource(self) -> QUrl:
-        """Legacy alias retained for compact clients built against the v1 UI."""
-        return self.compactSceneSource
-
-    def _scene_source(self, variant: str) -> QUrl:
-        stem = f"{self._day.month:02d}-{self._scene_key}"
-        filename = f"{stem}-{variant}.webp"
-        month_directory = f"month-{self._day.month:02d}"
-        package_root = Path(__file__).resolve().parent
-        packaged_scene_root = package_root / "assets" / "scenes"
-
-        candidates: list[Path] = []
-        prototype_root = os.environ.get(SCENE_DIRECTORY_ENV, "").strip()
-        if prototype_root:
-            root = Path(prototype_root).expanduser().resolve(strict=False)
-            candidates.extend(
-                (
-                    root / filename,
-                    root / variant / f"{stem}.webp",
-                    root / month_directory / filename,
-                    root / month_directory / variant / f"{stem}.webp",
-                )
-            )
-
-        if _packaged_variant_matrix_ready(packaged_scene_root):
-            candidates.extend(
-                (
-                    packaged_scene_root / filename,
-                    packaged_scene_root / variant / f"{stem}.webp",
-                )
-            )
-        # Keep legacy paths as a last-resort fallback for incomplete development
-        # checkouts; production packages use the validated v2 candidates above.
-        candidates.extend(
-            (
-                packaged_scene_root / f"{stem}.webp",
-                package_root / "assets" / f"{stem}.webp",
-            )
-        )
-        for candidate in candidates:
-            if candidate.is_file():
-                return QUrl.fromLocalFile(str(candidate))
-        return QUrl()
 
     @Property(str, notify=dateChanged)
     def dateLabel(self) -> str:
@@ -2706,13 +2596,15 @@ class JournalViewModel(QObject):
         for hour in tuple(getattr(timeline, "hours", ()) or ()):
             hour_key = str(getattr(hour, "hour_key", "") or "")
             hour_label = str(getattr(hour, "label", "") or "")
-            for index, segment in enumerate(tuple(getattr(hour, "segments", ()) or ())):
+            segments = tuple(getattr(hour, "segments", ()) or ())
+            for index, segment in enumerate(segments):
                 rows.append(
                     _TimelineRow(
                         segment_id=str(getattr(segment, "segment_id", "") or ""),
                         hour_key=str(getattr(segment, "hour_key", hour_key) or hour_key),
                         hour_label=hour_label or JournalViewModel._hour_label(hour_key),
                         is_hour_start=index == 0,
+                        hour_segment_count=len(segments),
                         time_label=str(getattr(segment, "time_label", "") or ""),
                         text=str(
                             getattr(
@@ -2747,6 +2639,7 @@ class JournalViewModel(QObject):
                 hour_key=hour_key,
                 hour_label=JournalViewModel._hour_label(hour_key),
                 is_hour_start=True,
+                hour_segment_count=1,
                 time_label="",
                 text=text,
                 status_label="已定稿",

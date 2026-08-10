@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -12,7 +13,17 @@ os.environ.setdefault("QT_QUICK_BACKEND", "software")
 os.environ.setdefault("QSG_RHI_BACKEND", "software")
 
 import pytest
-from PySide6.QtCore import QObject, QPoint, QPointF, QRect, QSettings, QSize, Qt
+from PySide6.QtCore import (
+    QObject,
+    QPoint,
+    QPointF,
+    QRect,
+    QSettings,
+    QSize,
+    Qt,
+    QtMsgType,
+    qInstallMessageHandler,
+)
 from PySide6.QtGui import QWindow
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
@@ -195,20 +206,54 @@ def journal_window(qtbot, tmp_path):
     controller = FakeController(str(tmp_path))
     settings = QSettings(str(tmp_path / "window.ini"), QSettings.Format.IniFormat)
     settings.clear()
-    window = _create_main_window(
-        controller,
-        application,
-        window_settings=settings,
-        microphone_device_provider=lambda: [],
+
+    # A broken QML binding is only a warning on stderr, which no CI log reader
+    # ever sees. Splitting the window into components multiplies the ways a
+    # reference can go stale across a file boundary, so fail the test instead.
+    #
+    # Only genuine resolution failures count. Two other classes of message are
+    # environmental and predate this fixture: the offscreen platform complains
+    # about font directories and window masks, and Qt Quick Controls warns about
+    # every customized control because QQuickStyle.setStyle("Basic") is a no-op
+    # once another test in the process has already loaded Controls.
+    complaints: list[str] = []
+    levels = {QtMsgType.QtWarningMsg, QtMsgType.QtCriticalMsg, QtMsgType.QtFatalMsg}
+    signals = (
+        "TypeError",
+        "ReferenceError",
+        "Unable to assign",
+        "Cannot assign",
+        "non-existent property",
+        "is not a type",
+        "Binding loop",
+        "required property",
     )
-    window.show()
-    qtbot.waitUntil(window.isVisible)
-    yield window, controller, settings
-    view_model = window._journal_view_model
-    view_model._poll_timer.stop()
-    view_model._allow_close = True
-    window.close()
-    window.deleteLater()
+
+    def capture(mode, _context, message):
+        if mode in levels and any(signal in message for signal in signals):
+            complaints.append(message)
+
+    previous_handler = qInstallMessageHandler(capture)
+    try:
+        window = _create_main_window(
+            controller,
+            application,
+            window_settings=settings,
+            microphone_device_provider=lambda: [],
+            font_directories=[tmp_path / "fonts"],
+        )
+        window.show()
+        qtbot.waitUntil(window.isVisible)
+        yield window, controller, settings
+        view_model = window._journal_view_model
+        view_model._poll_timer.stop()
+        view_model._allow_close = True
+        window.close()
+        window.deleteLater()
+    finally:
+        qInstallMessageHandler(previous_handler)
+
+    assert not complaints, "QML reported problems:\n" + "\n".join(complaints)
 
 
 def _role(model, name: str) -> int:
@@ -241,7 +286,10 @@ def _assert_button_content_fits(button: QObject) -> None:
     assert content is not None
     content_width = float(content.property("implicitWidth"))
     available_width = float(button.property("availableWidth"))
-    assert content_width <= available_width + 0.5
+    assert content_width <= available_width + 0.5, (
+        f"{button.objectName()} content implicitWidth={content_width}, "
+        f"availableWidth={available_width}"
+    )
 
 
 def _assert_guarded_button_content_fits(window: QObject) -> None:
@@ -659,14 +707,12 @@ def test_midnight_refresh_rolls_date_timeline_and_month_scene(journal_window):
 
     assert view_model.dayKey == "2026-07-31"
     assert view_model.monthLabel == "7 月聲景"
-    assert view_model.sceneSource.toLocalFile().endswith("07-listening-compact.webp")
 
     now[0] = datetime(2026, 8, 1, 0, 0, 1, tzinfo=ZoneInfo("Asia/Taipei"))
     view_model.refresh()
 
     assert view_model.dayKey == "2026-08-01"
     assert view_model.monthLabel == "8 月聲景"
-    assert view_model.sceneSource.toLocalFile().endswith("08-listening-compact.webp")
 
 
 def test_qml_window_switches_between_compact_and_centered_workspace(journal_window, qtbot):
@@ -680,7 +726,6 @@ def test_qml_window_switches_between_compact_and_centered_workspace(journal_wind
     assert window.flags() & Qt.WindowType.WindowStaysOnTopHint
     assert view_model._poll_timer.interval() == POLL_INTERVAL_MS
     assert window.findChild(QObject, "compactContent").property("visible") is True
-    assert window.findChild(QObject, "compactScene").property("cropMode") is True
     compact_mask = window.mask()
     assert window._rounded_corner_backend in {"dwm", "mask"}
     if window._rounded_corner_backend == "dwm":
@@ -708,7 +753,6 @@ def test_qml_window_switches_between_compact_and_centered_workspace(journal_wind
     assert window.maximumWidth() >= window.minimumWidth()
     assert window.maximumHeight() >= window.minimumHeight()
     assert window.findChild(QObject, "timelineList") is not None
-    assert window.findChild(QObject, "workspaceScene").property("cropMode") is True
     assert window.findChild(QObject, "settingsButton") is not None
     assert window.findChild(QObject, "hoursButton") is not None
     expanded_mask = window.mask()
@@ -732,12 +776,10 @@ def test_qml_window_switches_between_compact_and_centered_workspace(journal_wind
         assert window.mask().boundingRect() == QRect(0, 0, COMPACT_WIDTH, COMPACT_HEIGHT)
 
 
-def test_redesigned_workspace_uses_full_bleed_scene_and_single_river(
+def test_redesigned_workspace_uses_plain_paper_and_single_river(
     journal_window, qtbot
 ):
     window, _, _ = journal_window
-    compact_content = window.findChild(QObject, "compactContent")
-    compact_scene = window.findChild(QObject, "compactScene")
     compact_info = window.findChild(QObject, "compactInfo")
     compact_action_row = window.findChild(QObject, "compactActionRow")
     compact_backlog = window.findChild(QObject, "compactBacklogText")
@@ -747,39 +789,35 @@ def test_redesigned_workspace_uses_full_bleed_scene_and_single_river(
     close_button = window.findChild(QObject, "closeButton")
     qtbot.wait(20)
 
-    assert float(compact_scene.property("x")) == pytest.approx(0.0, abs=0.5)
     assert float(title_bar.property("height")) == pytest.approx(38.0, abs=0.5)
     assert title_bar.property("color").alpha() == 0
-    assert float(compact_scene.property("y")) == pytest.approx(
-        -float(title_bar.property("height")), abs=0.5
-    )
-    assert float(compact_scene.property("width")) == pytest.approx(242.0, abs=0.5)
-    assert float(compact_scene.property("height")) == pytest.approx(
-        float(compact_content.property("height")) + float(title_bar.property("height")),
-        abs=0.5,
-    )
     assert brand_icon.property("source").toLocalFile().endswith("journal-ink-icon.png")
     assert window.findChild(QObject, "minimizeButton") is None
     assert close_button.property("text") == "×"
-    assert float(compact_info.property("x")) == pytest.approx(146.0, abs=0.5)
-    assert float(compact_info.property("width")) == pytest.approx(286.0, abs=0.5)
+    # The scene strip used to take the left 242px; the text column now owns the
+    # whole window width minus a symmetric gutter from the spacing scale.
+    assert float(compact_info.property("x")) == pytest.approx(16.0, abs=0.5)
+    assert float(compact_info.property("width")) == pytest.approx(408.0, abs=0.5)
     assert window.findChild(QObject, "compactStatusMark") is None
     assert window.findChild(QObject, "compactStateText") is None
     assert window.findChild(QObject, "compactStatusMessage") is None
+
+    # Live indicator left, backlog right, on one row; transcript starts below it.
+    compact_status_row = window.findChild(QObject, "compactStatusRow")
+    assert window.findChild(QObject, "compactLevelMeter") is not None
     assert float(compact_backlog.property("x")) + float(
         compact_backlog.property("width")
     ) == pytest.approx(float(compact_info.property("width")), abs=0.5)
     assert float(compact_partial.property("y")) >= (
-        float(compact_backlog.property("y"))
-        + float(compact_backlog.property("height"))
-        + 5.5
+        float(compact_status_row.property("y"))
+        + float(compact_status_row.property("height"))
     )
     compact_action_parent = compact_action_row.parent()
     bottom_gap = float(compact_action_parent.property("height")) - (
         float(compact_action_row.property("y"))
         + float(compact_action_row.property("height"))
     )
-    assert bottom_gap == pytest.approx(9.0, abs=0.5)
+    assert bottom_gap == pytest.approx(12.0, abs=0.5)
     assert float(compact_action_row.property("spacing")) == pytest.approx(8.0)
 
     window._journal_view_model.toggleExpanded()
@@ -791,9 +829,8 @@ def test_redesigned_workspace_uses_full_bleed_scene_and_single_river(
     primary_actions = window.findChild(QObject, "primaryActionRow")
     secondary_actions = window.findChild(QObject, "secondaryActionRow")
     expanded_content = window.findChild(QObject, "expandedContent")
-    workspace_scene = window.findChild(QObject, "workspaceScene")
     live_bar = window.findChild(QObject, "todayLiveBar")
-    workspace_status = window.findChild(QObject, "workspaceStatusRow")
+    workspace_date = window.findChild(QObject, "workspaceDate")
     workspace_state = window.findChild(QObject, "workspaceStateText")
     workspace_backlog = window.findChild(QObject, "workspaceBacklogText")
 
@@ -804,27 +841,27 @@ def test_redesigned_workspace_uses_full_bleed_scene_and_single_river(
     assert float(title_bar.property("height")) == pytest.approx(50.0, abs=0.5)
     assert float(expanded_content.property("y")) == pytest.approx(0.0, abs=0.5)
     assert float(paper_spread.property("y")) == pytest.approx(0.0, abs=0.5)
-    assert float(workspace_scene.property("height")) == pytest.approx(
-        float(paper_spread.property("height")), abs=0.5
-    )
     assert close_button.property("text") == "×"
+
+    # The date moved into the title bar so the live bar is one control row.
+    assert workspace_date.property("visible") is True
+    assert float(workspace_date.property("y")) < float(title_bar.property("height"))
 
     assert live_trace is not None
     assert live_trace.inherits("QQuickItem")
-    assert not live_trace.inherits("QQuickRectangle")
     assert window.findChild(QObject, "workspaceStatusMark") is None
     assert window.findChild(QObject, "workspaceStatusMessage") is None
-    assert workspace_state.parent() == workspace_status
-    assert workspace_backlog.parent() == workspace_status
-    assert float(workspace_status.property("x")) > float(live_bar.property("width")) / 2
-    assert float(workspace_status.property("x")) + float(
-        workspace_status.property("width")
-    ) == pytest.approx(float(live_bar.property("width")) - 22, abs=0.5)
+    assert window.findChild(QObject, "workspaceStatusRow") is None
+
+    # Status reads left, controls read right, on one baseline.
     assert primary_actions is not None
     assert secondary_actions is not None
-    assert float(workspace_status.property("y")) >= (
-        float(primary_actions.property("y"))
-        + float(primary_actions.property("height"))
+    status_dot = window.findChild(QObject, "workspaceStatusDot")
+    assert status_dot is not None
+    assert float(workspace_state.property("x")) < float(live_bar.property("width")) / 2
+    assert float(workspace_backlog.property("x")) > float(workspace_state.property("x"))
+    assert float(secondary_actions.property("x")) > float(
+        workspace_backlog.property("x")
     )
 
     expanded_pause = window.findChild(QObject, "expandedPauseButton")
@@ -836,20 +873,26 @@ def test_redesigned_workspace_uses_full_bleed_scene_and_single_river(
 
     for object_name in ("settingsButton", "systemButton", "hoursButton"):
         button = window.findChild(QObject, object_name)
-        assert button.parent() == secondary_actions
         assert button.property("flat") is True
 
     timeline = window.findChild(QObject, "timelineList")
     timeline_title = window.findChild(QObject, "timelineTitle")
+    timeline_column = window.findChild(QObject, "timelineColumn")
     assert timeline.property("idleSegmentColor").alpha() == 0
     assert float(timeline.property("segmentBorderWidth")) == pytest.approx(0.0)
-    assert float(timeline.property("spacing")) == pytest.approx(6.0)
+    # Cards carry their own separation, so the view adds none.
+    assert float(timeline.property("spacing")) == pytest.approx(0.0)
     assert window.findChild(QObject, "timelineSubtitle") is None
     assert float(timeline.property("y")) == pytest.approx(
         float(timeline_title.property("y"))
         + float(timeline_title.property("height"))
-        + 10,
+        + 12,
         abs=0.5,
+    )
+    # Journal text is capped to a readable measure instead of the window width.
+    assert float(timeline_column.property("width")) <= 880.5
+    assert float(timeline_column.property("width")) <= float(
+        paper_spread.property("width")
     )
     assert window.property("uiFontFamily") == QApplication.instance().font().family()
     assert window.findChild(QObject, "compactWaveform") is None
@@ -866,44 +909,58 @@ def test_internal_typography_is_enlarged_without_crowding_fixed_layouts(
     assert _pixel_size(window.findChild(QObject, "pauseButton")) == 18
     assert _pixel_size(window.findChild(QObject, "expandButton")) == 18
     assert _pixel_size(window.findChild(QObject, "closeButton")) == 16
-    assert window.findChild(QObject, "compactStatusRow") is None
-    assert float(window.findChild(QObject, "compactPartialText").property("height")) >= 70
+    # The transcript takes what the status and action rows leave; it must still
+    # clear the two lines it is allowed to wrap to (17px at lineHeight 1.18).
+    partial = window.findChild(QObject, "compactPartialText")
+    assert float(partial.property("height")) >= 2 * 17 * 1.18
+    assert float(partial.property("maximumLineCount")) == 2
     assert float(window.findChild(QObject, "compactActionRow").property("height")) == 32
 
     window._journal_view_model.toggleExpanded()
     qtbot.wait(40)
     qtbot.waitUntil(lambda: bool(_visual_items(window, "timelineRow")))
 
+    # Each value is round(base * 1.125) for the fixture's 18px journal font. The
+    # date and hour label stepped down when they became secondary to the segment
+    # text, which is now the largest thing on the page after the title.
     expected_sizes = {
-        "workspaceDate": 27,
+        "workspaceDate": 18,
         "workspaceStateText": 20,
         "workspaceBacklogText": 17,
         "workspaceLiveLabel": 15,
-        "workspacePartialText": 19,
-        "timelineTitle": 32,
-        "sheetTitle": 32,
+        "workspacePartialText": 18,
+        "timelineTitle": 29,
+        "sheetTitle": 25,
         "previewSpin": 18,
     }
     for object_name, pixel_size in expected_sizes.items():
         assert _pixel_size(window.findChild(QObject, object_name)) == pixel_size
 
     delegate_sizes = {
-        "timelineHourLabel": 24,
+        "timelineHourLabel": 18,
+        "timelineHourCount": 14,
         "timelineTimeLabel": 15,
-        "timelineStatusLabel": 14,
-        "timelineSegmentText": 19,
+        "timelineSegmentText": 21,
     }
     for object_name, pixel_size in delegate_sizes.items():
         assert _pixel_size(_visual_items(window, object_name)[0]) == pixel_size
 
-    segment_surfaces = _visual_items(window, "timelineSegmentSurface")
-    assert segment_surfaces
-    assert all(float(surface.property("height")) >= 88 for surface in segment_surfaces)
+    # Height follows content now. The old floor of 88px per segment gave an eight
+    # character utterance the same room as a three line one, which is most of why
+    # a real day did not fit on screen.
+    segment_texts = _visual_items(window, "timelineSegmentText")
+    assert segment_texts
+    for text_item in segment_texts:
+        owner = text_item.parent().parent()
+        assert float(owner.property("height")) >= float(
+            text_item.property("contentHeight")
+        )
+        assert float(owner.property("height")) < 88
 
     window._journal_view_model.beginEdit("morning-1")
     qtbot.wait(40)
     segment_surfaces = _visual_items(window, "timelineSegmentSurface")
-    assert any(float(surface.property("height")) >= 194 for surface in segment_surfaces)
+    assert any(float(surface.property("height")) >= 150 for surface in segment_surfaces)
 
 
 def test_correction_button_uses_a_stable_reserved_slot(journal_window, qtbot):
@@ -926,10 +983,14 @@ def test_correction_button_uses_a_stable_reserved_slot(journal_window, qtbot):
         for child in header.childItems()
         if child.objectName() == "timelineTimeLabel"
     )
-    status_label = next(
+    segment_text = next(
         child
         for child in header.childItems()
-        if child.objectName() == "timelineStatusLabel"
+        if child.objectName() == "timelineSegmentText"
+        or any(
+            grandchild.objectName() == "timelineSegmentText"
+            for grandchild in child.childItems()
+        )
     )
 
     button.setProperty("visible", False)
@@ -937,8 +998,8 @@ def test_correction_button_uses_a_stable_reserved_slot(journal_window, qtbot):
     before = (
         float(time_label.property("x")),
         float(time_label.property("width")),
-        float(status_label.property("x")),
-        float(status_label.property("width")),
+        float(segment_text.property("x")),
+        float(segment_text.property("width")),
         float(header.property("width")),
     )
     assert float(slot.property("width")) == pytest.approx(66.0, abs=0.5)
@@ -948,8 +1009,8 @@ def test_correction_button_uses_a_stable_reserved_slot(journal_window, qtbot):
     after = (
         float(time_label.property("x")),
         float(time_label.property("width")),
-        float(status_label.property("x")),
-        float(status_label.property("width")),
+        float(segment_text.property("x")),
+        float(segment_text.property("width")),
         float(header.property("width")),
     )
 
@@ -1006,35 +1067,114 @@ def test_live_bar_collapses_when_only_waiting_placeholder_remains(journal_window
     assert window.findChild(QObject, "workspaceLiveLabel").property("text") == "即時預覽"
 
 
-def test_pigment_absorption_uses_blooms_instead_of_wave_animation() -> None:
-    source = (
-        Path(__file__).resolve().parents[1]
-        / "src"
-        / "auto_speech_journal"
-        / "qml"
-        / "PigmentAbsorption.qml"
-    ).read_text(encoding="utf-8")
+def test_redesigned_surfaces_take_every_colour_from_theme() -> None:
+    """Colour belongs to Theme.qml; a literal anywhere else is a palette fork.
 
-    assert "Math.sin" not in source
-    assert "NumberAnimation on phase" not in source
-    assert "loops: Animation.Infinite" not in source
+    FirstRunWizard and the window's banner, confirmation and toast layers are out
+    of scope for this redesign and still carry their own values.
+    """
 
-
-def test_scene_art_has_no_pointer_driven_parallax() -> None:
     qml_dir = (
         Path(__file__).resolve().parents[1] / "src" / "auto_speech_journal" / "qml"
     )
-    scene_source = (qml_dir / "SceneArt.qml").read_text(encoding="utf-8")
-    caller_source = "\n".join(
-        (qml_dir / filename).read_text(encoding="utf-8")
-        for filename in ("JournalWindow.qml", "TodayWorkspace.qml")
+    covered = (
+        "CompactRecorder.qml",
+        "FormSection.qml",
+        "HoursSheet.qml",
+        "IconButton.qml",
+        "JournalEntryDelegate.qml",
+        "LevelMeter.qml",
+        "PaperButton.qml",
+        "SettingsSheet.qml",
+        "SoundRiver.qml",
+        "SystemSheet.qml",
+        "TextButton.qml",
+        "TodayLiveBar.qml",
+        "TodayWorkspace.qml",
+        "UtilityDrawer.qml",
+        "VocabularySheet.qml",
+    )
+    offenders = {
+        name: re.findall(r'"#[0-9A-Fa-f]{3,8}"', (qml_dir / name).read_text("utf-8"))
+        for name in covered
+    }
+    assert {name: found for name, found in offenders.items() if found} == {}
+
+
+def test_hour_header_reports_its_segment_count(journal_window):
+    window, controller, _ = journal_window
+    model = window._journal_view_model.timelineModel
+    role = _role(model, "hourSegmentCount")
+
+    # Every row in an hour carries that hour's total, so the header can show it
+    # without the view having to walk the model.
+    assert model.data(model.index(0), role) == 2
+    assert model.data(model.index(1), role) == 2
+
+    controller.segments.append(
+        TimelineSegmentView(
+            segment_id="morning-3",
+            time_label="[09:41:00]",
+            text="同一小時的第三段",
+            status_label="已定稿",
+            editable=True,
+            hour_key="2026-07-12_09",
+            state=SegmentState.FINAL_READY,
+        )
+    )
+    controller.snapshot = replace(
+        controller.snapshot,
+        timeline_revision=controller.snapshot.timeline_revision + 1,
+    )
+    window._journal_view_model.refresh(force_timeline=True)
+
+    assert model.rowCount() == 3
+    assert [model.data(model.index(row), role) for row in range(3)] == [3, 3, 3]
+
+
+def test_collapsing_an_hour_hides_its_cards_but_keeps_the_header(
+    journal_window, qtbot
+):
+    window, _, _ = journal_window
+    window._journal_view_model.toggleExpanded()
+    qtbot.wait(40)
+    qtbot.waitUntil(lambda: bool(_visual_items(window, "timelineRow")))
+
+    river = window.findChild(QObject, "soundRiver")
+    rows = _visual_items(window, "timelineRow")
+    expanded_heights = [float(row.property("height")) for row in rows]
+    assert all(height > 0 for height in expanded_heights)
+
+    # Click the header the way a reader would, rather than poking the property.
+    header = next(
+        item
+        for item in _visual_items(window, "timelineHourHeader")
+        if float(item.property("height")) > 0
+    )
+    _click_quick_item(window, header)
+    qtbot.wait(60)
+
+    assert river.property("collapsedHours").toVariant() == {"09:00": True}
+    visible_surfaces = [
+        item
+        for item in _visual_items(window, "timelineSegmentSurface")
+        if item.property("visible") is True
+    ]
+    assert visible_surfaces == []
+    assert float(header.property("height")) > 0
+    collapsed_heights = [
+        float(row.property("height")) for row in _visual_items(window, "timelineRow")
+    ]
+    assert all(
+        collapsed < expanded
+        for collapsed, expanded in zip(collapsed_heights, expanded_heights, strict=True)
     )
 
-    assert "HoverHandler" not in scene_source
-    assert "parallaxX" not in scene_source
-    assert "parallaxY" not in scene_source
-    assert "maximumParallax" not in scene_source
-    assert "maximumParallax" not in caller_source
+    _click_quick_item(window, header)
+    qtbot.wait(60)
+    assert [
+        float(row.property("height")) for row in _visual_items(window, "timelineRow")
+    ] == expanded_heights
 
 
 def test_timeline_model_groups_hours_and_preserves_active_draft(journal_window):
@@ -1123,11 +1263,30 @@ def test_timeline_refresh_preserves_scroll_position_while_editing(
     qtbot.waitUntil(lambda: timeline.property("contentHeight") > timeline.property("height"))
     qtbot.wait(250)
 
-    bottom = timeline.property("contentHeight") - timeline.property("height")
-    timeline.setProperty("contentY", bottom)
+    # ListView's absolute contentY is not stable when variable-height delegates
+    # are recreated. Preserve the visible row and its viewport offset instead.
+    timeline.setProperty("contentY", timeline.property("originY"))
+    qtbot.waitUntil(
+        lambda: any(
+            row.property("segmentId") == "segment-00"
+            for row in _visual_items(window, "timelineRow")
+        )
+    )
     view_model.beginEdit("segment-00")
-    qtbot.wait(20)
-    saved_y = float(timeline.property("contentY"))
+    qtbot.waitUntil(
+        lambda: any(
+            row.property("segmentId") == "segment-00" and row.property("editing")
+            for row in _visual_items(window, "timelineRow")
+        )
+    )
+    editing_row = next(
+        row
+        for row in _visual_items(window, "timelineRow")
+        if row.property("segmentId") == "segment-00"
+    )
+    saved_viewport_offset = float(editing_row.property("y")) - float(
+        timeline.property("contentY")
+    )
 
     controller.segments.append(
         TimelineSegmentView(
@@ -1147,7 +1306,16 @@ def test_timeline_refresh_preserves_scroll_position_while_editing(
     view_model.refresh(force_timeline=True)
     qtbot.wait(250)
 
-    assert timeline.property("contentY") == pytest.approx(saved_y, abs=1.0)
+    editing_rows = [
+        row
+        for row in _visual_items(window, "timelineRow")
+        if row.property("segmentId") == "segment-00" and row.property("editing")
+    ]
+    assert len(editing_rows) == 1
+    restored_viewport_offset = float(editing_rows[0].property("y")) - float(
+        timeline.property("contentY")
+    )
+    assert restored_viewport_offset == pytest.approx(saved_viewport_offset, abs=1.0)
     assert window.findChild(QObject, "newSegmentsPill").property("visible") is True
 
 
@@ -1192,9 +1360,13 @@ def test_custom_side_sheets_and_controller_actions_are_available(journal_window)
     assert window.findChild(QObject, "vocabularyDrawerTab") is not None
     assert window.findChild(QObject, "hoursDrawerTab") is not None
     window.setProperty("activeSheet", "system")
-    assert window.findChild(QObject, "systemSheet").property("visible") is True
+    system_sheet = window.findChild(QObject, "systemSheet")
+    assert system_sheet.property("visible") is True
+    assert float(system_sheet.property("height")) > 0
     window.setProperty("activeSheet", "hours")
-    assert window.findChild(QObject, "hoursSheet").property("visible") is True
+    hours_sheet = window.findChild(QObject, "hoursSheet")
+    assert hours_sheet.property("visible") is True
+    assert float(hours_sheet.property("height")) > 0
 
     view_model.togglePause()
     view_model.openRecordsFolder()
@@ -1299,7 +1471,7 @@ def test_settings_can_switch_local_font_and_size_without_restarting(
 
     family = view_model.availableFontFamilies[0]
     assert view_model.applyAppearance(family, 22) is True
-    qtbot.waitUntil(lambda: _pixel_size(window.findChild(QObject, "timelineTitle")) == 39)
+    qtbot.waitUntil(lambda: _pixel_size(window.findChild(QObject, "timelineTitle")) == 36)
 
     assert view_model.uiFontFamily == family
     assert view_model.uiFontSize == 22
@@ -1383,15 +1555,18 @@ def test_max_font_size_keeps_widest_local_font_inside_fixed_boundaries(
         _assert_guarded_button_content_fits(window)
 
         date_item = window.findChild(QObject, "workspaceDate")
-        status_row = window.findChild(QObject, "workspaceStatusRow")
+        title_bar = window.findChild(QObject, "titleBar")
+        close_button = window.findChild(QObject, "closeButton")
         assert float(date_item.property("contentWidth")) <= (
             float(date_item.property("width")) + 0.5
         )
-        assert float(status_row.property("y")) >= (
-            float(date_item.property("y"))
-            + float(date_item.property("height"))
-            + 9.5
+        # Brand, title and date share the title bar with the close button; at the
+        # largest font in the widest family they must still not collide.
+        date_right = float(date_item.mapToItem(title_bar, QPointF(0, 0)).x()) + float(
+            date_item.property("width")
         )
+        close_left = float(close_button.mapToItem(title_bar, QPointF(0, 0)).x())
+        assert date_right <= close_left + 0.5
         live_label = window.findChild(QObject, "workspaceLiveLabel")
         partial_text = window.findChild(QObject, "workspacePartialText")
         assert float(partial_text.property("y")) >= (
@@ -1403,6 +1578,38 @@ def test_max_font_size_keeps_widest_local_font_inside_fixed_boundaries(
     qtbot.wait(10)
     _assert_confirmation_content_fits(window)
     _assert_guarded_button_content_fits(window)
+
+
+def test_microphone_actions_reflow_before_font_metrics_overflow(journal_window, qtbot):
+    window, _, _ = journal_window
+    view_model = window._journal_view_model
+    family = view_model.availableFontFamilies[-1]
+
+    assert view_model.applyAppearance(family, 26) is True
+    view_model.toggleExpanded()
+    window.setProperty("activeSheet", "settings")
+    qtbot.wait(40)
+
+    action_layout = window.findChild(QObject, "microphoneActionLayout")
+    rescan_button = window.findChild(QObject, "microphoneRescanButton")
+    test_button = window.findChild(QObject, "microphoneTestButton")
+    assert action_layout is not None
+    assert rescan_button is not None
+    assert test_button is not None
+
+    single_column_width = max(
+        float(rescan_button.property("implicitWidth")),
+        float(test_button.property("implicitWidth")),
+    ) + 1
+    action_layout.setProperty("width", single_column_width)
+    qtbot.wait(20)
+
+    assert int(action_layout.property("columns")) == 1
+    assert float(test_button.property("y")) > float(rescan_button.property("y"))
+    assert float(rescan_button.property("width")) <= single_column_width + 0.5
+    assert float(test_button.property("width")) <= single_column_width + 0.5
+    _assert_button_content_fits(rescan_button)
+    _assert_button_content_fits(test_button)
 
 
 def test_native_close_collapses_workspace_then_minimizes_compact(journal_window, qtbot):
@@ -1419,10 +1626,9 @@ def test_native_close_collapses_workspace_then_minimizes_compact(journal_window,
     window.close()
     qtbot.wait(40)
     assert window.visibility() == QWindow.Visibility.Minimized
-    assert window.findChild(QObject, "compactScene").property("motionEnabled") is False
 
 
-def test_one_hundred_expand_collapse_cycles_do_not_duplicate_ambient_layer(
+def test_one_hundred_expand_collapse_cycles_do_not_duplicate_the_workspace(
     journal_window,
 ):
     window, _, _ = journal_window
@@ -1434,13 +1640,9 @@ def test_one_hundred_expand_collapse_cycles_do_not_duplicate_ambient_layer(
         view_model.collapseToCompact()
         QApplication.processEvents()
 
-    ambient_layers = window.findChildren(QObject, "ambientSoundRiver")
-    fallback_motes = window.findChildren(QObject, "softwareRiverMote")
     assert view_model.expanded is False
-    assert len(ambient_layers) == 1
-    assert len(fallback_motes) <= int(ambient_layers[0].property("fallbackMoteCount"))
-    assert ambient_layers[0].property("particleLayerLoaded") is False
-    assert ambient_layers[0].property("fallbackAnimationRunning") is False
+    assert len(window.findChildren(QObject, "todayWorkspace")) == 1
+    assert len(window.findChildren(QObject, "timelineList")) == 1
 
 
 def test_compact_position_is_persisted_independently(journal_window):

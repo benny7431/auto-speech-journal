@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import ctypes
-import json
 import os
 import threading
 import time
 from dataclasses import replace
-from datetime import date
-from pathlib import Path
 from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -34,11 +31,9 @@ from auto_speech_journal.ui_models import (
     EXPANDED_MIN_HEIGHT,
     EXPANDED_MIN_WIDTH,
     EXPANDED_WIDTH,
-    SCENE_DIRECTORY_ENV,
     SPI_GETCLIENTAREAANIMATION,
     JournalViewModel,
     LocalFontCatalog,
-    _packaged_variant_matrix_ready,
     _windows_reduced_motion,
 )
 
@@ -1190,78 +1185,6 @@ def test_vocabulary_actions_delete_clear_and_toggle_learning(qapp):
     assert controller.vocabulary_calls[-1] == "clear"
     assert controller.vocabulary_counts == {}
     assert view_model.vocabularyEntries == []
-
-
-def test_variant_scene_sources_use_prototype_root_and_fallback_to_packaged_v2(
-    qapp, tmp_path, monkeypatch
-):
-    prototype_root = tmp_path / "today-river-prototype" / "month-07"
-    prototype_root.mkdir(parents=True)
-    workspace = prototype_root / "07-listening-workspace.webp"
-    workspace.write_bytes(b"prototype")
-    monkeypatch.setenv(SCENE_DIRECTORY_ENV, str(prototype_root))
-    view_model, _ = _view_model(qapp, tmp_path)
-    view_model._day = date(2026, 7, 12)
-    view_model._scene_key = "listening"
-
-    assert Path(view_model.workspaceSceneSource.toLocalFile()) == workspace
-    assert view_model.compactSceneSource.toLocalFile().endswith(
-        "07-listening-compact.webp"
-    )
-    assert view_model.sceneSource == view_model.compactSceneSource
-
-
-def test_packaged_variants_remain_dormant_until_the_full_matrix_is_ready(
-    tmp_path, monkeypatch
-):
-    states = (
-        "starting",
-        "listening",
-        "capturing",
-        "finalizing",
-        "paused",
-        "degraded",
-        "error",
-        "stopped",
-    )
-    assets = [
-        {
-            "month": f"{month:02d}",
-            "state": state,
-            "variant": variant,
-            "status": "ready",
-        }
-        for month in range(1, 13)
-        for state in states
-        for variant in ("compact", "workspace")
-    ]
-    manifest_path = tmp_path / "manifest.json"
-    manifest = {"schema_version": 2, "asset_count": 192, "assets": assets}
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    validation_calls = []
-
-    def valid_matrix(**kwargs):
-        validation_calls.append(kwargs)
-        return []
-
-    monkeypatch.setattr(
-        "auto_speech_journal.ui_models.validate_runtime_scenes",
-        valid_matrix,
-    )
-    assert _packaged_variant_matrix_ready(tmp_path) is True
-    assert _packaged_variant_matrix_ready(tmp_path) is True
-    assert len(validation_calls) == 1
-    assert validation_calls[0]["decode_images"] is False
-
-    monkeypatch.setattr(
-        "auto_speech_journal.ui_models.validate_runtime_scenes",
-        lambda **_kwargs: ["hash mismatch"],
-    )
-    assert _packaged_variant_matrix_ready(tmp_path) is False
-
-    assets[-1]["status"] = "planned"
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    assert _packaged_variant_matrix_ready(tmp_path) is False
 
 
 def test_expanded_size_is_bounded_exposed_and_persisted(qapp, tmp_path):
