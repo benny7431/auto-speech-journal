@@ -40,6 +40,6 @@ cache/retry。一般 HTTP 連線資訊（例如 IP、user agent、repository 與
 
 ## 未簽章安裝器
 
-`v0.3.0` Setup 沒有 Authenticode 簽章，Windows 可能顯示未知的發行者或 Microsoft
+`v0.3.1` Setup 沒有 Authenticode 簽章，Windows 可能顯示未知的發行者或 Microsoft
 Defender SmartScreen。請只從專案 GitHub Release 下載並核對 SHA-256；不要為了安裝而
 停用 Windows Defender。

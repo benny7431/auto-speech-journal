@@ -18,13 +18,13 @@ Get-Content "$env:LOCALAPPDATA\AutoSpeechJournal\logs\journal.log" -Tail 200
 
 ## Windows 顯示未知的發行者或 SmartScreen
 
-`v0.3.0` 安裝器目前沒有 Authenticode 簽章，因此 Windows 可能顯示
+`v0.3.1` 安裝器目前沒有 Authenticode 簽章，因此 Windows 可能顯示
 **Unknown publisher／未知的發行者** 或 Microsoft Defender SmartScreen。
 
 只從本專案的 GitHub Release 下載，並將檔案的 SHA-256 與 `SHA256SUMS.txt` 比對：
 
 ```powershell
-Get-FileHash .\AutoSpeechJournal-Setup-0.3.0-x64.exe -Algorithm SHA256
+Get-FileHash .\AutoSpeechJournal-Setup-0.3.1-x64.exe -Algorithm SHA256
 ```
 
 不要停用 Windows Defender。來源或 hash 無法確認時，不要執行該檔案。

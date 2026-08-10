@@ -7,6 +7,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-10
+
+### 修正
+
+- 修正設定檔並行寫入共用固定 `.tmp` 檔名而可能互相踩踏的問題；每次寫入改用唯一
+  暫存檔，且寫入或替換失敗後會清除孤兒暫存檔。
+
+### 變更
+
+- 設定檔、Markdown 匯出與更新檢查改用共用的 crash-safe 原子寫入流程。
+- 預覽與定稿引擎共用 OpenCC 正規化器；source 安裝與解除安裝腳本共用行程停止輔助
+  函式，維持既有行為。
+
+### 移除
+
+- 移除 Python 3.11 已原生支援的 ISO `Z` 後綴前置轉換，以及執行期沒有呼叫端的舊介面
+  與死碼。
+
 ## [0.3.0] - 2026-08-10
 
 ### 移除
@@ -110,7 +128,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Pinned model revisions, sizes and SHA-256 digests.
 - Runtime path excludes telemetry and remote transcription APIs.
 
-[Unreleased]: https://github.com/benny7431/auto-speech-journal/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/benny7431/auto-speech-journal/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/benny7431/auto-speech-journal/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/benny7431/auto-speech-journal/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/benny7431/auto-speech-journal/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/benny7431/auto-speech-journal/releases/tag/v0.1.0

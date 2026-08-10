@@ -1,6 +1,6 @@
 # Releasing
 
-`v0.3.0` 延續最小發布流程。主要資產為未簽章 Windows Setup、wheel、source distribution、
+`v0.3.1` 延續最小發布流程。主要資產為未簽章 Windows Setup、wheel、source distribution、
 `SHA256SUMS.txt` 與繁體中文 Release Notes。
 
 ## Release requirements
@@ -27,7 +27,7 @@ Setup 直接安裝到：
 Hugging Face 模型或 NVIDIA CUDA 元件。首次啟動後，App 才透過 `huggingface_hub` 從固定
 commit 取得模型。
 
-`v0.3.0` Setup 與內層 EXE 允許未簽章。Release Notes 必須以繁體中文清楚標示 Windows
+`v0.3.1` Setup 與內層 EXE 允許未簽章。Release Notes 必須以繁體中文清楚標示 Windows
 可能顯示 **Unknown publisher／未知的發行者** 或 Microsoft Defender SmartScreen。請使用者
 核對 `SHA256SUMS.txt`，不得要求停用 Windows Defender。
 
@@ -38,8 +38,8 @@ commit 取得模型。
 確認上述門檻後，才從乾淨的 `main` 建立 tag：
 
 ```powershell
-git tag -a v0.3.0 -m "發布 Auto Speech Journal v0.3.0"
-git push origin v0.3.0
+git tag -a v0.3.1 -m "發布 Auto Speech Journal v0.3.1"
+git push origin v0.3.1
 ```
 
 Tag workflow 只需要：
@@ -55,7 +55,7 @@ Tag workflow 只需要：
 
 ```powershell
 Get-Content .\SHA256SUMS.txt
-Get-FileHash .\AutoSpeechJournal-Setup-0.3.0-x64.exe -Algorithm SHA256
+Get-FileHash .\AutoSpeechJournal-Setup-0.3.1-x64.exe -Algorithm SHA256
 ```
 
 SHA-256 必須完全相同。SmartScreen 提示不代表需要關閉 Defender；來源或 hash 無法確認時，
