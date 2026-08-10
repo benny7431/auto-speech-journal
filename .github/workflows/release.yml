@@ -189,14 +189,14 @@ jobs:
           $notes = @(
             "# Auto Speech Journal $version",
             "",
-            "## Important Windows installer notice",
+            "## Windows 安裝器重要提醒",
             "",
-            "The Setup executable and bundled application executables are not Authenticode-signed.",
-            "Windows may show an Unknown publisher message or a Microsoft Defender SmartScreen prompt.",
-            "Do not disable Microsoft Defender. Verify SHA256SUMS.txt before installation.",
-            "Code signing can be added later, but it does not block this release.",
+            "Setup 安裝程式與隨附的應用程式執行檔皆未經 Authenticode 簽章。",
+            "Windows 可能顯示「未知的發行者」或 Microsoft Defender SmartScreen 提示。",
+            "請勿停用 Microsoft Defender；安裝前請先核對 SHA256SUMS.txt。",
+            "未來可以加入程式碼簽章，但目前不影響此預發行版。",
             "",
-            "This prerelease contains the per-user Windows Setup, Python wheel, and source distribution."
+            "本預發行版包含每位使用者安裝的 Windows Setup、Python wheel 與原始碼套件。"
           ) + $changelog[$start..($end - 1)]
           [IO.File]::WriteAllLines(
             (Join-Path $output "RELEASE-NOTES.md"),
