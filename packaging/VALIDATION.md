@@ -45,7 +45,7 @@ Acceptance requires:
 - uninstall removes application-owned files while preserving
   `%LOCALAPPDATA%\AutoSpeechJournal` and external journals.
 
-The Setup and inner EXE are expected to be unsigned for `v0.3.0`. Missing Authenticode must not
+The Setup and inner EXE are expected to be unsigned for `v0.3.1`. Missing Authenticode must not
 fail packaging or release validation. Release notes must warn about Unknown publisher/SmartScreen
 and instruct users to verify the published SHA-256. Never instruct users to disable Windows
 Defender.

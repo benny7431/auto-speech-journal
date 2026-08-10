@@ -46,7 +46,7 @@ only during first-run setup or an explicit model download; routine recording doe
 or transcripts to a cloud service.
 
 > [!IMPORTANT]
-> Version `0.3.0` is a pre-release. It supports Windows WASAPI, Chinese
+> Version `0.3.1` is a pre-release. It supports Windows WASAPI, Chinese
 > transcription, and the `Asia/Taipei` timezone only. A microphone does not need to be connected
 > during installation; the application asks you to select an input explicitly on first launch.
 
@@ -88,8 +88,8 @@ or transcripts to a cloud service.
 
 ### 2. Download and install
 
-The official `v0.3.0` release may publish an unsigned
-`AutoSpeechJournal-Setup-0.3.0-x64.exe` with unsigned inner executables. Download release assets
+The official `v0.3.1` release may publish an unsigned
+`AutoSpeechJournal-Setup-0.3.1-x64.exe` with unsigned inner executables. Download release assets
 only from [GitHub Releases](https://github.com/benny7431/auto-speech-journal/releases), not from an
 internal PR artifact. Because the files currently have no Authenticode signature, Windows may show
 an **Unknown publisher** dialog or a Microsoft Defender SmartScreen prompt. Verify the published
@@ -347,7 +347,7 @@ app-control.ps1                # Process and mutex helpers shared by both script
 - The microphone list includes WASAPI virtual inputs but does not support special loopback capture.
   Indistinguishable duplicate endpoints cannot be pinned; use the Windows default or disable the
   duplicate endpoint.
-- The `v0.3.0` Setup and inner executables are currently unsigned, so Windows may report an unknown
+- The `v0.3.1` Setup and inner executables are currently unsigned, so Windows may report an unknown
   publisher or show SmartScreen. Missing signatures do not block this release; signing can be added
   again after a suitable certificate becomes available.
 - Project source and first-party release assets use the MIT License; third-party content keeps its

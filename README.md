@@ -44,7 +44,7 @@
 Face；日常錄音不需要把音訊或文字送到雲端。
 
 > [!IMPORTANT]
-> 目前是 `0.3.0` 預發行版，僅支援 Windows WASAPI、中文辨識與 `Asia/Taipei` 時區。
+> 目前是 `0.3.1` 預發行版，僅支援 Windows WASAPI、中文辨識與 `Asia/Taipei` 時區。
 > 安裝不需要先接上麥克風；第一次啟動 App 時再明確選擇收音來源。
 
 ## 目錄
@@ -85,7 +85,7 @@ Face；日常錄音不需要把音訊或文字送到雲端。
 
 ### 2. 下載並安裝
 
-`v0.3.0` 允許正式發布未簽章的 `AutoSpeechJournal-Setup-0.3.0-x64.exe` 與內層 EXE。
+`v0.3.1` 允許正式發布未簽章的 `AutoSpeechJournal-Setup-0.3.1-x64.exe` 與內層 EXE。
 請只從 [GitHub Releases](https://github.com/benny7431/auto-speech-journal/releases) 下載正式資產，
 不要使用 PR 的內部 artifact。由於目前沒有 Authenticode 簽章，Windows 可能顯示
 「未知的發行者」或 Microsoft Defender SmartScreen 提示；請先比對 Release 提供的 SHA-256。
@@ -322,7 +322,7 @@ app-control.ps1                # 上述兩支腳本共用的行程與 mutex 輔�
 - 僅支援 Windows WASAPI、Python 3.11、中文辨識與台北時區。
 - 麥克風清單包含 WASAPI 虛擬輸入，但不支援特殊 loopback capture；無法安全區分的
   同名端點不能固定綁定，請改用 Windows 預設或停用重複端點。
-- `v0.3.0` Setup 與內層 EXE 尚未簽章，Windows 可能顯示未知發行者或 SmartScreen 提示；
+- `v0.3.1` Setup 與內層 EXE 尚未簽章，Windows 可能顯示未知發行者或 SmartScreen 提示；
   簽章缺失目前不阻擋正式 Release。未來取得合適憑證後可重新加入簽章流程。
 - 專案原始碼與專案自有發行資產採 MIT License；第三方內容仍受各自條款約束。
 - 個人本機字體與其聲明不屬於發行內容。
