@@ -441,6 +441,17 @@ class TimelineListModel(QAbstractListModel):
     def row_for_id(self, segment_id: str) -> _TimelineRow | None:
         return next((row for row in self._rows if row.segment_id == segment_id), None)
 
+    @Slot(str, result=int)
+    def indexForSegmentId(self, segment_id: str) -> int:
+        return next(
+            (
+                index
+                for index, row in enumerate(self._rows)
+                if row.segment_id == segment_id
+            ),
+            -1,
+        )
+
     def begin_edit(self, segment_id: str) -> bool:
         row = self.row_for_id(segment_id)
         if row is None or not row.editable or not row.text.strip():

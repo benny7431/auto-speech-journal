@@ -240,6 +240,7 @@ def journal_window(qtbot, tmp_path):
             application,
             window_settings=settings,
             microphone_device_provider=lambda: [],
+            font_directories=[tmp_path / "fonts"],
         )
         window.show()
         qtbot.waitUntil(window.isVisible)
@@ -285,7 +286,10 @@ def _assert_button_content_fits(button: QObject) -> None:
     assert content is not None
     content_width = float(content.property("implicitWidth"))
     available_width = float(button.property("availableWidth"))
-    assert content_width <= available_width + 0.5
+    assert content_width <= available_width + 0.5, (
+        f"{button.objectName()} content implicitWidth={content_width}, "
+        f"availableWidth={available_width}"
+    )
 
 
 def _assert_guarded_button_content_fits(window: QObject) -> None:
@@ -1259,11 +1263,30 @@ def test_timeline_refresh_preserves_scroll_position_while_editing(
     qtbot.waitUntil(lambda: timeline.property("contentHeight") > timeline.property("height"))
     qtbot.wait(250)
 
-    bottom = timeline.property("contentHeight") - timeline.property("height")
-    timeline.setProperty("contentY", bottom)
+    # ListView's absolute contentY is not stable when variable-height delegates
+    # are recreated. Preserve the visible row and its viewport offset instead.
+    timeline.setProperty("contentY", timeline.property("originY"))
+    qtbot.waitUntil(
+        lambda: any(
+            row.property("segmentId") == "segment-00"
+            for row in _visual_items(window, "timelineRow")
+        )
+    )
     view_model.beginEdit("segment-00")
-    qtbot.wait(20)
-    saved_y = float(timeline.property("contentY"))
+    qtbot.waitUntil(
+        lambda: any(
+            row.property("segmentId") == "segment-00" and row.property("editing")
+            for row in _visual_items(window, "timelineRow")
+        )
+    )
+    editing_row = next(
+        row
+        for row in _visual_items(window, "timelineRow")
+        if row.property("segmentId") == "segment-00"
+    )
+    saved_viewport_offset = float(editing_row.property("y")) - float(
+        timeline.property("contentY")
+    )
 
     controller.segments.append(
         TimelineSegmentView(
@@ -1283,7 +1306,16 @@ def test_timeline_refresh_preserves_scroll_position_while_editing(
     view_model.refresh(force_timeline=True)
     qtbot.wait(250)
 
-    assert timeline.property("contentY") == pytest.approx(saved_y, abs=1.0)
+    editing_rows = [
+        row
+        for row in _visual_items(window, "timelineRow")
+        if row.property("segmentId") == "segment-00" and row.property("editing")
+    ]
+    assert len(editing_rows) == 1
+    restored_viewport_offset = float(editing_rows[0].property("y")) - float(
+        timeline.property("contentY")
+    )
+    assert restored_viewport_offset == pytest.approx(saved_viewport_offset, abs=1.0)
     assert window.findChild(QObject, "newSegmentsPill").property("visible") is True
 
 
@@ -1546,6 +1578,38 @@ def test_max_font_size_keeps_widest_local_font_inside_fixed_boundaries(
     qtbot.wait(10)
     _assert_confirmation_content_fits(window)
     _assert_guarded_button_content_fits(window)
+
+
+def test_microphone_actions_reflow_before_font_metrics_overflow(journal_window, qtbot):
+    window, _, _ = journal_window
+    view_model = window._journal_view_model
+    family = view_model.availableFontFamilies[-1]
+
+    assert view_model.applyAppearance(family, 26) is True
+    view_model.toggleExpanded()
+    window.setProperty("activeSheet", "settings")
+    qtbot.wait(40)
+
+    action_layout = window.findChild(QObject, "microphoneActionLayout")
+    rescan_button = window.findChild(QObject, "microphoneRescanButton")
+    test_button = window.findChild(QObject, "microphoneTestButton")
+    assert action_layout is not None
+    assert rescan_button is not None
+    assert test_button is not None
+
+    single_column_width = max(
+        float(rescan_button.property("implicitWidth")),
+        float(test_button.property("implicitWidth")),
+    ) + 1
+    action_layout.setProperty("width", single_column_width)
+    qtbot.wait(20)
+
+    assert int(action_layout.property("columns")) == 1
+    assert float(test_button.property("y")) > float(rescan_button.property("y"))
+    assert float(rescan_button.property("width")) <= single_column_width + 0.5
+    assert float(test_button.property("width")) <= single_column_width + 0.5
+    _assert_button_content_fits(rescan_button)
+    _assert_button_content_fits(test_button)
 
 
 def test_native_close_collapses_workspace_then_minimizes_compact(journal_window, qtbot):

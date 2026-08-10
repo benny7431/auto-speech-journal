@@ -252,8 +252,16 @@ Item {
             font.family: journal.systemFontFamily
             font.pixelSize: root.px(14)
         }
-        RowLayout {
+        GridLayout {
+            id: microphoneActionLayout
+            objectName: "microphoneActionLayout"
             width: parent.width
+            readonly property real sideBySideMinimumWidth:
+                Math.ceil(microphoneRescanButton.implicitWidth) +
+                Math.ceil(microphoneTestButton.implicitWidth) + columnSpacing
+            columns: sideBySideMinimumWidth <= Math.floor(width) ? 2 : 1
+            columnSpacing: Theme.spaceSm
+            rowSpacing: Theme.spaceSm
             TextButton {
                 id: microphoneRescanButton
                 objectName: "microphoneRescanButton"
@@ -319,7 +327,7 @@ Item {
             width: parent.width
             visible: journal.recordingEngineNeedsStart
             text: "稍後設定麥克風，先進入主介面"
-            font.pixelSize: Math.min(root.px(15), 22)
+            font.pixelSize: Math.min(root.px(15), 20)
             onClicked: journal.deferMicrophoneAfterStartFailure()
         }
         }

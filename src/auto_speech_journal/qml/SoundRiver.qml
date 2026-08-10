@@ -22,7 +22,9 @@ Item {
     property color accentColor: Theme.accent
     property bool timelineWasOpened: false
     property bool userScrolledBack: false
-    property real savedContentY: 0
+    property real savedContentOffset: 0
+    property string savedAnchorSegmentId: ""
+    property real savedAnchorViewportY: 0
 
     property var collapsedHours: ({})
 
@@ -87,6 +89,48 @@ Item {
         })
     }
 
+    function captureScrollPosition() {
+        savedContentOffset = timelineList.contentY - timelineList.originY
+        savedAnchorSegmentId = ""
+        savedAnchorViewportY = 0
+
+        const index = timelineList.indexAt(
+            Math.max(1, timelineList.width / 2),
+            timelineList.contentY + 1
+        )
+        if (index < 0)
+            return
+        const item = timelineList.itemAtIndex(index)
+        if (!item)
+            return
+        savedAnchorSegmentId = item.segmentId
+        savedAnchorViewportY = item.y - timelineList.contentY
+    }
+
+    function restoreScrollPosition() {
+        timelineList.forceLayout()
+        const anchorIndex = journal.timelineModel.indexForSegmentId(savedAnchorSegmentId)
+        if (anchorIndex >= 0) {
+            timelineList.positionViewAtIndex(anchorIndex, ListView.Beginning)
+            Qt.callLater(function() {
+                timelineList.forceLayout()
+                const item = timelineList.itemAtIndex(anchorIndex)
+                if (item)
+                    timelineList.contentY = item.y - root.savedAnchorViewportY
+            })
+            return
+        }
+
+        const maximumY = timelineList.originY + Math.max(
+            0,
+            timelineList.contentHeight - timelineList.height
+        )
+        timelineList.contentY = Math.min(
+            timelineList.originY + root.savedContentOffset,
+            maximumY
+        )
+    }
+
     Component.onCompleted: {
         if (journal.expanded)
             openAtLatest()
@@ -101,7 +145,7 @@ Item {
         }
 
         function onTimelineUpdating() {
-            root.savedContentY = timelineList.contentY
+            root.captureScrollPosition()
         }
 
         function onTimelineUpdated(added) {
@@ -114,13 +158,7 @@ Item {
                 return
             }
 
-            Qt.callLater(function() {
-                const maximumY = Math.max(
-                    timelineList.originY,
-                    timelineList.contentHeight - timelineList.height
-                )
-                timelineList.contentY = Math.min(root.savedContentY, maximumY)
-            })
+            Qt.callLater(function() { root.restoreScrollPosition() })
             if (added > 0)
                 newSegmentsPill.visible = true
         }
