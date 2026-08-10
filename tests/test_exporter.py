@@ -238,7 +238,7 @@ def test_failed_replace_preserves_previous_file_and_state(
     def fail_replace(_source: Path, _destination: Path) -> None:
         raise PermissionError("locked")
 
-    monkeypatch.setattr("auto_speech_journal.exporter.os.replace", fail_replace)
+    monkeypatch.setattr("auto_speech_journal.atomic_io.os.replace", fail_replace)
     with pytest.raises(PermissionError, match="locked"):
         exporter.rebuild_hour("2026-07-12_17")
     assert destination.read_text(encoding="utf-8") == "old\n"
@@ -264,13 +264,13 @@ def test_concurrent_correction_remains_dirty_for_follow_up_rebuild(
         real_replace(source, destination)
 
     monkeypatch.setattr(
-        "auto_speech_journal.exporter.os.replace", correct_during_replace
+        "auto_speech_journal.atomic_io.os.replace", correct_during_replace
     )
     first = exporter.rebuild_hour("2026-07-12_18")
     assert "舊文字" in first.path.read_text(encoding="utf-8")
     assert storage.list_dirty_hours() == ["2026-07-12_18"]
 
-    monkeypatch.setattr("auto_speech_journal.exporter.os.replace", real_replace)
+    monkeypatch.setattr("auto_speech_journal.atomic_io.os.replace", real_replace)
     exporter.rebuild_dirty()
     assert "並行修正" in first.path.read_text(encoding="utf-8")
     assert storage.list_dirty_hours() == []

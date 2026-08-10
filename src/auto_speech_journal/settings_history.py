@@ -40,7 +40,7 @@ class SettingsHistoryEntry:
             raise ValueError("settings history changed_fields is invalid")
         if not isinstance(before_raw, dict) or not isinstance(after_raw, dict):
             raise ValueError("settings history before/after values are invalid")
-        timestamp = datetime.fromisoformat(timestamp_raw.replace("Z", "+00:00"))
+        timestamp = datetime.fromisoformat(timestamp_raw)
         if timestamp.tzinfo is None:
             raise ValueError("settings history timestamp must include a timezone")
         fields = tuple(fields_raw)

@@ -658,11 +658,6 @@ class JournalController:
             last_error=text,
         )
 
-    def report_ui_message(self, message: str) -> None:
-        text = message.strip()
-        if text:
-            self._update(message=text)
-
     def configure_microphone(self, selection: MicrophoneSelection) -> str | None:
         selection.validate()
         if selection.mode not in {

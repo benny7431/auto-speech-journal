@@ -336,6 +336,7 @@ tests/                         # Pytest regression tests
 packaging/                     # PyInstaller, Inno Setup, and minimal release validation
 tools/                         # Recovery, assets, performance, and packaging QA
 install.ps1, uninstall.ps1     # Advanced source/CUDA installation and recovery
+app-control.ps1                # Process and mutex helpers shared by both scripts
 ```
 
 </details>

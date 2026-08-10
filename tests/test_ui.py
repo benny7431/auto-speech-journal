@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -47,10 +47,8 @@ from auto_speech_journal.ui import (
     POLL_INTERVAL_MS,
     SYSTEM_UI_FONT_FAMILY,
     _apply_rounded_window_corners,
-    _audio_age_seconds,
     _configure_application,
     _create_main_window,
-    _level_from_dbfs,
     _rounded_window_region,
 )
 
@@ -544,20 +542,6 @@ def test_settings_save_stays_enabled_for_skipped_microphone_without_devices(
     window.deleteLater()
 
 
-def test_dbfs_mapping_and_audio_freshness_are_bounded():
-    assert _level_from_dbfs(None) == 0.0
-    assert _level_from_dbfs(float("nan")) == 0.0
-    assert _level_from_dbfs(-90.0) == 0.0
-    assert 0.0 < _level_from_dbfs(-30.0) < 1.0
-    assert _level_from_dbfs(4.0) == 1.0
-
-    now = datetime(2026, 7, 12, 4, 0, 0, tzinfo=UTC)
-    assert _audio_age_seconds(now - timedelta(milliseconds=200), now=now) == pytest.approx(
-        0.2
-    )
-    assert _audio_age_seconds("invalid", now=now) == float("inf")
-
-
 def test_application_uses_product_name_and_brand_icon(qapp):
     _configure_application(qapp)
 
@@ -698,7 +682,7 @@ def test_scene_change_respects_two_second_hold(journal_window):
     assert view_model.sceneKey == "capturing"
 
 
-def test_midnight_refresh_rolls_date_timeline_and_month_scene(journal_window):
+def test_midnight_refresh_rolls_date_and_timeline(journal_window):
     window, _, _ = journal_window
     view_model = window._journal_view_model
     now = [datetime(2026, 7, 31, 23, 59, 59, tzinfo=ZoneInfo("Asia/Taipei"))]
@@ -706,13 +690,11 @@ def test_midnight_refresh_rolls_date_timeline_and_month_scene(journal_window):
     view_model.refresh(force_timeline=True)
 
     assert view_model.dayKey == "2026-07-31"
-    assert view_model.monthLabel == "7 月聲景"
 
     now[0] = datetime(2026, 8, 1, 0, 0, 1, tzinfo=ZoneInfo("Asia/Taipei"))
     view_model.refresh()
 
     assert view_model.dayKey == "2026-08-01"
-    assert view_model.monthLabel == "8 月聲景"
 
 
 def test_qml_window_switches_between_compact_and_centered_workspace(journal_window, qtbot):
