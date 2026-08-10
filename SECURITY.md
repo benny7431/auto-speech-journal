@@ -4,8 +4,9 @@
 
 | Version | Supported |
 | --- | --- |
-| 0.2.x | Yes, best effort |
-| 0.1.x | Security fixes only |
+| 0.3.x | Yes, best effort |
+| 0.2.x | Security fixes only |
+| 0.1.x | No |
 | Earlier or untagged snapshots | No |
 
 ## Reporting a vulnerability

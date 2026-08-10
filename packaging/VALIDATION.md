@@ -1,7 +1,7 @@
 # Packaging Validation
 
 The release package is intentionally small: a PyInstaller onedir application, an unsigned Inno
-Setup, wheel, source distribution, checksums, and a test summary.
+Setup, wheel, source distribution, checksums, and Traditional Chinese release notes.
 
 ## Application gates
 
@@ -45,7 +45,7 @@ Acceptance requires:
 - uninstall removes application-owned files while preserving
   `%LOCALAPPDATA%\AutoSpeechJournal` and external journals.
 
-The Setup and inner EXE are expected to be unsigned for `v0.2.0`. Missing Authenticode must not
+The Setup and inner EXE are expected to be unsigned for `v0.3.0`. Missing Authenticode must not
 fail packaging or release validation. Release notes must warn about Unknown publisher/SmartScreen
 and instruct users to verify the published SHA-256. Never instruct users to disable Windows
 Defender.
@@ -56,9 +56,9 @@ CI, CodeQL, and Windows install/start/uninstall E2E must pass. Generate checksum
 published artifact:
 
 ```powershell
-Get-FileHash .\artifacts\windows\*.exe -Algorithm SHA256
+Get-FileHash .\artifacts\windows\setup\*.exe -Algorithm SHA256
 Get-FileHash .\dist\* -Algorithm SHA256
 ```
 
-This policy update does not create a tag or public Release. A later release must use a clean
-`main` commit and publish immutable assets under a new version.
+A versioned release must use a clean `main` commit, an annotated tag that matches
+`pyproject.toml`, and immutable assets published under that version.

@@ -19,51 +19,43 @@ DIST = ROOT / "dist"
 def _project_version() -> str:
     with (ROOT / "pyproject.toml").open("rb") as handle:
         return str(tomllib.load(handle)["project"]["version"])
-STATES = (
-    "starting",
-    "listening",
-    "capturing",
-    "finalizing",
-    "paused",
-    "degraded",
-    "error",
-    "stopped",
-)
-LEGACY_EXPECTED_SCENES = {
-    f"{month:02d}-{state}.webp"
-    for month in range(1, 13)
-    for state in STATES
-}
-VARIANT_EXPECTED_SCENES = {
-    f"{month:02d}-{state}-{variant}.webp"
-    for month in range(1, 13)
-    for state in STATES
-    for variant in ("compact", "workspace")
-}
 REQUIRED_SUFFIXES = {
     "auto_speech_journal/runtime-models-v1.json",
-    "auto_speech_journal/qml/AmbientSoundRiver.qml",
+    "auto_speech_journal/qml/CompactRecorder.qml",
+    "auto_speech_journal/qml/FirstRunWizard.qml",
+    "auto_speech_journal/qml/FormSection.qml",
+    "auto_speech_journal/qml/HoursSheet.qml",
+    "auto_speech_journal/qml/IconButton.qml",
     "auto_speech_journal/qml/JournalEntryDelegate.qml",
     "auto_speech_journal/qml/JournalWindow.qml",
-    "auto_speech_journal/qml/SceneArt.qml",
+    "auto_speech_journal/qml/LevelMeter.qml",
+    "auto_speech_journal/qml/PaperButton.qml",
+    "auto_speech_journal/qml/SettingsSheet.qml",
     "auto_speech_journal/qml/SoundRiver.qml",
+    "auto_speech_journal/qml/SystemSheet.qml",
+    "auto_speech_journal/qml/TextButton.qml",
+    "auto_speech_journal/qml/Theme.qml",
     "auto_speech_journal/qml/TodayLiveBar.qml",
-    "auto_speech_journal/qml/TodayParticleLayer.qml",
     "auto_speech_journal/qml/TodayWorkspace.qml",
+    "auto_speech_journal/qml/UtilityDrawer.qml",
+    "auto_speech_journal/qml/VocabularySheet.qml",
+    # Extensionless, and the singleton will not resolve without it.
+    "auto_speech_journal/qml/qmldir",
     "auto_speech_journal/assets/brand/journal-ink-icon.json",
     "auto_speech_journal/assets/brand/journal-ink-icon.png",
-    "auto_speech_journal/assets/particles/glow-mote.png",
-    "auto_speech_journal/assets/particles/mist-mote.png",
-    "auto_speech_journal/assets/particles/soft-ripple.png",
-    "auto_speech_journal/assets/scenes/manifest.json",
-    "auto_speech_journal/assets/scenes/scene-manifest.schema.json",
 }
 PROHIBITED_SUFFIXES = {
+    "auto_speech_journal/qml/AmbientSoundRiver.qml",
     "auto_speech_journal/qml/PaperEcho.qml",
+    "auto_speech_journal/qml/PigmentAbsorption.qml",
+    "auto_speech_journal/qml/SceneArt.qml",
+    "auto_speech_journal/qml/TodayParticleLayer.qml",
     "auto_speech_journal/qml/Waveform.qml",
 }
 PROHIBITED_PATH_FRAGMENTS = {
     "auto_speech_journal/assets/fonts/",
+    "auto_speech_journal/assets/particles/",
+    "auto_speech_journal/assets/scenes/",
     "字體/",
     "聲明/",
 }
@@ -74,7 +66,6 @@ PROHIBITED_MEMBER_SUFFIXES = {
     ".sqlite",
     ".wav",
 }
-SCENE_RE = re.compile(r"auto_speech_journal/assets/scenes/([^/]+\.webp)$")
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
@@ -165,74 +156,6 @@ def verify_wheel(path: Path) -> list[str]:
             if re.search(r"[a-z]:[/\\]", name):
                 errors.append(f"wheel contains a Windows absolute path: {name}")
 
-        manifest_name = next(
-            (
-                name
-                for name in names
-                if name.endswith("auto_speech_journal/assets/scenes/manifest.json")
-            ),
-            None,
-        )
-        manifest = None
-        if manifest_name is not None:
-            try:
-                manifest_bytes = wheel.read(manifest_name)
-                manifest = json.loads(manifest_bytes.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError, KeyError) as error:
-                errors.append(f"wheel scene manifest is invalid: {error}")
-
-        variant_manifest = isinstance(manifest, dict) and manifest.get("schema_version") == 2
-        expected_scenes = (
-            VARIANT_EXPECTED_SCENES if variant_manifest else LEGACY_EXPECTED_SCENES
-        )
-        expected_count = len(expected_scenes)
-        scene_members = {
-            match.group(1): name
-            for name in names
-            if (match := SCENE_RE.search(name)) is not None
-        }
-        scene_names = set(scene_members)
-        missing = expected_scenes - scene_names
-        extra = scene_names - expected_scenes
-        if missing:
-            errors.append(f"wheel is missing {len(missing)} scene WebP files")
-        if extra:
-            errors.append(f"wheel contains {len(extra)} unexpected scene WebP files")
-
-        if isinstance(manifest, dict):
-            assets = manifest.get("assets")
-            if not isinstance(assets, list):
-                errors.append("wheel scene manifest has no assets array")
-                assets = []
-            ready = sum(
-                isinstance(asset, dict) and asset.get("status") == "ready"
-                for asset in assets
-            )
-            if (
-                manifest.get("asset_count") != expected_count
-                or len(assets) != expected_count
-            ):
-                errors.append(
-                    f"wheel manifest matrix is not complete ({len(assets)}/{expected_count})"
-                )
-            if ready != expected_count:
-                errors.append(
-                    f"wheel manifest has {ready}/{expected_count} ready assets"
-                )
-            for asset in assets:
-                if not isinstance(asset, dict) or asset.get("status") != "ready":
-                    continue
-                filename = asset.get("filename")
-                if not isinstance(filename, str) or filename not in scene_members:
-                    continue
-                digest = asset.get("sha256")
-                actual = hashlib.sha256(wheel.read(scene_members[filename])).hexdigest()
-                if not isinstance(digest, str) or digest != actual:
-                    errors.append(f"wheel scene SHA-256 mismatch: {filename}")
-            normalized = manifest_bytes.decode("utf-8").replace("\\", "/").lower()
-            if "/.codex/" in normalized or "generated_images" in normalized:
-                errors.append("wheel manifest contains a machine-local generation path")
-
         brand_manifest_name = next(
             (
                 name
@@ -296,7 +219,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     print(
         f"Wheel verification passed: {wheel} "
-        "(runtime model manifest, scene QML, particle sprites, brand assets; "
+        "(runtime model manifest, journal QML, brand assets; "
         "license notices present; runtime data and local fonts excluded)"
     )
     return 0
