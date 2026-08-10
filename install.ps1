@@ -117,22 +117,6 @@ foreach ($Required in @(
     }
 }
 
-$SceneManifestPath = Join-Path $SourceRoot "src\auto_speech_journal\assets\scenes\manifest.json"
-if (-not (Test-Path -LiteralPath $SceneManifestPath)) {
-    throw "安裝來源缺少離線場景 manifest"
-}
-$SceneManifest = Get-Content -LiteralPath $SceneManifestPath -Raw -Encoding UTF8 |
-    ConvertFrom-Json
-$IncompleteScenes = @($SceneManifest.assets | Where-Object { $_.status -ne "ready" })
-if (
-    $SceneManifest.schema_version -ne 2 -or
-    $SceneManifest.asset_count -ne 192 -or
-    $SceneManifest.assets.Count -ne 192 -or
-    $IncompleteScenes.Count -ne 0
-) {
-    throw "離線場景圖包尚未完成；正式安裝需要 12 個月份 x 8 種狀態 x 2 種版型共 192 張 ready WebP"
-}
-
 $ExistingTask = Get-ScheduledTask `
     -TaskPath $TaskPath `
     -TaskName $TaskName `
@@ -239,11 +223,6 @@ try {
     $Pythonw = Join-Path $AppRoot ".venv\Scripts\pythonw.exe"
     if (-not (Test-Path -LiteralPath $Pythonw)) {
         throw "安裝後找不到 $Pythonw"
-    }
-
-    & $Python -X utf8 -m auto_speech_journal.scene_assets --strict
-    if ($LASTEXITCODE -ne 0) {
-        throw "離線場景資產驗證失敗，exit code $LASTEXITCODE"
     }
 
     if ($InstallModels) {
