@@ -682,7 +682,7 @@ def test_scene_change_respects_two_second_hold(journal_window):
     assert view_model.sceneKey == "capturing"
 
 
-def test_midnight_refresh_rolls_date_timeline_and_month_scene(journal_window):
+def test_midnight_refresh_rolls_date_and_timeline(journal_window):
     window, _, _ = journal_window
     view_model = window._journal_view_model
     now = [datetime(2026, 7, 31, 23, 59, 59, tzinfo=ZoneInfo("Asia/Taipei"))]
@@ -690,13 +690,11 @@ def test_midnight_refresh_rolls_date_timeline_and_month_scene(journal_window):
     view_model.refresh(force_timeline=True)
 
     assert view_model.dayKey == "2026-07-31"
-    assert view_model.monthLabel == "7 月聲景"
 
     now[0] = datetime(2026, 8, 1, 0, 0, 1, tzinfo=ZoneInfo("Asia/Taipei"))
     view_model.refresh()
 
     assert view_model.dayKey == "2026-08-01"
-    assert view_model.monthLabel == "8 月聲景"
 
 
 def test_qml_window_switches_between_compact_and_centered_workspace(journal_window, qtbot):

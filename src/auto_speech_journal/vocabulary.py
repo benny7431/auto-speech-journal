@@ -272,6 +272,3 @@ class VocabularyStore:
             selected.append(term)
             used_chars += separator_chars + len(term)
         return tuple(selected)
-
-    def hotword_prompt(self, **kwargs: int) -> str:
-        return ",".join(self.hotwords(**kwargs))
