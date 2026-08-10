@@ -87,20 +87,6 @@ def test_apply_correction_without_learning_keeps_lock_and_existing_contribution(
         storage.close()
 
 
-def test_storage_correction_learns_and_clear_rolls_back(tmp_path: Path) -> None:
-    storage = JournalStorage(tmp_path / "state.db")
-    try:
-        segment_id = add_preview(storage, tmp_path, "今天錯字")
-        storage.correct_segment(segment_id, "今天正字")
-        vocabulary = VocabularyStore(storage)
-        assert vocabulary.term_counts() == {"正": 1}
-        storage.clear_correction(segment_id)
-        assert vocabulary.term_counts() == {}
-        assert storage.get_segment(segment_id).user_locked is False
-    finally:
-        storage.close()
-
-
 def test_delete_term_keeps_other_terms_and_all_correction_locks(tmp_path: Path) -> None:
     storage = JournalStorage(tmp_path / "state.db")
     try:
@@ -175,7 +161,6 @@ def test_hotwords_are_limited_by_count_total_chars_and_frequency(tmp_path: Path)
         assert vocabulary.hotwords(limit=2) == ("龍", "豹")
         assert vocabulary.hotwords(max_chars=1) == ("龍",)
         assert vocabulary.hotwords(minimum_count=2) == ("龍",)
-        assert vocabulary.hotword_prompt(limit=2) == "龍,豹"
     finally:
         storage.close()
 

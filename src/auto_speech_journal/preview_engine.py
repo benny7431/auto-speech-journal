@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .native_runtime import register_onnxruntime_dll_directory
+from .text_normalize import NormalizerFactory, OpenCcTextNormalizer
 
 
 class PreviewEngineError(RuntimeError):
@@ -27,7 +28,6 @@ class PreviewHypothesis:
 
 
 RecognizerFactory = Callable[[], Any]
-NormalizerFactory = Callable[[], Any]
 
 
 class SherpaPreviewEngine:
@@ -61,8 +61,9 @@ class SherpaPreviewEngine:
         self.endpoint_silence_ms = endpoint_silence_ms
         self.max_utterance_seconds = max_utterance_seconds
         self._recognizer_factory = recognizer_factory
-        self._normalizer_factory = normalizer_factory
-        self._normalizer: Any | None = None
+        self._normalizer = OpenCcTextNormalizer(
+            normalizer_factory, error_type=PreviewEngineError
+        )
         self.supports_hotwords = supports_hotwords
         self._recognizer: Any | None = None
         self._stream: Any | None = None
@@ -134,19 +135,11 @@ class SherpaPreviewEngine:
             self._stream = self._new_stream()
 
     def _normalize_text(self, text: str) -> str:
+        # Silent audio decodes to an empty hypothesis on every chunk; skip the
+        # converter entirely so OpenCC is never built just to return "".
         if not text:
             return ""
-        if self._normalizer is None:
-            if self._normalizer_factory is not None:
-                self._normalizer = self._normalizer_factory()
-            else:
-                try:
-                    opencc = importlib.import_module("opencc")
-                except ImportError as exc:  # pragma: no cover - packaging failure
-                    raise PreviewEngineError("OpenCC is not installed") from exc
-                self._normalizer = opencc.OpenCC("s2tw")
-        converter = getattr(self._normalizer, "convert", self._normalizer)
-        return str(converter(text)).strip()
+        return self._normalizer.normalize(text)
 
     def normalize_text(self, text: str) -> str:
         return self._normalize_text(text)

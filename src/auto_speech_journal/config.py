@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from .atomic_io import write_json_atomic
 from .paths import AppPaths
 
 DEFAULT_UI_FONT_FAMILY = "SentyCreek"
@@ -272,11 +272,4 @@ def load_config(path: Path) -> AppConfig:
 
 def save_config(path: Path, config: AppConfig) -> None:
     config.validate()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    with temporary.open("w", encoding="utf-8", newline="\n") as handle:
-        json.dump(config.to_dict(), handle, ensure_ascii=False, indent=2)
-        handle.write("\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(temporary, path)
+    write_json_atomic(path, config.to_dict(), ensure_ascii=False)

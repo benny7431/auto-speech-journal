@@ -312,6 +312,7 @@ tests/                         # Pytest 回歸測試
 packaging/                     # PyInstaller、Inno Setup 與最小發布驗證
 tools/                         # 復原、基準圖、效能與打包 QA
 install.ps1, uninstall.ps1     # 進階 source/CUDA 安裝與救援流程
+app-control.ps1                # 上述兩支腳本共用的行程與 mutex 輔助函式
 ```
 
 </details>

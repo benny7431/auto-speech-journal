@@ -1493,7 +1493,6 @@ def test_timeline_revision_only_changes_for_durable_timeline_mutations(
     started = datetime(2026, 7, 12, tzinfo=UTC)
     controller.start()
 
-    controller.report_ui_message("一般狀態更新")
     controller.handle_event(PartialUpdate("revision", "預覽", started))
     assert controller.snapshot.timeline_revision == 0
 
