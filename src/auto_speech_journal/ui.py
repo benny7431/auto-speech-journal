@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import math
 import sys
 from collections.abc import Callable, Sequence
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -24,51 +23,12 @@ from .ui_models import (
     JournalViewModel,
 )
 
-AUDIO_STALE_SECONDS = 0.5
 COMPACT_CORNER_RADIUS = 14.0
 EXPANDED_CORNER_RADIUS = 18.0
 WINDOWS_11_BUILD = 22000
 DWMWA_WINDOW_CORNER_PREFERENCE = 33
 DWMWCP_ROUND = 2
-BACKGROUND = "#F4EEE3"
-TEXT = "#493F35"
-SIGNAL = "#718C78"
-WARNING = "#B88647"
-ERROR = "#B85C4A"
-PAUSED = "#8B8377"
 SYSTEM_UI_FONT_FAMILY = "Microsoft JhengHei UI"
-
-
-def _level_from_dbfs(value: float | int | None) -> float:
-    """Map an audio level into a stable 0..1 visual range."""
-    try:
-        dbfs = float(value) if value is not None else -90.0
-    except (TypeError, ValueError):
-        dbfs = -90.0
-    if not math.isfinite(dbfs):
-        dbfs = -90.0
-    return max(0.0, min(1.0, (dbfs + 60.0) / 54.0))
-
-
-def _audio_age_seconds(value: object, *, now: datetime | None = None) -> float:
-    if value is None:
-        return math.inf
-    timestamp: datetime
-    if isinstance(value, datetime):
-        timestamp = value
-    elif isinstance(value, str):
-        try:
-            timestamp = datetime.fromisoformat(value)
-        except ValueError:
-            return math.inf
-    else:
-        return math.inf
-    if timestamp.tzinfo is None:
-        timestamp = timestamp.replace(tzinfo=UTC)
-    current = now or datetime.now(UTC)
-    if current.tzinfo is None:
-        current = current.replace(tzinfo=UTC)
-    return max(0.0, (current - timestamp.astimezone(UTC)).total_seconds())
 
 
 def _rounded_window_region(width: int, height: int, radius: float) -> Any:
