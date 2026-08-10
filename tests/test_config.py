@@ -122,7 +122,8 @@ def test_load_config_migrates_legacy_v4_model_pins_without_losing_user_state(
     assert migrated.vocabulary_learning_enabled is False
     assert migrated.ui_font_family == "Existing User Font"
     assert migrated.ui_font_size == 22
-    assert not path.with_suffix(".json.tmp").exists()
+    assert list(path.parent.glob("*.tmp")) == []
+    assert list(path.parent.glob(".*.tmp")) == []
 
 
 def test_load_config_preserves_explicit_appearance_settings(tmp_path: Path) -> None:
@@ -196,7 +197,8 @@ def test_load_config_atomically_migrates_v1_preview_interval(
     assert "device" not in persisted
     assert migrated.preview_interval_ms == persisted["preview_interval_ms"] == expected_interval
     assert migrated.endpoint_silence_ms == 2_500
-    assert not path.with_suffix(".json.tmp").exists()
+    assert list(path.parent.glob("*.tmp")) == []
+    assert list(path.parent.glob(".*.tmp")) == []
 
 
 def test_load_config_migrates_v2_device_without_losing_fingerprint(tmp_path: Path) -> None:

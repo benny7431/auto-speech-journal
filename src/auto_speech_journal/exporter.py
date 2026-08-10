@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import os
 import re
-import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from .atomic_io import write_text_atomic
 from .storage import (
     DeletedHour,
     JournalStorage,
@@ -142,16 +141,7 @@ class MarkdownExporter:
             self.storage.clear_dirty_hour_if_unchanged(key, dirty_revision)
             return ExportResult(key, destination, 0, removed_empty_file=True)
 
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
-        try:
-            with temporary.open("w", encoding="utf-8", newline="\n") as handle:
-                handle.write(rendered)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, destination)
-        finally:
-            temporary.unlink(missing_ok=True)
+        write_text_atomic(destination, rendered)
 
         cleanup_failures: list[Path] = []
         # Only a successfully replaced file may advance state and release audio.
