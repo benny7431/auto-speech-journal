@@ -1328,9 +1328,13 @@ def test_custom_side_sheets_and_controller_actions_are_available(journal_window)
     assert window.findChild(QObject, "vocabularyDrawerTab") is not None
     assert window.findChild(QObject, "hoursDrawerTab") is not None
     window.setProperty("activeSheet", "system")
-    assert window.findChild(QObject, "systemSheet").property("visible") is True
+    system_sheet = window.findChild(QObject, "systemSheet")
+    assert system_sheet.property("visible") is True
+    assert float(system_sheet.property("height")) > 0
     window.setProperty("activeSheet", "hours")
-    assert window.findChild(QObject, "hoursSheet").property("visible") is True
+    hours_sheet = window.findChild(QObject, "hoursSheet")
+    assert hours_sheet.property("visible") is True
+    assert float(hours_sheet.property("height")) > 0
 
     view_model.togglePause()
     view_model.openRecordsFolder()
