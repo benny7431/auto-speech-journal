@@ -209,6 +209,7 @@ Rectangle {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: headerRule.bottom
+            anchors.bottom: parent.bottom
             anchors.margins: Theme.spaceXl
             visible: root.activeSheet === "system"
             journal: root.journal
@@ -220,6 +221,7 @@ Rectangle {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: headerRule.bottom
+            anchors.bottom: parent.bottom
             anchors.margins: Theme.spaceXl
             visible: root.activeSheet === "hours"
             journal: root.journal
