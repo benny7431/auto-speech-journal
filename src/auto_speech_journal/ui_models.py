@@ -2495,7 +2495,7 @@ class JournalViewModel(QObject):
         timestamp = getattr(entry, "timestamp_utc", None)
         if isinstance(timestamp, str):
             with suppress(ValueError):
-                timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                timestamp = datetime.fromisoformat(timestamp)
         timestamp_label = "時間未知"
         if isinstance(timestamp, datetime):
             if timestamp.tzinfo is None:

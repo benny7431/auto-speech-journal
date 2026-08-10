@@ -58,7 +58,7 @@ def _audio_age_seconds(value: object, *, now: datetime | None = None) -> float:
         timestamp = value
     elif isinstance(value, str):
         try:
-            timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            timestamp = datetime.fromisoformat(value)
         except ValueError:
             return math.inf
     else:
