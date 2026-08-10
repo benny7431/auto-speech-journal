@@ -85,21 +85,6 @@ class DeletedHour:
     audio_paths: tuple[Path, ...]
 
 
-@dataclass(frozen=True, slots=True)
-class QueueCapacity:
-    used_bytes: int
-    limit_bytes: int
-    warning_ratio: float
-
-    @property
-    def full(self) -> bool:
-        return self.used_bytes >= self.limit_bytes
-
-    @property
-    def warning(self) -> bool:
-        return self.used_bytes >= int(self.limit_bytes * self.warning_ratio)
-
-
 _ALLOWED_TRANSITIONS: dict[SegmentState, frozenset[SegmentState]] = {
     SegmentState.CAPTURED: frozenset(
         {SegmentState.FINALIZING, SegmentState.RETRY, SegmentState.FAILED}
@@ -739,24 +724,6 @@ class JournalStorage:
     # Controller-friendly alias.
     apply_user_correction = correct_segment
 
-    def clear_correction(self, segment_id: str) -> SegmentRecord:
-        now = _utc_iso(datetime.now(UTC))
-        with self.transaction() as connection:
-            cursor = connection.execute(
-                """
-                UPDATE segments
-                SET corrected_text = '', user_locked = 0, updated_at_utc = ?
-                WHERE segment_id = ?
-                """,
-                (now, segment_id),
-            )
-            if cursor.rowcount != 1:
-                raise SegmentNotFoundError(segment_id)
-            connection.execute(
-                "DELETE FROM vocabulary_contributions WHERE segment_id = ?", (segment_id,)
-            )
-        return self.get_segment(segment_id)
-
     def transition(
         self,
         segment_id: str,
@@ -1135,30 +1102,6 @@ class JournalStorage:
             pending_audio_deletion=tuple(cleanup_ids),
             completed_audio_deletion=tuple(completed_cleanup_ids),
         )
-
-    def queue_capacity(
-        self,
-        limit_bytes: int,
-        warning_ratio: float = 0.8,
-    ) -> QueueCapacity:
-        if limit_bytes <= 0:
-            raise ValueError("limit_bytes must be positive")
-        if not 0 < warning_ratio < 1:
-            raise ValueError("warning_ratio must be between zero and one")
-        used = 0
-        for record in self.list_segments():
-            if record.state == SegmentState.AUDIO_DELETED:
-                continue
-            try:
-                used += record.audio_path.stat().st_size
-            except FileNotFoundError:
-                continue
-        for _segment_id, audio_path in self.pending_audio_deletions():
-            try:
-                used += audio_path.stat().st_size
-            except FileNotFoundError:
-                continue
-        return QueueCapacity(used, limit_bytes, warning_ratio)
 
     @staticmethod
     def _row_to_record(row: sqlite3.Row) -> SegmentRecord:

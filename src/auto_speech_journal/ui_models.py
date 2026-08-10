@@ -831,10 +831,6 @@ class JournalViewModel(QObject):
         return f"{self._day.year} 年 {self._day.month} 月 {self._day.day} 日 · {weekday}"
 
     @Property(str, notify=dateChanged)
-    def monthLabel(self) -> str:
-        return f"{self._day.month} 月聲景"
-
-    @Property(str, notify=dateChanged)
     def dayKey(self) -> str:
         return self._day.isoformat()
 
@@ -986,10 +982,6 @@ class JournalViewModel(QObject):
     @Property("QVariantList", notify=microphoneDevicesChanged)
     def microphoneOptions(self) -> list[dict[str, Any]]:
         return [dict(option) for option in self._microphone_options]
-
-    @Property(bool, notify=microphoneDevicesChanged)
-    def microphoneHasAvailableDevices(self) -> bool:
-        return self._microphone_has_selectable_route
 
     @Property(str, notify=microphoneDevicesChanged)
     def microphoneScanError(self) -> str:
@@ -1726,25 +1718,6 @@ class JournalViewModel(QObject):
             self.actionFailed.emit("請先選擇一個麥克風或跟隨 Windows 預設")
             return False
         if not self._configure_microphone(selection):
-            return False
-        self._after_microphone_configuration()
-        QTimer.singleShot(0, self.startControllerIfReady)
-        return True
-
-    @Slot(result=bool)
-    def skipMicrophoneSetup(self) -> bool:
-        if self.onboardingPending:
-            return self.deferOnboarding()
-        if self._microphone_has_selectable_route:
-            self.actionFailed.emit("已有可用麥克風，請先選擇後再開始")
-            return False
-        action = getattr(self._controller, "skip_microphone_setup", None)
-        if callable(action):
-            if not self._run_action(action, success="已略過麥克風設定，可稍後在設定頁補上"):
-                return False
-        elif not self._configure_microphone(
-            MicrophoneSelection(mode=MicrophoneMode.SKIPPED)
-        ):
             return False
         self._after_microphone_configuration()
         QTimer.singleShot(0, self.startControllerIfReady)

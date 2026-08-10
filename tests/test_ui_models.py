@@ -712,7 +712,7 @@ def test_onboarding_defer_is_persisted_without_starting(qapp, tmp_path):
     )
 
     assert view_model.rescanMicrophones() == 0
-    assert view_model.skipMicrophoneSetup() is True
+    assert view_model.deferOnboarding() is True
     qapp.processEvents()
 
     assert controller.config.microphone.mode is MicrophoneMode.SKIPPED
@@ -789,9 +789,8 @@ def test_pending_microphone_setup_can_be_skipped_when_no_route_is_selectable(
     )
 
     assert view_model.rescanMicrophones() == 1
-    assert view_model.microphoneHasAvailableDevices is False
     assert all(not option["selectable"] for option in view_model.microphoneOptions)
-    assert view_model.skipMicrophoneSetup() is True
+    assert view_model.deferOnboarding() is True
     qapp.processEvents()
 
     assert controller.config.microphone.mode is MicrophoneMode.SKIPPED

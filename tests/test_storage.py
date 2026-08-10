@@ -502,14 +502,3 @@ def test_recovery_does_not_resurrect_locked_hour_deletion_tombstone(
         assert storage.pending_audio_deletions() == ((segment.segment_id, segment.audio_path),)
     finally:
         storage.close()
-
-
-def test_queue_capacity_counts_existing_non_deleted_audio(
-    storage: JournalStorage, tmp_path: Path
-) -> None:
-    segment = captured(tmp_path)
-    storage.add_captured(segment)
-    capacity = storage.queue_capacity(40, warning_ratio=0.8)
-    assert capacity.used_bytes == 36
-    assert capacity.warning is True
-    assert capacity.full is False
