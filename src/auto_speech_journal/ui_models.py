@@ -57,6 +57,12 @@ SPI_GETCLIENTAREAANIMATION = 0x1042
 FONT_DIRECTORY_ENV = "AUTO_SPEECH_JOURNAL_FONT_DIR"
 SUPPORTED_FONT_SUFFIXES = frozenset({".ttf", ".otf"})
 
+# Status accent colours, mirrored by the QML palette.
+STATUS_TONE_PAUSED = "#8B8377"
+STATUS_TONE_ERROR = "#B85C4A"
+STATUS_TONE_WARNING = "#B88647"
+STATUS_TONE_SIGNAL = "#718C78"
+
 TAIPEI = ZoneInfo("Asia/Taipei")
 WEEKDAYS = ("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")
 SETTINGS_FIELD_LABELS = {
@@ -806,13 +812,13 @@ class JournalViewModel(QObject):
     @Property(str, notify=snapshotChanged)
     def statusTone(self) -> str:
         if self.paused:
-            return "#8B8377"
+            return STATUS_TONE_PAUSED
         severity = _enum_value(getattr(self._snapshot, "severity", "info"))
         if severity == "error":
-            return "#B85C4A"
+            return STATUS_TONE_ERROR
         if severity == "warning":
-            return "#B88647"
-        return "#718C78"
+            return STATUS_TONE_WARNING
+        return STATUS_TONE_SIGNAL
 
     @Property(str, notify=sceneChanged)
     def sceneKey(self) -> str:

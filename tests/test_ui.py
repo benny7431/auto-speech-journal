@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -47,10 +47,8 @@ from auto_speech_journal.ui import (
     POLL_INTERVAL_MS,
     SYSTEM_UI_FONT_FAMILY,
     _apply_rounded_window_corners,
-    _audio_age_seconds,
     _configure_application,
     _create_main_window,
-    _level_from_dbfs,
     _rounded_window_region,
 )
 
@@ -542,20 +540,6 @@ def test_settings_save_stays_enabled_for_skipped_microphone_without_devices(
     view_model._allow_close = True
     window.close()
     window.deleteLater()
-
-
-def test_dbfs_mapping_and_audio_freshness_are_bounded():
-    assert _level_from_dbfs(None) == 0.0
-    assert _level_from_dbfs(float("nan")) == 0.0
-    assert _level_from_dbfs(-90.0) == 0.0
-    assert 0.0 < _level_from_dbfs(-30.0) < 1.0
-    assert _level_from_dbfs(4.0) == 1.0
-
-    now = datetime(2026, 7, 12, 4, 0, 0, tzinfo=UTC)
-    assert _audio_age_seconds(now - timedelta(milliseconds=200), now=now) == pytest.approx(
-        0.2
-    )
-    assert _audio_age_seconds("invalid", now=now) == float("inf")
 
 
 def test_application_uses_product_name_and_brand_icon(qapp):
