@@ -31,6 +31,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   不再發行的檔案而失敗。
 - `SystemSheet` 與 `HoursSheet` 補上 bottom anchor，並可捲動、裁切內容，避免內容區
   高度變成 0，或在最大日記字級時超出抽屜而無法查看。
+- 時間軸刷新改以可見片段 ID 與視窗內位移還原閱讀位置，避免可變高度 delegate 在
+  model reset 後跳到最新片段。
+- 麥克風重新掃描與測試按鈕會依實際字型寬度自動改為單欄，避免 CI 或替代中文字型下
+  壓縮文字或越出設定抽屜。
 
 ### 變更
 
