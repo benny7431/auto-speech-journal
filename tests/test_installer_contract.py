@@ -72,6 +72,14 @@ def test_source_installer_keeps_advanced_cuda_and_uses_official_model_command() 
     assert "throw" not in source[failure:self_test]
 
 
+def test_source_installer_has_no_removed_scene_art_dependency() -> None:
+    source = _source(INSTALLER)
+
+    assert "scene_assets" not in source
+    assert "assets\\scenes" not in source
+    assert "離線場景" not in source
+
+
 def test_source_installer_defers_consent_and_microphone_to_first_launch() -> None:
     source = _source(INSTALLER)
 
