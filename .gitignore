@@ -30,3 +30,7 @@ spool/
 state.db*
 config.json
 settings-history.jsonl
+
+# Local working notes required by AGENTS.md: per-session handover files and the
+# running idea backlog. Never part of a pull request.
+/工作筆記/
