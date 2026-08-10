@@ -129,7 +129,7 @@ def _utc_iso(value: datetime) -> str:
 
 
 def _parse_datetime(value: str) -> datetime:
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    parsed = datetime.fromisoformat(value)
     if parsed.tzinfo is None:
         raise ValueError(f"stored timestamp is not timezone-aware: {value!r}")
     return parsed.astimezone(UTC)
