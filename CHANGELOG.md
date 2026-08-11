@@ -7,6 +7,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-08-11
+
+### 新增
+
+- 新增 20 至 30 秒真機麥克風辨識 Demo，以及 1280×640 的 GitHub Social Preview，讓訪客
+  能直接確認錄音、即時預覽、Whisper 定稿與 Markdown 輸出流程。
+
+### 變更
+
+- README 首屏改為繁體中文優先、英文同步的正式版下載入口、三項核心賣點與真機示範。
+- 純數字 `vX.Y.Z` tag 現在發布為 Stable／Latest；帶 `a`、`b`、`rc` 或 `dev` 後綴的
+  版本仍發布為 Pre-release，且不取代 Latest。
+- 更新 GitHub About 描述與 Topics，強化本機辨識、隱私、Markdown 與 journaling 定位。
+
 ## [0.3.1] - 2026-08-10
 
 ### 修正
@@ -128,7 +142,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Pinned model revisions, sizes and SHA-256 digests.
 - Runtime path excludes telemetry and remote transcription APIs.
 
-[Unreleased]: https://github.com/benny7431/auto-speech-journal/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/benny7431/auto-speech-journal/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/benny7431/auto-speech-journal/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/benny7431/auto-speech-journal/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/benny7431/auto-speech-journal/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/benny7431/auto-speech-journal/compare/v0.1.0...v0.2.0

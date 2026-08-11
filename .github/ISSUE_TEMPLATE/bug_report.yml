@@ -18,7 +18,7 @@ body:
     id: version
     attributes:
       label: 版本或 commit
-      placeholder: v0.3.1 或 git rev-parse --short HEAD
+      placeholder: v0.3.2 或 git rev-parse --short HEAD
     validations:
       required: true
   - type: input
@@ -33,6 +33,7 @@ body:
     attributes:
       label: 安裝方式
       options:
+        - AutoSpeechJournal-Setup-0.3.2-x64.exe（推薦）
         - install.ps1（CUDA）
         - install.ps1 -NoCuda
         - Source checkout

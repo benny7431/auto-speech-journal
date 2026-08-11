@@ -1,7 +1,7 @@
 # Releasing
 
-`v0.3.1` 延續最小發布流程。主要資產為未簽章 Windows Setup、wheel、source distribution、
-`SHA256SUMS.txt` 與繁體中文 Release Notes。
+`v0.3.2` 是第一個標示為 Stable／Latest 的正式版，並延續最小發布流程。主要資產為未簽章
+Windows Setup、wheel、source distribution、`SHA256SUMS.txt` 與繁體中文 Release Notes。
 
 ## Release requirements
 
@@ -27,7 +27,7 @@ Setup 直接安裝到：
 Hugging Face 模型或 NVIDIA CUDA 元件。首次啟動後，App 才透過 `huggingface_hub` 從固定
 commit 取得模型。
 
-`v0.3.1` Setup 與內層 EXE 允許未簽章。Release Notes 必須以繁體中文清楚標示 Windows
+`v0.3.2` Setup 與內層 EXE 允許未簽章。Release Notes 必須以繁體中文清楚標示 Windows
 可能顯示 **Unknown publisher／未知的發行者** 或 Microsoft Defender SmartScreen。請使用者
 核對 `SHA256SUMS.txt`，不得要求停用 Windows Defender。
 
@@ -38,9 +38,16 @@ commit 取得模型。
 確認上述門檻後，才從乾淨的 `main` 建立 tag：
 
 ```powershell
-git tag -a v0.3.1 -m "發布 Auto Speech Journal v0.3.1"
-git push origin v0.3.1
+git tag -a v0.3.2 -m "發布 Auto Speech Journal v0.3.2"
+git push origin v0.3.2
 ```
+
+發布類型只依 `pyproject.toml` 的版本判定，tag 仍必須與該版本完全相同：
+
+- 標準 `X.Y.Z` 版本與 `vX.Y.Z` tag 發布為 Stable，並明確標示為 Latest。
+- 帶 `a`、`b`、`rc` 或 `dev` 後綴的 canonical PEP 440 版本發布為 Pre-release，且不標示
+  為 Latest，例如 `0.4.0rc1`／`v0.4.0rc1`。
+- 不使用會被建置工具正規化成不同檔名的 `0.4.0-rc.1` 等非 canonical 寫法。
 
 Tag workflow 只需要：
 
@@ -49,13 +56,14 @@ Tag workflow 只需要：
 3. 建置並驗證 wheel、sdist 與 unsigned Setup。
 4. 在 Windows runner 執行安裝、首次啟動與解除安裝 E2E。
 5. 產生 `SHA256SUMS.txt` 與繁體中文 Release Notes。
-6. 以單一發布步驟建立 pre-release，Release Notes 必須包含未簽章提示。
+6. 依版本建立 Stable／Latest 或 Pre-release，Release Notes 先列下載與變更，最後保留一行
+   未簽章提示。
 
 ## Verify a downloaded Setup
 
 ```powershell
 Get-Content .\SHA256SUMS.txt
-Get-FileHash .\AutoSpeechJournal-Setup-0.3.1-x64.exe -Algorithm SHA256
+Get-FileHash .\AutoSpeechJournal-Setup-0.3.2-x64.exe -Algorithm SHA256
 ```
 
 SHA-256 必須完全相同。SmartScreen 提示不代表需要關閉 Defender；來源或 hash 無法確認時，

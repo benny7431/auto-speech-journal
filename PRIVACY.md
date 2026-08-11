@@ -1,6 +1,6 @@
 # 隱私說明
 
-最後更新：2026-08-10
+最後更新：2026-08-11
 
 Auto Speech Journal 是本機優先的 Windows 應用程式。收音、辨識、校正學習、SQLite
 保存與 Markdown 匯出都在使用者電腦執行；沒有遙測或雲端逐字稿服務。
@@ -40,6 +40,6 @@ cache/retry。一般 HTTP 連線資訊（例如 IP、user agent、repository 與
 
 ## 未簽章安裝器
 
-`v0.3.1` Setup 沒有 Authenticode 簽章，Windows 可能顯示未知的發行者或 Microsoft
+`v0.3.2` Setup 沒有 Authenticode 簽章，Windows 可能顯示未知的發行者或 Microsoft
 Defender SmartScreen。請只從專案 GitHub Release 下載並核對 SHA-256；不要為了安裝而
 停用 Windows Defender。
