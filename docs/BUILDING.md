@@ -29,6 +29,26 @@ uv run --no-sync python -m auto_speech_journal self-test `
 可直接執行的 ONNX／CTranslate2 檔案，並固定 Hugging Face repository、完整 commit、
 大小及 SHA-256。使用者端不得安裝 Torch、Transformers 或執行模型轉換。
 
+## README demo assets
+
+可重現的合成 UI Demo 繼續由 production QML 與 headless state 產生：
+
+```powershell
+uv run --no-sync python tools/render_readme_demo.py
+```
+
+真機 Demo 的 MP4 是保留的來源資產；GIF、靜態影格與 1280×640 Social Preview 都從它
+重建，因此不需要修改或重演辨識文字：
+
+```powershell
+uv run --no-sync python tools/render_live_demo_assets.py
+```
+
+重建真機素材需要 `ffmpeg` 在 `PATH`。`tools/run_isolated_live_demo.py` 只會在
+`LOCALAPPDATA` 明確指向 `$env:AUTO_SPEECH_JOURNAL_DEMO_ROOT\LocalAppData` 時啟動正式
+錄音、ASR、SQLite 與 Markdown 流程；`tools/play_demo_audio.py` 也要求明確指定實體輸出
+裝置。這兩項限制避免捕捉流程讀寫既有日記或更動使用者的開機啟動設定。
+
 ## Python distributions
 
 ```powershell

@@ -10,27 +10,45 @@
 <h1 align="center">聲跡日記</h1>
 
 <p align="center">
-  把每天說過的話，整理成只留在自己電腦裡的日記。
+  把每天說過的話，整理成只留在自己電腦裡的日記。<br>
+  <sub>Local-first Windows voice journal for Traditional Chinese.</sub>
 </p>
 
 <p align="center">
-  <code>Windows 10/11</code> · <code>Python 3.11</code> ·
-  <code>Local-first</code> · <code>繁體中文</code>
+  <code>Windows 10/11</code> · <code>Local-first</code> ·
+  <code>Whisper</code> · <code>Markdown</code>
 </p>
+
+<p align="center">
+  <a href="https://github.com/benny7431/auto-speech-journal/releases/download/v0.3.2/AutoSpeechJournal-Setup-0.3.2-x64.exe"><strong>下載 Windows 正式版 v0.3.2</strong></a>
+  ·
+  <a href="#25-秒真機-demo"><strong>觀看 25 秒真機 Demo</strong></a>
+</p>
+
+## 25 秒真機 Demo
+
+[![聲跡日記真機操作：錄音、即時預覽、Whisper 定稿與 Markdown 輸出](docs/images/auto-speech-journal-live-demo.gif)](docs/media/auto-speech-journal-live-demo.mp4)
+
+點擊畫面可開啟無音軌的 H.264 MP4 完整影片。
+
+- **全程本機辨識** — 日常錄音與逐字稿不上雲端。
+- **即時預覽 + Whisper 定稿** — 邊說邊看，片段完成後自動換成較準確結果。
+- **可恢復的 Markdown** — audio spool 與 SQLite 保護處理中資料，成果輸出為一般 Markdown。
+
+如果聲跡日記符合你的需求，歡迎在右上角按下 **Star**，追蹤後續版本。
 
 <p align="center">
   <a href="https://github.com/benny7431/auto-speech-journal/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/benny7431/auto-speech-journal/actions/workflows/ci.yml/badge.svg"></a>
   <a href="https://github.com/benny7431/auto-speech-journal/actions/workflows/codeql.yml"><img alt="CodeQL" src="https://github.com/benny7431/auto-speech-journal/actions/workflows/codeql.yml/badge.svg"></a>
-  <a href="https://github.com/benny7431/auto-speech-journal/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/benny7431/auto-speech-journal?include_prereleases"></a>
+  <a href="https://github.com/benny7431/auto-speech-journal/releases/latest"><img alt="Latest stable release" src="https://img.shields.io/github/v/release/benny7431/auto-speech-journal"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green.svg"></a>
-  <img alt="Python 3.11" src="https://img.shields.io/badge/python-3.11-blue.svg">
   <img alt="Windows 10/11" src="https://img.shields.io/badge/platform-Windows%2010%2F11-0078D4.svg">
 </p>
 
-![聲跡日記合成操作示範：錄音、即時預覽、修正與 Markdown 同步](docs/images/auto-speech-journal-demo.gif)
-
 <details>
-<summary>查看靜態工作台畫面</summary>
+<summary>查看可重現的合成 UI 示範與靜態工作台</summary>
+
+![聲跡日記合成操作示範：錄音、即時預覽、修正與 Markdown 同步](docs/images/auto-speech-journal-demo.gif)
 
 ![聲跡日記的今日聲音時間軸](docs/images/speech-journal-workspace.png)
 
@@ -42,10 +60,6 @@
 
 辨識、儲存與介面都在本機執行。網路只在首次設定或手動下載模型時連線至 Hugging
 Face；日常錄音不需要把音訊或文字送到雲端。
-
-> [!IMPORTANT]
-> 目前是 `0.3.1` 預發行版，僅支援 Windows WASAPI、中文辨識與 `Asia/Taipei` 時區。
-> 安裝不需要先接上麥克風；第一次啟動 App 時再明確選擇收音來源。
 
 ## 目錄
 
@@ -85,11 +99,11 @@ Face；日常錄音不需要把音訊或文字送到雲端。
 
 ### 2. 下載並安裝
 
-`v0.3.1` 允許正式發布未簽章的 `AutoSpeechJournal-Setup-0.3.1-x64.exe` 與內層 EXE。
-請只從 [GitHub Releases](https://github.com/benny7431/auto-speech-journal/releases) 下載正式資產，
-不要使用 PR 的內部 artifact。由於目前沒有 Authenticode 簽章，Windows 可能顯示
-「未知的發行者」或 Microsoft Defender SmartScreen 提示；請先比對 Release 提供的 SHA-256。
-無需也不應為了安裝而停用 Windows Defender。
+**推薦版本：[下載 `v0.3.2` Windows 安裝程式](https://github.com/benny7431/auto-speech-journal/releases/download/v0.3.2/AutoSpeechJournal-Setup-0.3.2-x64.exe)（Stable / Latest）**
+
+> Windows 執行檔目前未簽章；若出現「未知的發行者」或 SmartScreen，請核對
+> [`SHA256SUMS.txt`](https://github.com/benny7431/auto-speech-journal/releases/download/v0.3.2/SHA256SUMS.txt)，無須停用 Defender。
+
 正式 Setup 不需要 Python、`uv`、Git、PowerShell、管理員權限或另外安裝憑證。
 
 Setup 只安裝 CPU-safe App，不下載模型或 GPU 元件。程式會直接安裝到
@@ -265,7 +279,7 @@ Hugging Face cache 會重用已完成的檔案；既有日記、設定與待處�
 | [架構](docs/ARCHITECTURE.md) | 收音、佇列、復原、匯出與刪除邊界 |
 | [疑難排解](docs/TROUBLESHOOTING.md) | WASAPI、CUDA/CPU、模型、工作排程、SQLite/WAL 與 spool |
 | [建置](docs/BUILDING.md) | 開發環境、品質門檻、wheel 與合成 Demo |
-| [發布](docs/RELEASING.md) | tag、pre-release、checksum 與發布後驗證 |
+| [發布](docs/RELEASING.md) | tag、Stable／Pre-release、checksum 與發布後驗證 |
 | [隱私政策](PRIVACY.md) | 收音條件、資料位置、連網時機、保存與刪除方式 |
 | [第三方聲明](THIRD_PARTY_NOTICES.md) | runtime、CUDA 與 Hugging Face 模型的授權來源 |
 | [安全政策](SECURITY.md) | 支援版本、安全聯絡方式與禁止公開附加的敏感資料 |
@@ -319,11 +333,9 @@ app-control.ps1                # 上述兩支腳本共用的行程與 mutex 輔�
 
 ## 目前限制
 
-- 僅支援 Windows WASAPI、Python 3.11、中文辨識與台北時區。
+- 目前僅支援 Windows WASAPI、中文辨識與台北時區；原始碼開發與進階安裝使用 Python 3.11。
 - 麥克風清單包含 WASAPI 虛擬輸入，但不支援特殊 loopback capture；無法安全區分的
   同名端點不能固定綁定，請改用 Windows 預設或停用重複端點。
-- `v0.3.1` Setup 與內層 EXE 尚未簽章，Windows 可能顯示未知發行者或 SmartScreen 提示；
-  簽章缺失目前不阻擋正式 Release。未來取得合適憑證後可重新加入簽章流程。
 - 專案原始碼與專案自有發行資產採 MIT License；第三方內容仍受各自條款約束。
 - 個人本機字體與其聲明不屬於發行內容。
 

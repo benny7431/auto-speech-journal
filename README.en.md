@@ -10,27 +10,47 @@
 <h1 align="center">Auto Speech Journal</h1>
 
 <p align="center">
-  Turn the words you speak each day into a journal that stays on your computer.
+  Turn daily speech into a private, searchable journal that stays on your computer.<br>
+  <sub>為繁體中文打造的 Windows 本機語音日記。</sub>
 </p>
 
 <p align="center">
-  <code>Windows 10/11</code> · <code>Python 3.11</code> ·
-  <code>Local-first</code> · <code>Traditional Chinese</code>
+  <code>Windows 10/11</code> · <code>Local-first</code> ·
+  <code>Whisper</code> · <code>Markdown</code>
 </p>
+
+<p align="center">
+  <a href="https://github.com/benny7431/auto-speech-journal/releases/download/v0.3.2/AutoSpeechJournal-Setup-0.3.2-x64.exe"><strong>Download Windows stable v0.3.2</strong></a>
+  ·
+  <a href="#25-second-live-demo"><strong>Watch the 25-second live demo</strong></a>
+</p>
+
+## 25-second live demo
+
+[![Live Auto Speech Journal demo showing recording, streaming preview, Whisper final text, and Markdown output](docs/images/auto-speech-journal-live-demo.gif)](docs/media/auto-speech-journal-live-demo.mp4)
+
+Click the preview to open the complete silent H.264 MP4.
+
+- **Fully local recognition** — Routine recordings and transcripts are not uploaded to the cloud.
+- **Live preview + Whisper final text** — Read words as you speak, then receive a more accurate
+  final result.
+- **Recoverable Markdown** — The audio spool and SQLite protect in-flight work; journals remain
+  ordinary Markdown.
+
+If Auto Speech Journal fits your workflow, use the **Star** button above to follow future releases.
 
 <p align="center">
   <a href="https://github.com/benny7431/auto-speech-journal/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/benny7431/auto-speech-journal/actions/workflows/ci.yml/badge.svg"></a>
   <a href="https://github.com/benny7431/auto-speech-journal/actions/workflows/codeql.yml"><img alt="CodeQL" src="https://github.com/benny7431/auto-speech-journal/actions/workflows/codeql.yml/badge.svg"></a>
-  <a href="https://github.com/benny7431/auto-speech-journal/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/benny7431/auto-speech-journal?include_prereleases"></a>
+  <a href="https://github.com/benny7431/auto-speech-journal/releases/latest"><img alt="Latest stable release" src="https://img.shields.io/github/v/release/benny7431/auto-speech-journal"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green.svg"></a>
-  <img alt="Python 3.11" src="https://img.shields.io/badge/python-3.11-blue.svg">
   <img alt="Windows 10/11" src="https://img.shields.io/badge/platform-Windows%2010%2F11-0078D4.svg">
 </p>
 
-![Synthetic Auto Speech Journal demo showing recording, live preview, correction, and Markdown synchronization](docs/images/auto-speech-journal-demo.gif)
-
 <details>
-<summary>View the static workspace screenshot</summary>
+<summary>View the reproducible synthetic UI demo and static workspace</summary>
+
+![Synthetic Auto Speech Journal demo showing recording, live preview, correction, and Markdown synchronization](docs/images/auto-speech-journal-demo.gif)
 
 ![Auto Speech Journal daily audio timeline](docs/images/speech-journal-workspace.png)
 
@@ -44,11 +64,6 @@ Markdown file per hour in the Asia/Taipei timezone.
 Recognition, storage, and the interface all run locally. The application connects to Hugging Face
 only during first-run setup or an explicit model download; routine recording does not send audio
 or transcripts to a cloud service.
-
-> [!IMPORTANT]
-> Version `0.3.1` is a pre-release. It supports Windows WASAPI, Chinese
-> transcription, and the `Asia/Taipei` timezone only. A microphone does not need to be connected
-> during installation; the application asks you to select an input explicitly on first launch.
 
 ## Contents
 
@@ -88,14 +103,13 @@ or transcripts to a cloud service.
 
 ### 2. Download and install
 
-The official `v0.3.1` release may publish an unsigned
-`AutoSpeechJournal-Setup-0.3.1-x64.exe` with unsigned inner executables. Download release assets
-only from [GitHub Releases](https://github.com/benny7431/auto-speech-journal/releases), not from an
-internal PR artifact. Because the files currently have no Authenticode signature, Windows may show
-an **Unknown publisher** dialog or a Microsoft Defender SmartScreen prompt. Verify the published
-SHA-256 before running Setup. You do not need to disable Windows Defender. The final Setup does
-not require Python, `uv`, Git, PowerShell, administrator access, or
-a separately installed certificate.
+**Recommended: [download the `v0.3.2` Windows installer](https://github.com/benny7431/auto-speech-journal/releases/download/v0.3.2/AutoSpeechJournal-Setup-0.3.2-x64.exe) (Stable / Latest)**
+
+> Windows executables are currently unsigned. If Windows shows **Unknown publisher** or
+> SmartScreen, verify [`SHA256SUMS.txt`](https://github.com/benny7431/auto-speech-journal/releases/download/v0.3.2/SHA256SUMS.txt); do not disable Defender.
+
+The official Setup does not require Python, `uv`, Git, PowerShell, administrator access, or a
+separately installed certificate.
 
 Setup installs only the CPU-safe App and does not download models or GPU components. The
 application is installed directly under `%LOCALAPPDATA%\Programs\AutoSpeechJournal\app`. On first
@@ -289,7 +303,7 @@ uninstaller never deletes external Markdown journal folders.
 | [Architecture](docs/ARCHITECTURE.md) | Capture, queues, recovery, export, and deletion boundaries |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | WASAPI, CUDA/CPU, models, scheduled tasks, SQLite/WAL, and spool recovery |
 | [Building](docs/BUILDING.md) | Development environment, quality gates, wheel, and synthetic demo |
-| [Releasing](docs/RELEASING.md) | Tags, pre-releases, checksums, and post-release verification |
+| [Releasing](docs/RELEASING.md) | Tags, stable/pre-release classification, checksums, and post-release verification |
 | [Privacy](PRIVACY.md) | Recording conditions, data locations, network use, retention, and deletion |
 | [Third-party notices](THIRD_PARTY_NOTICES.md) | License sources for runtime, CUDA, and Hugging Face models |
 | [Security](SECURITY.md) | Supported versions, contact procedure, and sensitive data that must not be posted publicly |
@@ -343,13 +357,11 @@ app-control.ps1                # Process and mutex helpers shared by both script
 
 ## Current limitations
 
-- Windows WASAPI, Python 3.11, Chinese recognition, and the Asia/Taipei timezone only.
+- Windows WASAPI, Chinese recognition, and the Asia/Taipei timezone only; source development and
+  advanced installation use Python 3.11.
 - The microphone list includes WASAPI virtual inputs but does not support special loopback capture.
   Indistinguishable duplicate endpoints cannot be pinned; use the Windows default or disable the
   duplicate endpoint.
-- The `v0.3.1` Setup and inner executables are currently unsigned, so Windows may report an unknown
-  publisher or show SmartScreen. Missing signatures do not block this release; signing can be added
-  again after a suitable certificate becomes available.
 - Project source and first-party release assets use the MIT License; third-party content keeps its
   own terms.
 - Personal local fonts and their legal records are not release contents.
