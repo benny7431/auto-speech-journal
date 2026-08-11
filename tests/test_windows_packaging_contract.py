@@ -114,6 +114,17 @@ def test_windows_build_has_direct_payload_and_no_installer_provisioning_stack() 
         assert removed not in source
 
 
+def test_windows_build_accepts_canonical_stable_and_prerelease_versions() -> None:
+    source = _source(BUILD_SCRIPT, bom=True)
+    version_match = re.search(r"\$Version -notmatch '([^']+)'", source)
+
+    assert version_match is not None
+    version_pattern = re.compile(version_match.group(1))
+    for version in ("0.3.2", "0.4.0a1", "0.4.0b1", "0.4.0rc1", "0.4.0.dev1"):
+        assert version_pattern.fullmatch(version)
+    assert version_pattern.fullmatch("0.4.0-rc.1") is None
+
+
 def test_windows_package_e2e_installs_and_uninstalls_the_direct_gui() -> None:
     source = (ROOT / ".github" / "workflows" / "windows-package.yml").read_text(
         encoding="utf-8"
@@ -131,7 +142,7 @@ def test_windows_package_e2e_installs_and_uninstalls_the_direct_gui() -> None:
     assert "cuda-runtime-v1.json" not in source
 
 
-def test_release_is_one_unsigned_prerelease_job_with_checksums() -> None:
+def test_release_is_one_unsigned_job_with_stable_and_prerelease_modes() -> None:
     release = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
     windows = (ROOT / ".github" / "workflows" / "windows-package.yml").read_text(
         encoding="utf-8"
@@ -146,21 +157,32 @@ def test_release_is_one_unsigned_prerelease_job_with_checksums() -> None:
     assert re.findall(r"^  ([A-Za-z][A-Za-z0-9_-]*):\s*$", jobs, flags=re.MULTILINE) == [
         "release"
     ]
-    assert "gh release create" in release
-    assert "--prerelease" in release
+    assert '$releaseArgs = @(' in release
+    assert '"release",' in release
+    assert '"create",' in release
+    stable_match = re.search(r"\$isStable = \$version -match '([^']+)'", release)
+    assert stable_match is not None
+    stable_pattern = re.compile(stable_match.group(1))
+    assert stable_pattern.fullmatch("0.3.2")
+    assert stable_pattern.fullmatch("0.4.0rc1") is None
+    assert '$releaseArgs += "--latest"' in release
+    assert '$releaseArgs += @("--prerelease", "--latest=false")' in release
+    assert "gh @releaseArgs" in release
     assert "SHA256SUMS.txt" in release
     assert "--draft" not in release
     assert "attest-build-provenance" not in release
     assert "gh attestation verify" not in release
     assert "--clobber" not in release
-    assert "Windows 安裝器重要提醒" in release
+    download_index = release.index('"## 下載 Windows 版"')
+    changelog_index = release.index(") + $changelog[$start..($end - 1)] + @(")
+    warning_index = release.index('"## Windows 安裝器提醒"')
+    assert download_index < changelog_index < warning_index
     assert (
-        "Setup 安裝程式與隨附的應用程式執行檔皆未經 Authenticode 簽章。" in release
+        "目前 Windows 執行檔未簽章；若出現 Unknown publisher／SmartScreen，請核對 "
+        "SHA256SUMS.txt，無須關閉 Defender。" in release
     )
-    assert "Windows 可能顯示「未知的發行者」" in release
-    assert "Microsoft Defender SmartScreen" in release
-    assert "請勿停用 Microsoft Defender；安裝前請先核對 SHA256SUMS.txt。" in release
-    assert "本預發行版包含每位使用者安裝的 Windows Setup" in release
+    assert "本預發行版包含每位使用者安裝的 Windows Setup" not in release
+    assert "未來可以加入程式碼簽章" not in release
     assert "Important Windows installer notice" not in release
     assert "Do not disable Microsoft Defender" not in release
     assert "commits/$env:GITHUB_SHA/check-runs" in release

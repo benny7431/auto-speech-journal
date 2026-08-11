@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "auto-speech-journal"
-version = "0.3.1"
+version = "0.3.2"
 description = "Local-first Windows microphone journal with streaming preview and durable transcription."
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
@@ -23,7 +23,7 @@ keywords = [
   "wasapi",
 ]
 classifiers = [
-  "Development Status :: 3 - Alpha",
+  "Development Status :: 5 - Production/Stable",
   "Environment :: Win32 (MS Windows)",
   "Intended Audience :: End Users/Desktop",
   "Natural Language :: Chinese (Traditional)",

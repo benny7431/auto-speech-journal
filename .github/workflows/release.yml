@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   release:
-    name: Build and publish unsigned prerelease
+    name: Build and publish unsigned release
     runs-on: windows-latest
     timeout-minutes: 180
     env:
@@ -189,36 +189,52 @@ jobs:
           $notes = @(
             "# Auto Speech Journal $version",
             "",
-            "## Windows 安裝器重要提醒",
+            "## 下載 Windows 版",
             "",
-            "Setup 安裝程式與隨附的應用程式執行檔皆未經 Authenticode 簽章。",
-            "Windows 可能顯示「未知的發行者」或 Microsoft Defender SmartScreen 提示。",
-            "請勿停用 Microsoft Defender；安裝前請先核對 SHA256SUMS.txt。",
-            "未來可以加入程式碼簽章，但目前不影響此預發行版。",
+            "下載 AutoSpeechJournal-Setup-$version-x64.exe，完成安裝後即可從首次設定選擇麥克風與日記資料夾。",
+            "Python wheel 與原始碼套件提供進階安裝與檢查用途。",
+            ""
+          ) + $changelog[$start..($end - 1)] + @(
             "",
-            "本預發行版包含每位使用者安裝的 Windows Setup、Python wheel 與原始碼套件。"
-          ) + $changelog[$start..($end - 1)]
+            "## Windows 安裝器提醒",
+            "",
+            "目前 Windows 執行檔未簽章；若出現 Unknown publisher／SmartScreen，請核對 SHA256SUMS.txt，無須關閉 Defender。"
+          )
           [IO.File]::WriteAllLines(
             (Join-Path $output "RELEASE-NOTES.md"),
             $notes,
             (New-Object Text.UTF8Encoding($false))
           )
 
-      - name: Publish unsigned prerelease
+      - name: Publish release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = $env:GITHUB_REF_NAME
           $version = $tag.Substring(1)
-          gh release create $tag `
-            --verify-tag `
-            --prerelease `
-            --latest=false `
-            --title $tag `
-            --notes-file artifacts/release/RELEASE-NOTES.md `
-            "artifacts/release/AutoSpeechJournal-Setup-$version-x64.exe" `
-            "artifacts/release/auto_speech_journal-$version-py3-none-any.whl" `
-            "artifacts/release/auto_speech_journal-$version.tar.gz" `
-            artifacts/release/SHA256SUMS.txt
-          if ($LASTEXITCODE -ne 0) { throw "Prerelease publication failed" }
+          $isStable = $version -match '^\d+\.\d+\.\d+$'
+          $releaseArgs = @(
+            "release",
+            "create",
+            $tag,
+            "--verify-tag",
+            "--title",
+            $tag,
+            "--notes-file",
+            "artifacts/release/RELEASE-NOTES.md"
+          )
+          if ($isStable) {
+            $releaseArgs += "--latest"
+          }
+          else {
+            $releaseArgs += @("--prerelease", "--latest=false")
+          }
+          $releaseArgs += @(
+            "artifacts/release/AutoSpeechJournal-Setup-$version-x64.exe",
+            "artifacts/release/auto_speech_journal-$version-py3-none-any.whl",
+            "artifacts/release/auto_speech_journal-$version.tar.gz",
+            "artifacts/release/SHA256SUMS.txt"
+          )
+          gh @releaseArgs
+          if ($LASTEXITCODE -ne 0) { throw "Release publication failed" }

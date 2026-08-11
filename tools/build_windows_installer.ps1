@@ -49,7 +49,7 @@ function Get-ProjectVersion {
         throw "pyproject.toml [project] has no version"
     }
     $Version = $VersionMatch.Groups[1].Value
-    if ($Version -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') {
+    if ($Version -notmatch '^\d+\.\d+\.\d+(?:(?:a|b|rc)\d+|\.dev\d+)?$') {
         throw "Unsupported project version: $Version"
     }
     return $Version
