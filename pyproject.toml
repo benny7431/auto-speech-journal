@@ -108,4 +108,9 @@ target-version = "py311"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM"]
+# RET/C4/ERA/FURB are kept at zero violations so style-level bloat cannot creep back:
+# redundant returns, non-comprehension building, commented-out code, and stale idioms.
+# ARG and PERF are deliberately excluded — test doubles must keep unused arguments to
+# match the real signatures, and PERF401 would trade readable error accumulation for
+# comprehensions on paths that run once per build.
+select = ["E", "F", "I", "UP", "B", "SIM", "RET", "C4", "ERA", "FURB"]

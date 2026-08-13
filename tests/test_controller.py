@@ -377,7 +377,6 @@ def test_live_microphone_change_records_history_after_successful_reconfigure() -
 
         def append_change(self, _before, _after):
             order.append("history")
-            return None
 
     class OrderedWorkers(FakeWorkers):
         def reconfigure_input(self, selection, *, request_id=None):
