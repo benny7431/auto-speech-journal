@@ -55,10 +55,6 @@ class AppPaths:
     def fonts_dir(self) -> Path:
         return self.runtime_root / "fonts"
 
-    @property
-    def app_dir(self) -> Path:
-        return self.runtime_root / "app"
-
     def ensure_runtime_dirs(self) -> None:
         for directory in (
             self.runtime_root,

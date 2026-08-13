@@ -7,7 +7,6 @@ import threading
 import time
 import urllib.error
 import urllib.request
-import webbrowser
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -251,13 +250,6 @@ class ReleaseCheckService:
         )
         thread.start()
         return True
-
-    def open_release_page(self, result: UpdateCheckResult | None = None) -> bool:
-        selected = result or self.last_result
-        if selected is None or not selected.update_available or selected.release_url is None:
-            return False
-        url = _safe_release_url(selected.release_url, self.repository)
-        return False if url is None else bool(webbrowser.open(url, new=2))
 
 
 __all__ = [

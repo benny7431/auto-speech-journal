@@ -10,7 +10,6 @@ import threading
 import time
 import uuid
 from collections import deque
-from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -28,10 +27,6 @@ class AudioError(RuntimeError):
 
 
 class AudioDeviceNotFound(AudioError):
-    pass
-
-
-class AudioCaptureOverflow(AudioError):
     pass
 
 
@@ -96,10 +91,6 @@ class SpeechAudio:
     start_sample: int
     end_sample: int
     forced_endpoint: bool = False
-
-    @property
-    def sample_count(self) -> int:
-        return self.end_sample - self.start_sample
 
 
 @dataclass(frozen=True, slots=True)
@@ -454,13 +445,6 @@ class WasapiMicrophone:
             except queue.Empty:
                 break
         self._resampler = None
-
-    def iter_chunks(self, timeout: float = 0.25) -> Iterator[AudioChunk]:
-        while self.running:
-            try:
-                yield self.read(timeout=timeout)
-            except queue.Empty:
-                continue
 
     def __enter__(self) -> WasapiMicrophone:
         self.start()
@@ -1027,7 +1011,6 @@ class FlacSpool:
 
 __all__ = [
     "TARGET_SAMPLE_RATE",
-    "AudioCaptureOverflow",
     "AudioChunk",
     "AudioDeviceNotFound",
     "AudioError",

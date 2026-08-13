@@ -106,10 +106,6 @@ class FasterWhisperFinalizer:
     def active_device(self) -> str:
         return self._device
 
-    @property
-    def active_compute_type(self) -> str:
-        return self._compute_type
-
     def _default_model_factory(self, path: str, device: str, compute_type: str) -> Any:
         if device == "cuda":
             self._dll_handles.extend(register_nvidia_dll_directories())
@@ -295,8 +291,6 @@ class FasterWhisperFinalizer:
             latency_ms=round((self._monotonic() - started) * 1000),
             text=text,
         )
-
-    self_test = probe
 
     def update_hotwords(self, hotwords: Sequence[str]) -> None:
         self._hotwords = tuple(dict.fromkeys(word.strip() for word in hotwords if word.strip()))

@@ -507,27 +507,6 @@ class JournalStorage:
             raise SegmentNotFoundError(segment_id)
         return self._row_to_record(row)
 
-    def set_provisional(
-        self,
-        segment_id: str,
-        raw_text: str,
-        normalized_text: str | None = None,
-    ) -> SegmentRecord:
-        normalized = raw_text if normalized_text is None else normalized_text
-        now = _utc_iso(datetime.now(UTC))
-        with self.transaction() as connection:
-            cursor = connection.execute(
-                """
-                UPDATE segments
-                SET provisional_raw = ?, provisional_text = ?, updated_at_utc = ?
-                WHERE segment_id = ?
-                """,
-                (raw_text, normalized, now, segment_id),
-            )
-            if cursor.rowcount != 1:
-                raise SegmentNotFoundError(segment_id)
-        return self.get_segment(segment_id)
-
     def claim_next_for_finalization(self) -> SegmentRecord | None:
         now = _utc_iso(datetime.now(UTC))
         with self.transaction() as connection:
@@ -884,11 +863,6 @@ class JournalStorage:
                 "SELECT changed_at_utc FROM dirty_hours WHERE hour_key = ?", (key,)
             ).fetchone()
         return None if row is None else str(row[0])
-
-    def clear_dirty_hour(self, key: str) -> None:
-        validate_hour_key(key)
-        with self.transaction() as connection:
-            connection.execute("DELETE FROM dirty_hours WHERE hour_key = ?", (key,))
 
     def clear_dirty_hour_if_unchanged(self, key: str, revision: str | None) -> bool:
         """Acknowledge an export without losing a concurrent text update."""

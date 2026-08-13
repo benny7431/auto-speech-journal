@@ -57,12 +57,6 @@ SPI_GETCLIENTAREAANIMATION = 0x1042
 FONT_DIRECTORY_ENV = "AUTO_SPEECH_JOURNAL_FONT_DIR"
 SUPPORTED_FONT_SUFFIXES = frozenset({".ttf", ".otf"})
 
-# Status accent colours, mirrored by the QML palette.
-STATUS_TONE_PAUSED = "#8B8377"
-STATUS_TONE_ERROR = "#B85C4A"
-STATUS_TONE_WARNING = "#B88647"
-STATUS_TONE_SIGNAL = "#718C78"
-
 TAIPEI = ZoneInfo("Asia/Taipei")
 WEEKDAYS = ("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")
 SETTINGS_FIELD_LABELS = {
@@ -809,17 +803,6 @@ class JournalViewModel(QObject):
         dbfs = _safe_float(getattr(self._snapshot, "rms_dbfs", -120.0))
         return max(0.0, min(1.0, (dbfs + 60.0) / 54.0))
 
-    @Property(str, notify=snapshotChanged)
-    def statusTone(self) -> str:
-        if self.paused:
-            return STATUS_TONE_PAUSED
-        severity = _enum_value(getattr(self._snapshot, "severity", "info"))
-        if severity == "error":
-            return STATUS_TONE_ERROR
-        if severity == "warning":
-            return STATUS_TONE_WARNING
-        return STATUS_TONE_SIGNAL
-
     @Property(str, notify=sceneChanged)
     def sceneKey(self) -> str:
         return self._scene_key
@@ -917,10 +900,6 @@ class JournalViewModel(QObject):
     def onboardingMicrophoneReady(self) -> bool:
         return bool(self._selection_for_key(self._selected_microphone_key))
 
-    @Property(bool, notify=microphoneTestChanged)
-    def onboardingMicrophoneTested(self) -> bool:
-        return self._microphone_test_state in {"success", "warning"}
-
     @Property(bool, notify=settingsChanged)
     def startupEnabled(self) -> bool:
         config = getattr(self._controller, "config", None)
@@ -938,14 +917,6 @@ class JournalViewModel(QObject):
     @Property(str, notify=updateCheckChanged)
     def updateAvailableText(self) -> str:
         return self._update_available_text
-
-    @Property(str, notify=updateCheckChanged)
-    def updateReleaseUrl(self) -> str:
-        return self._update_release_url
-
-    @Property(str, notify=settingsChanged)
-    def deviceName(self) -> str:
-        return self.preferredInputName
 
     @Property(bool, notify=onboardingChanged)
     def microphoneSetupPending(self) -> bool:
@@ -1488,13 +1459,6 @@ class JournalViewModel(QObject):
         self.updateCheckChanged.emit()
 
     @Slot(result=bool)
-    def checkForUpdates(self) -> bool:
-        if not self.updateCheckEnabled:
-            return False
-        self._trigger_update_check(True)
-        return self._update_check_callback is not None
-
-    @Slot(result=bool)
     def openUpdateRelease(self) -> bool:
         url = QUrl(self._update_release_url)
         if (
@@ -1708,20 +1672,6 @@ class JournalViewModel(QObject):
             self._selected_microphone_key = key
             self.microphoneSelectionChanged.emit()
         self._reset_microphone_test()
-
-    @Slot(result=bool)
-    def completeMicrophoneSetup(self) -> bool:
-        if self.onboardingPending:
-            return self.startOnboardingRecording()
-        selection = self._selection_for_key(self._selected_microphone_key)
-        if selection is None:
-            self.actionFailed.emit("請先選擇一個麥克風或跟隨 Windows 預設")
-            return False
-        if not self._configure_microphone(selection):
-            return False
-        self._after_microphone_configuration()
-        QTimer.singleShot(0, self.startControllerIfReady)
-        return True
 
     @Slot(result=bool)
     def deferMicrophoneAfterStartFailure(self) -> bool:
@@ -2099,11 +2049,6 @@ class JournalViewModel(QObject):
         else:
             self._window.showMinimized()
 
-    @Slot()
-    def minimize(self) -> None:
-        if self._window is not None:
-            self._window.showMinimized()
-
     @Slot(int, int)
     def rememberCompactPosition(self, x: int, y: int) -> None:
         if not self._expanded and not self.microphoneSetupPending:
@@ -2376,10 +2321,6 @@ class JournalViewModel(QObject):
     @Slot()
     def showAboutToOpen(self) -> None:
         self._refresh_timeline(force=True)
-
-    @Slot(str)
-    def openPath(self, path: str) -> None:
-        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
     def shutdown(self) -> None:
         self._microphone_test_request_id = ""

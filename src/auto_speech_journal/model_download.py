@@ -6,7 +6,6 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from types import MappingProxyType
 from typing import Any
 
 from huggingface_hub import hf_hub_download
@@ -70,15 +69,6 @@ FINAL_SPEC = ModelSpec(
     ),
     runtime_format="ctranslate2-float16",
 )
-
-MODEL_MANIFEST: Mapping[str, ModelSpec] = MappingProxyType(
-    {
-        PREVIEW_SPEC.key: PREVIEW_SPEC,
-        VAD_SPEC.key: VAD_SPEC,
-        FINAL_SPEC.key: FINAL_SPEC,
-    }
-)
-
 
 @dataclass(frozen=True, slots=True)
 class RuntimeModelFile:
@@ -418,7 +408,6 @@ def verify_models(
 
 __all__ = [
     "FINAL_SPEC",
-    "MODEL_MANIFEST",
     "PREVIEW_SPEC",
     "RUNTIME_MODEL_MANIFEST_FILENAME",
     "VAD_SPEC",

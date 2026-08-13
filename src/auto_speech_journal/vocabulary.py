@@ -172,12 +172,6 @@ class VocabularyStore:
                 replace_contributions(connection, segment_id, replacements)
         return CorrectionResult(segment, replacements)
 
-    def rollback_segment(self, segment_id: str) -> None:
-        with self.storage.transaction() as connection:
-            connection.execute(
-                "DELETE FROM vocabulary_contributions WHERE segment_id = ?", (segment_id,)
-            )
-
     def contributions_for_segment(self, segment_id: str) -> tuple[Replacement, ...]:
         with self.storage.transaction(immediate=False) as connection:
             rows = connection.execute(

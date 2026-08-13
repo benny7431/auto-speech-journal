@@ -257,27 +257,6 @@ class JournalController:
         with self._lock:
             return self._snapshot
 
-    def bind_workers(self, workers: WorkersPort) -> None:
-        with self._lock:
-            if self._started:
-                raise RuntimeError("cannot replace workers while running")
-            self.workers = workers
-
-    def subscribe(
-        self, listener: Callable[[ControllerSnapshot], None]
-    ) -> Callable[[], None]:
-        with self._lock:
-            self._listeners.append(listener)
-            current = self._snapshot
-        listener(current)
-
-        def unsubscribe() -> None:
-            with self._lock:
-                if listener in self._listeners:
-                    self._listeners.remove(listener)
-
-        return unsubscribe
-
     def start(self) -> None:
         selection = self._config.microphone
         if not self._config.onboarding_completed:

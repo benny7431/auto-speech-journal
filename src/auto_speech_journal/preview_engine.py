@@ -76,10 +76,6 @@ class SherpaPreviewEngine:
     def loaded(self) -> bool:
         return self._recognizer is not None
 
-    @property
-    def hotwords_applied(self) -> bool:
-        return self._hotwords_applied
-
     def _build_recognizer(self) -> Any:
         if self._recognizer_factory is not None:
             return self._recognizer_factory()
