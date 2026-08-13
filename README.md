@@ -258,6 +258,9 @@ Hugging Face cache 會重用已完成的檔案；既有日記、設定與待處�
 
 這是預期行為。請用 **系統狀態 → 結束程式** 完整停止程式。
 
+WASAPI、權限、CUDA/CPU、模型修復、排程工作、SQLite/WAL 與 spool 復原程序，
+見 [疑難排解](docs/TROUBLESHOOTING.md)。
+
 ## 解除安裝
 
 先從應用程式內完整結束，再從 **Windows 設定 → 應用程式** 移除 Auto Speech Journal。

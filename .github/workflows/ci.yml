@@ -51,7 +51,7 @@ jobs:
           uv sync --frozen --no-editable --extra dev
 
       - name: Ruff
-        run: uv run --no-sync ruff check src tests tools
+        run: uv run --no-sync ruff check src tests tools packaging
 
       - name: Pre-commit repository checks
         run: uv run --no-sync pre-commit run --all-files

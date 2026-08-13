@@ -17,7 +17,7 @@
 從 PowerShell 執行：
 
 ```powershell
-uv sync --no-editable --extra dev
+uv sync --frozen --no-editable --extra dev
 $env:PYTHONPATH = (Join-Path $PWD "src")
 uv run --no-sync pytest
 uv run --no-sync ruff check src tests tools
