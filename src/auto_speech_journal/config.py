@@ -197,6 +197,18 @@ class AppConfig:
         return asdict(self)
 
 
+def _apply_onboarding_defaults(migrated: dict[str, Any]) -> None:
+    """Derive onboarding completion from the microphone mode, gating login startup on it."""
+    mode = str(migrated.get("microphone", {}).get("mode", ""))
+    migrated["onboarding_completed"] = mode in {
+        MicrophoneMode.SYSTEM_DEFAULT.value,
+        MicrophoneMode.FIXED.value,
+    }
+    migrated.setdefault("startup_enabled", True)
+    if not migrated["onboarding_completed"]:
+        migrated["startup_enabled"] = False
+
+
 def load_config(path: Path) -> AppConfig:
     if not path.exists():
         config = AppConfig()
@@ -227,14 +239,7 @@ def load_config(path: Path) -> AppConfig:
         }
         if schema_version == 1 and migrated.get("preview_interval_ms", 2_000) == 2_000:
             migrated["preview_interval_ms"] = 350
-        mode = str(migrated.get("microphone", {}).get("mode", ""))
-        migrated["onboarding_completed"] = mode in {
-            MicrophoneMode.SYSTEM_DEFAULT.value,
-            MicrophoneMode.FIXED.value,
-        }
-        migrated.setdefault("startup_enabled", True)
-        if not migrated["onboarding_completed"]:
-            migrated["startup_enabled"] = False
+        _apply_onboarding_defaults(migrated)
         migrated.setdefault("update_check_enabled", False)
         config = AppConfig.from_dict(migrated)
         save_config(path, config)
@@ -242,14 +247,7 @@ def load_config(path: Path) -> AppConfig:
     if schema_version == 3:
         migrated = dict(raw)
         migrated["schema_version"] = 4
-        mode = str(migrated.get("microphone", {}).get("mode", ""))
-        migrated["onboarding_completed"] = mode in {
-            MicrophoneMode.SYSTEM_DEFAULT.value,
-            MicrophoneMode.FIXED.value,
-        }
-        migrated.setdefault("startup_enabled", True)
-        if not migrated["onboarding_completed"]:
-            migrated["startup_enabled"] = False
+        _apply_onboarding_defaults(migrated)
         migrated["update_check_enabled"] = False
         config = AppConfig.from_dict(migrated)
         save_config(path, config)

@@ -202,44 +202,31 @@ class StartupTaskManager:
             raise StartupTaskError(detail)
 
     def status(self) -> StartupStatus:
-        if self._os_name != "nt":
+        def build(
+            *, available: bool, detail: str, enabled: bool = False, owned: bool = False
+        ) -> StartupStatus:
             return StartupStatus(
-                enabled=False,
-                owned=False,
-                available=False,
+                enabled=enabled,
+                owned=owned,
+                available=available,
                 task_name=self.task_name,
                 launcher=self.launcher,
+                detail=detail,
+            )
+
+        if self._os_name != "nt":
+            return build(
+                available=False,
                 detail="Task Scheduler startup is supported on Windows only",
             )
         try:
             result = self._runner(("schtasks.exe", "/Query", "/TN", self.task_name, "/XML"))
         except OSError as error:
-            return StartupStatus(
-                enabled=False,
-                owned=False,
-                available=False,
-                task_name=self.task_name,
-                launcher=self.launcher,
-                detail=f"Task Scheduler is unavailable: {error}",
-            )
+            return build(available=False, detail=f"Task Scheduler is unavailable: {error}")
         if result.returncode != 0:
-            return StartupStatus(
-                enabled=False,
-                owned=False,
-                available=True,
-                task_name=self.task_name,
-                launcher=self.launcher,
-                detail="startup task is not registered",
-            )
+            return build(available=True, detail="startup task is not registered")
         enabled, owned, detail = _parse_task(result.stdout, self.launcher)
-        return StartupStatus(
-            enabled=enabled,
-            owned=owned,
-            available=True,
-            task_name=self.task_name,
-            launcher=self.launcher,
-            detail=detail,
-        )
+        return build(available=True, detail=detail, enabled=enabled, owned=owned)
 
     def enable(self) -> StartupStatus:
         before = self.status()

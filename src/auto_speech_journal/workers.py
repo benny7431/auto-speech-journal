@@ -344,7 +344,7 @@ def _status(
     )
 
 
-def _segment_id(_started_at: datetime) -> str:
+def _segment_id() -> str:
     return str(uuid.uuid4())
 
 
@@ -728,7 +728,7 @@ def _recorder_loop(
 
     def ensure_segment(started_at: datetime) -> None:
         if segment_state.current_id is None:
-            segment_state.current_id = _segment_id(started_at)
+            segment_state.current_id = _segment_id()
             segment_state.current_started_at = started_at
 
     previews = PreviewCoordinator(
@@ -763,7 +763,7 @@ def _recorder_loop(
             seconds=speech.end_sample / config.audio_sample_rate
         )
         ensure_segment(started_at)
-        identifier = segment_state.current_id or _segment_id(started_at)
+        identifier = segment_state.current_id or _segment_id()
         text = (flushed_preview or preview_state.current_text).strip()
         raw_text = (flushed_preview_raw or preview_state.current_raw_text or text).strip()
         overlap_samples = (

@@ -849,15 +849,22 @@ class JournalController:
                 errors.append(rollback_error)
         return errors
 
-    def _restore_snapshot(self, snapshot: ControllerSnapshot) -> None:
-        with self._lock:
-            self._snapshot = snapshot
-            listeners = tuple(self._listeners)
+    @staticmethod
+    def _notify(
+        listeners: tuple[Callable[[ControllerSnapshot], None], ...],
+        snapshot: ControllerSnapshot,
+    ) -> None:
         for listener in listeners:
             try:
                 listener(snapshot)
             except Exception:
                 LOGGER.exception("Controller listener failed")
+
+    def _restore_snapshot(self, snapshot: ControllerSnapshot) -> None:
+        with self._lock:
+            self._snapshot = snapshot
+            listeners = tuple(self._listeners)
+        self._notify(listeners, snapshot)
 
     def _activate_microphone_selection(
         self,
@@ -1432,11 +1439,7 @@ class JournalController:
             self._snapshot = replace(self._snapshot, **changes)
             snapshot = self._snapshot
             listeners = tuple(self._listeners)
-        for listener in listeners:
-            try:
-                listener(snapshot)
-            except Exception:
-                LOGGER.exception("Controller listener failed")
+        self._notify(listeners, snapshot)
 
     def _require_workers(self) -> WorkersPort:
         if self.workers is None:

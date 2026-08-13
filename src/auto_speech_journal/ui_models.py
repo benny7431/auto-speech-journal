@@ -621,11 +621,7 @@ class JournalViewModel(QObject):
         self._microphone_fingerprints: dict[str, Any] = {}
         self._microphone_scan_error = ""
         self._microphone_has_selectable_route = False
-        configured_microphone = getattr(
-            getattr(self._controller, "config", None),
-            "microphone",
-            None,
-        )
+        configured_microphone = self._configured_microphone()
         self._selected_microphone_key = (
             ""
             if _enum_value(getattr(configured_microphone, "mode", ""))
@@ -956,11 +952,7 @@ class JournalViewModel(QObject):
     def recordingEngineNeedsStart(self) -> bool:
         if not self.onboardingCompleted:
             return False
-        selection = getattr(
-            getattr(self._controller, "config", None),
-            "microphone",
-            None,
-        )
+        selection = self._configured_microphone()
         mode = _enum_value(getattr(selection, "mode", ""))
         if mode in {MicrophoneMode.PENDING.value, MicrophoneMode.SKIPPED.value}:
             return False
@@ -993,25 +985,14 @@ class JournalViewModel(QObject):
 
     @Property(str, notify=microphoneSelectionChanged)
     def selectedMicrophoneLabel(self) -> str:
-        option = next(
-            (
-                item
-                for item in self._microphone_options
-                if str(item.get("key", "")) == self._selected_microphone_key
-            ),
-            None,
-        )
+        option = self._microphone_option(self._selected_microphone_key)
         return str((option or {}).get("label", "") or "")
 
     @Property(bool, notify=microphoneSelectionChanged)
     def settingsMicrophoneSelectionValid(self) -> bool:
         if self._selected_microphone_key:
             return True
-        selection = getattr(
-            getattr(self._controller, "config", None),
-            "microphone",
-            None,
-        )
+        selection = self._configured_microphone()
         return (
             _enum_value(getattr(selection, "mode", ""))
             == MicrophoneMode.SKIPPED.value
@@ -1024,11 +1005,7 @@ class JournalViewModel(QObject):
         ).strip()
         if snapshot_name:
             return snapshot_name
-        selection = getattr(
-            getattr(self._controller, "config", None),
-            "microphone",
-            None,
-        )
+        selection = self._configured_microphone()
         mode = _enum_value(getattr(selection, "mode", ""))
         if mode == MicrophoneMode.SYSTEM_DEFAULT.value:
             return "跟隨 Windows 預設"
@@ -1590,11 +1567,7 @@ class JournalViewModel(QObject):
             )
             fingerprints[key] = fingerprint
 
-        configured = getattr(
-            getattr(self._controller, "config", None),
-            "microphone",
-            None,
-        )
+        configured = self._configured_microphone()
         configured_key = _microphone_key_for_selection(configured)
         preferred = getattr(configured, "preferred_device", None)
         if (
@@ -1675,14 +1648,7 @@ class JournalViewModel(QObject):
     @Slot(str, result=bool)
     def selectMicrophone(self, key: str) -> bool:
         normalized = key.strip()
-        option = next(
-            (
-                item
-                for item in self._microphone_options
-                if str(item.get("key", "")) == normalized
-            ),
-            None,
-        )
+        option = self._microphone_option(normalized)
         if option is None or not bool(option.get("selectable", False)):
             self.actionFailed.emit("這個麥克風目前無法安全選用")
             return False
@@ -1694,11 +1660,7 @@ class JournalViewModel(QObject):
 
     @Slot()
     def resetMicrophoneSelection(self) -> None:
-        selection = getattr(
-            getattr(self._controller, "config", None),
-            "microphone",
-            None,
-        )
+        selection = self._configured_microphone()
         key = (
             ""
             if self.microphoneSetupPending
@@ -1745,11 +1707,7 @@ class JournalViewModel(QObject):
             if not self.microphoneTestRunning:
                 self.testSelectedMicrophone()
             return False
-        selection = getattr(
-            getattr(self._controller, "config", None),
-            "microphone",
-            None,
-        )
+        selection = self._configured_microphone()
         if _enum_value(getattr(selection, "mode", "")) not in {
             MicrophoneMode.SYSTEM_DEFAULT.value,
             MicrophoneMode.FIXED.value,
@@ -1792,14 +1750,7 @@ class JournalViewModel(QObject):
         self._microphone_test_level = 0.0
         self.microphoneTestChanged.emit()
 
-        option = next(
-            (
-                item
-                for item in self._microphone_options
-                if str(item.get("key", "")) == key
-            ),
-            {},
-        )
+        option = self._microphone_option(key) or {}
         selected_name = str(option.get("name", "") or "")
         if selected_name and selected_name == self.activeInputName:
             rms_dbfs = _safe_float(getattr(self._snapshot, "rms_dbfs", -120.0))
@@ -1920,15 +1871,19 @@ class JournalViewModel(QObject):
         with suppress(RuntimeError):
             self._microphoneTestCompleted.emit(request_id, ok, error, peak, rms)
 
-    def _selection_for_key(self, key: str) -> MicrophoneSelection | None:
-        option = next(
-            (
-                item
-                for item in self._microphone_options
-                if str(item.get("key", "")) == key
-            ),
+    def _microphone_option(self, key: str) -> dict[str, Any] | None:
+        """Look up a scanned microphone option by its stable key."""
+        return next(
+            (item for item in self._microphone_options if str(item.get("key", "")) == key),
             None,
         )
+
+    def _configured_microphone(self) -> MicrophoneSelection | None:
+        """Read the controller's persisted microphone selection defensively."""
+        return getattr(getattr(self._controller, "config", None), "microphone", None)
+
+    def _selection_for_key(self, key: str) -> MicrophoneSelection | None:
+        option = self._microphone_option(key)
         if option is None or not bool(option.get("selectable", False)):
             return None
         if key == MicrophoneMode.SYSTEM_DEFAULT.value:
@@ -1964,11 +1919,7 @@ class JournalViewModel(QObject):
         )
 
     def _after_microphone_configuration(self) -> None:
-        configured = getattr(
-            getattr(self._controller, "config", None),
-            "microphone",
-            None,
-        )
+        configured = self._configured_microphone()
         key = _microphone_key_for_selection(configured)
         if key != self._selected_microphone_key:
             self._selected_microphone_key = key
