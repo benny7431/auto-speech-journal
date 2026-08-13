@@ -27,7 +27,8 @@ uv run --no-sync python -m auto_speech_journal self-test `
 
 模型測試使用 package 內的 `src/auto_speech_journal/runtime-models-v1.json`。清單只允許
 可直接執行的 ONNX／CTranslate2 檔案，並固定 Hugging Face repository、完整 commit、
-大小及 SHA-256。使用者端不得安裝 Torch、Transformers 或執行模型轉換。
+大小及 SHA-256。使用者端不得安裝 Torch、Transformers 或執行模型轉換。一般 CI 已驗證
+schema、固定 revision、hash 與參考推論行為；不得弱化模型推論或參考音訊測試。
 
 ## README demo assets
 

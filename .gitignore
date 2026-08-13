@@ -4,13 +4,12 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
-.mypy_cache/
-build/
 dist/
 coverage.xml
 .coverage
-htmlcov/
 artifacts/
+/.agents/
+/.codex/
 *.log
 *.tmp
 
@@ -24,7 +23,6 @@ models/
 !/packaging/models/
 !/packaging/models/*.py
 !/packaging/models/*.json
-!/packaging/models/*.md
 /packaging/models/__pycache__/
 spool/
 state.db*

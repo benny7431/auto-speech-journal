@@ -17,15 +17,7 @@ Authenticode gate。模型 manifest 隨 Python package 版本化，相關 schema
 
 ## Windows Setup policy
 
-Setup 直接安裝到：
-
-```text
-%LOCALAPPDATA%\Programs\AutoSpeechJournal\app
-```
-
-沒有 launcher、`current.json`、多版本目錄或安裝器內建 rollback framework。Setup 不下載
-Hugging Face 模型或 NVIDIA CUDA 元件。首次啟動後，App 才透過 `huggingface_hub` 從固定
-commit 取得模型。
+安裝目錄、模型邊界與解除安裝保留範圍見 [架構文件](ARCHITECTURE.md)。
 
 `v0.3.2` Setup 與內層 EXE 允許未簽章。Release Notes 必須以繁體中文清楚標示 Windows
 可能顯示 **Unknown publisher／未知的發行者** 或 Microsoft Defender SmartScreen。請使用者
@@ -55,7 +47,13 @@ Tag workflow 只需要：
 2. 等待 CI 與 CodeQL。
 3. 建置並驗證 wheel、sdist 與 unsigned Setup。
 4. 在 Windows runner 執行安裝、首次啟動與解除安裝 E2E。
-5. 產生 `SHA256SUMS.txt` 與繁體中文 Release Notes。
+5. 產生 `SHA256SUMS.txt` 與繁體中文 Release Notes：
+
+   ```powershell
+   Get-FileHash .\artifacts\windows\setup\*.exe -Algorithm SHA256
+   Get-FileHash .\dist\* -Algorithm SHA256
+   ```
+
 6. 依版本建立 Stable／Latest 或 Pre-release，Release Notes 先列下載與變更，最後保留一行
    未簽章提示。
 
@@ -68,6 +66,3 @@ Get-FileHash .\AutoSpeechJournal-Setup-0.3.2-x64.exe -Algorithm SHA256
 
 SHA-256 必須完全相同。SmartScreen 提示不代表需要關閉 Defender；來源或 hash 無法確認時，
 不要執行檔案。
-
-解除安裝只移除 `%LOCALAPPDATA%\Programs\AutoSpeechJournal\app`、捷徑與程式擁有的
-啟動項目。它必須保留 `%LOCALAPPDATA%\AutoSpeechJournal` 以及所有外部日記資料夾。

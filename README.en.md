@@ -65,20 +65,6 @@ Recognition, storage, and the interface all run locally. The application connect
 only during first-run setup or an explicit model download; routine recording does not send audio
 or transcripts to a cloud service.
 
-## Contents
-
-- [Key features](#key-features)
-- [Quick start](#quick-start)
-- [Daily use](#daily-use)
-- [Recognition and persistence flow](#recognition-and-persistence-flow)
-- [Data, privacy, and file locations](#data-privacy-and-file-locations)
-- [Diagnostics and recovery](#diagnostics-and-recovery)
-- [Uninstalling](#uninstalling)
-- [Documentation, policies, and participation](#documentation-policies-and-participation)
-- [Development and validation](#development-and-validation)
-- [Current limitations](#current-limitations)
-- [Use of Codex and GPT-5.6](#use-of-codex-and-gpt-56)
-
 ## Key features
 
 | Feature | Description |
@@ -138,15 +124,7 @@ first-run setup or later run `AutoSpeechJournal.CLI.exe download-models`. The Hu
 reuses completed files. **Start recording** remains disabled until models are ready, while
 **Configure later** is always available and never opens the microphone.
 
-<details>
-<summary><strong>What does the installer do?</strong></summary>
-
-1. Install the PyInstaller onedir CPU-safe App directly into the fixed `app` directory.
-2. Create the Start-menu shortcut and Windows Apps uninstall entry.
-3. Download neither models nor NVIDIA runtime; the first-run App owns model provisioning.
-4. Do not open the microphone, create sign-in startup, or delete runtime data or external journals.
-
-</details>
+See [Architecture](docs/ARCHITECTURE.md) for the installer's full behavioral boundary.
 
 ## Daily use
 
@@ -312,48 +290,9 @@ uninstaller never deletes external Markdown journal folders.
 
 ## Development and validation
 
-Run the following in PowerShell with Python 3.11 and `uv`:
-
-```powershell
-uv sync --frozen --no-editable --extra dev
-$env:PYTHONPATH = (Join-Path $PWD "src")
-
-uv run --no-sync pytest --cov=auto_speech_journal --cov-report=term-missing `
-  --cov-report=xml
-uv run --no-sync ruff check src tests tools
-uv run --no-sync python -m auto_speech_journal self-test `
-  --no-model-check --no-microphone-check
-uv build
-uv run --no-sync python tools/verify_wheel_contents.py
-uv run --no-sync pre-commit run --all-files
-uv run --no-sync python tools/render_readme_demo.py
-```
-
-See [Building](docs/BUILDING.md) for the complete workflow. `tools/replay_fault_recovery.py`
-replays crash boundaries; baseline, demo, and packaging QA tools are under `tools/`.
-
-<details>
-<summary><strong>Project structure</strong></summary>
-
-```text
-src/auto_speech_journal/
-├── cli.py, __main__.py        # CLI entry points
-├── ui.py, ui_models.py        # PySide6 / QML interface bridge
-├── controller.py, workers.py  # State coordination and background workers
-├── audio.py                   # WASAPI capture and FLAC spool
-├── preview_engine.py          # Sherpa-ONNX streaming preview
-├── finalizer_engine.py        # Faster-Whisper final recognition
-├── storage.py, exporter.py    # SQLite and Markdown export
-└── qml/, assets/              # Interface and brand assets
-
-tests/                         # Pytest regression tests
-packaging/                     # PyInstaller, Inno Setup, and minimal release validation
-tools/                         # Recovery, assets, performance, and packaging QA
-install.ps1, uninstall.ps1     # Advanced source/CUDA installation and recovery
-app-control.ps1                # Process and mutex helpers shared by both scripts
-```
-
-</details>
+See [Building](docs/BUILDING.md) for requirements, development checks, demo asset regeneration,
+Python distributions, and the Windows Setup build; see [Architecture](docs/ARCHITECTURE.md) for
+module structure and design boundaries. `tools/replay_fault_recovery.py` replays crash boundaries.
 
 ## Current limitations
 

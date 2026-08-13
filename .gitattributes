@@ -18,8 +18,8 @@ uv.lock text eol=lf
 *.cmd text eol=crlf
 
 *.png binary
-*.webp binary
 *.gif binary
+*.mp4 binary
 *.ico binary
 *.wav binary
 *.flac binary

@@ -61,20 +61,6 @@
 辨識、儲存與介面都在本機執行。網路只在首次設定或手動下載模型時連線至 Hugging
 Face；日常錄音不需要把音訊或文字送到雲端。
 
-## 目錄
-
-- [功能重點](#功能重點)
-- [快速開始](#快速開始)
-- [日常操作](#日常操作)
-- [辨識與保存流程](#辨識與保存流程)
-- [資料、隱私與檔案位置](#資料隱私與檔案位置)
-- [診斷與修復](#診斷與修復)
-- [解除安裝](#解除安裝)
-- [文件、政策與參與](#文件政策與參與)
-- [開發與驗證](#開發與驗證)
-- [目前限制](#目前限制)
-- [使用 Codex 與 GPT-5.6](#使用-codex-與-gpt-56)
-
 ## 功能重點
 
 | 功能 | 說明 |
@@ -129,15 +115,7 @@ Wizard 會下載並驗證語音模型；若網路中斷，可在首次設定重�
 `AutoSpeechJournal.CLI.exe download-models`。Hugging Face cache 會重用已完成的檔案。
 模型未就緒前「開始錄音」會保持停用，但 **稍後設定** 永遠可用且不會開啟麥克風。
 
-<details>
-<summary><strong>安裝器實際會做什麼？</strong></summary>
-
-1. 將 PyInstaller onedir 的 CPU-safe App 直接安裝到固定 `app` 目錄。
-2. 建立開始選單捷徑與 Windows「應用程式」解除安裝項目。
-3. 不下載模型或 NVIDIA runtime；模型由首次啟動的 App 負責。
-4. 不開啟麥克風、不建立登入自啟，也不刪除既有 runtime 資料或外部日記。
-
-</details>
+安裝器的完整行為邊界見 [架構文件](docs/ARCHITECTURE.md)。
 
 ## 日常操作
 
@@ -288,48 +266,9 @@ Hugging Face cache 會重用已完成的檔案；既有日記、設定與待處�
 
 ## 開發與驗證
 
-在 PowerShell、Python 3.11 與 `uv` 環境下執行：
-
-```powershell
-uv sync --frozen --no-editable --extra dev
-$env:PYTHONPATH = (Join-Path $PWD "src")
-
-uv run --no-sync pytest --cov=auto_speech_journal --cov-report=term-missing `
-  --cov-report=xml
-uv run --no-sync ruff check src tests tools
-uv run --no-sync python -m auto_speech_journal self-test `
-  --no-model-check --no-microphone-check
-uv build
-uv run --no-sync python tools/verify_wheel_contents.py
-uv run --no-sync pre-commit run --all-files
-uv run --no-sync python tools/render_readme_demo.py
-```
-
-完整說明請見 [建置文件](docs/BUILDING.md)。`tools/replay_fault_recovery.py` 可重播當機
-邊界；基準圖、Demo 與打包 QA 工具集中在 `tools/`。
-
-<details>
-<summary><strong>專案結構</strong></summary>
-
-```text
-src/auto_speech_journal/
-├── cli.py, __main__.py        # CLI 入口
-├── ui.py, ui_models.py        # PySide6 / QML 介面橋接
-├── controller.py, workers.py  # 狀態協調與背景工作
-├── audio.py                   # WASAPI 收音與 FLAC spool
-├── preview_engine.py          # Sherpa-ONNX 串流預覽
-├── finalizer_engine.py        # Faster-Whisper 最終辨識
-├── storage.py, exporter.py    # SQLite 與 Markdown 匯出
-└── qml/, assets/              # 介面與品牌資產
-
-tests/                         # Pytest 回歸測試
-packaging/                     # PyInstaller、Inno Setup 與最小發布驗證
-tools/                         # 復原、基準圖、效能與打包 QA
-install.ps1, uninstall.ps1     # 進階 source/CUDA 安裝與救援流程
-app-control.ps1                # 上述兩支腳本共用的行程與 mutex 輔助函式
-```
-
-</details>
+環境需求、開發檢查、Demo 素材重建、Python 發行物與 Windows Setup 建置，統一見
+[建置文件](docs/BUILDING.md)；模組結構與設計邊界見 [架構文件](docs/ARCHITECTURE.md)。
+`tools/replay_fault_recovery.py` 可重播當機邊界。
 
 ## 目前限制
 
