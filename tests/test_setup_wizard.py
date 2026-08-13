@@ -5,7 +5,6 @@ import pytest
 from auto_speech_journal.audio import InputDevice
 from auto_speech_journal.config import AppConfig, MicrophoneMode, load_config
 from auto_speech_journal.model_download import ModelDownloadError
-from auto_speech_journal.paths import AppPaths
 from auto_speech_journal.setup_wizard import (
     SetupError,
     check_runtime_models_for_setup,
@@ -35,8 +34,7 @@ def _device(
     )
 
 
-def test_setup_can_persist_follow_windows_default(tmp_path) -> None:
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
+def test_setup_can_persist_follow_windows_default(tmp_path, paths) -> None:
     device = _device()
 
     configured = run_setup(
@@ -52,8 +50,7 @@ def test_setup_can_persist_follow_windows_default(tmp_path) -> None:
     assert load_config(paths.config_file) == configured
 
 
-def test_setup_can_persist_fixed_wasapi_device(tmp_path) -> None:
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
+def test_setup_can_persist_fixed_wasapi_device(tmp_path, paths) -> None:
     device = _device(is_default=False)
 
     configured = run_setup(
@@ -68,8 +65,7 @@ def test_setup_can_persist_fixed_wasapi_device(tmp_path) -> None:
     assert configured.microphone.preferred_device == device.fingerprint()
 
 
-def test_setup_refuses_ambiguous_fixed_binding(tmp_path) -> None:
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
+def test_setup_refuses_ambiguous_fixed_binding(tmp_path, paths) -> None:
     device = _device(
         fixed_binding_available=False,
         binding_error="同名端點無法安全區分",
@@ -85,8 +81,7 @@ def test_setup_refuses_ambiguous_fixed_binding(tmp_path) -> None:
         )
 
 
-def test_interactive_setup_empty_choice_follows_windows_default(tmp_path) -> None:
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
+def test_interactive_setup_empty_choice_follows_windows_default(tmp_path, paths) -> None:
     device = _device()
 
     configured = run_setup(
@@ -99,8 +94,7 @@ def test_interactive_setup_empty_choice_follows_windows_default(tmp_path) -> Non
     assert configured.microphone.mode is MicrophoneMode.SYSTEM_DEFAULT
 
 
-def test_model_setup_check_reports_missing_without_network(tmp_path, monkeypatch) -> None:
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
+def test_model_setup_check_reports_missing_without_network(tmp_path, monkeypatch, paths) -> None:
 
     def missing(*_args, **_kwargs):
         raise ModelDownloadError("required model files are missing")
@@ -114,8 +108,9 @@ def test_model_setup_check_reports_missing_without_network(tmp_path, monkeypatch
     assert "尚未就緒" in status.message
 
 
-def test_model_setup_repair_forwards_progress_and_returns_ready(tmp_path, monkeypatch) -> None:
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
+def test_model_setup_repair_forwards_progress_and_returns_ready(
+    tmp_path, monkeypatch, paths
+) -> None:
     updates = []
 
     def provision(_config, models_dir, progress, **_kwargs):

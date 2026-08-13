@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import os
 from datetime import UTC, datetime
-
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QSettings
 

@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import ctypes
-import os
 import threading
 import time
 from dataclasses import replace
 from types import SimpleNamespace
-
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QSettings, QSize
 

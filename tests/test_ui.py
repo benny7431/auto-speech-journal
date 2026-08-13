@@ -1,16 +1,11 @@
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
-
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-os.environ.setdefault("QT_QUICK_BACKEND", "software")
-os.environ.setdefault("QSG_RHI_BACKEND", "software")
 
 import pytest
 from PySide6.QtCore import (

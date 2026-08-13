@@ -1,17 +1,13 @@
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 from PIL import Image
 
 from auto_speech_journal.paths import AppPaths
+from tools.render_readme_demo import render_demo
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from tools.render_readme_demo import render_demo  # noqa: E402
 
 LIVE_VIDEO = ROOT / "docs" / "media" / "auto-speech-journal-live-demo.mp4"
 LIVE_GIF = ROOT / "docs" / "images" / "auto-speech-journal-live-demo.gif"

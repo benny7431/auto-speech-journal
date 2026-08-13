@@ -48,13 +48,6 @@ def captured(
     )
 
 
-@pytest.fixture
-def storage(tmp_path: Path):
-    value = JournalStorage(tmp_path / "state.db")
-    yield value
-    value.close()
-
-
 def test_sqlite_is_wal_secure_and_foreign_keys_enabled(storage: JournalStorage) -> None:
     assert storage.pragmas() == {
         "journal_mode": "wal",
@@ -232,28 +225,25 @@ def test_failed_final_becomes_retry_and_can_be_claimed_again(
 
 def test_repair_pathological_transcripts_uses_preview_and_is_idempotent(
     tmp_path: Path,
+    storage: JournalStorage,
 ) -> None:
-    storage = JournalStorage(tmp_path / "state.db")
-    try:
-        segment = captured(tmp_path, preview="可讀預覽")
-        storage.add_captured(segment)
-        storage.apply_final(
-            FinalResult(
-                segment.segment_id,
-                "及時," * 60,
-                "及時," * 60,
-                "faster-whisper:cuda:int8_float16:s2tw",
-            )
+    segment = captured(tmp_path, preview="可讀預覽")
+    storage.add_captured(segment)
+    storage.apply_final(
+        FinalResult(
+            segment.segment_id,
+            "及時," * 60,
+            "及時," * 60,
+            "faster-whisper:cuda:int8_float16:s2tw",
         )
+    )
 
-        assert storage.repair_pathological_transcripts() == (segment.segment_id,)
-        repaired = storage.get_segment(segment.segment_id)
-        assert repaired.final_raw == "及時," * 60
-        assert repaired.final_text == "可讀預覽"
-        assert repaired.engine_profile.endswith(":repeat-filter:preview")
-        assert storage.repair_pathological_transcripts() == ()
-    finally:
-        storage.close()
+    assert storage.repair_pathological_transcripts() == (segment.segment_id,)
+    repaired = storage.get_segment(segment.segment_id)
+    assert repaired.final_raw == "及時," * 60
+    assert repaired.final_text == "可讀預覽"
+    assert repaired.engine_profile.endswith(":repeat-filter:preview")
+    assert storage.repair_pathological_transcripts() == ()
 
 
 def test_mark_finalizing_is_idempotent_and_never_regresses_completed_state(

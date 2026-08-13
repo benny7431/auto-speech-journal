@@ -70,8 +70,7 @@ def test_version_option_uses_package_version(capsys: pytest.CaptureFixture[str])
     assert capsys.readouterr().out.strip() == f"auto-speech-journal {__version__}"
 
 
-def test_download_models_does_not_create_config(tmp_path, monkeypatch) -> None:
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
+def test_download_models_does_not_create_config(tmp_path, monkeypatch, paths) -> None:
     calls = []
 
     def ensure_models(model, models_dir, progress):
@@ -85,8 +84,7 @@ def test_download_models_does_not_create_config(tmp_path, monkeypatch) -> None:
     assert not paths.config_file.exists()
 
 
-def test_download_models_does_not_modify_existing_config(tmp_path, monkeypatch) -> None:
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
+def test_download_models_does_not_modify_existing_config(tmp_path, monkeypatch, paths) -> None:
     paths.runtime_root.mkdir(parents=True)
     original = b'{"preserve": "exactly"}\n'
     paths.config_file.write_bytes(original)

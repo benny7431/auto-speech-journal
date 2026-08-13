@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -17,26 +15,10 @@ def _source(path: Path) -> str:
 
 
 @pytest.mark.parametrize("script", [INSTALLER, UNINSTALLER, APP_CONTROL])
-def test_windows_powershell_scripts_are_ps51_utf8_bom_and_parseable(script: Path) -> None:
-    assert script.read_bytes().startswith(b"\xef\xbb\xbf")
-    powershell = shutil.which("powershell.exe")
-    if powershell is None:
-        pytest.skip("Windows PowerShell is unavailable")
-
-    command = (
-        "$errors = $null; "
-        f"[Management.Automation.Language.Parser]::ParseFile('{script}', "
-        "[ref]$null, [ref]$errors) | Out-Null; "
-        "if ($errors.Count) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }"
-    )
-    result = subprocess.run(
-        [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=15,
-    )
-    assert result.returncode == 0, result.stderr
+def test_windows_powershell_scripts_are_ps51_utf8_bom_and_parseable(
+    script: Path, assert_powershell_script
+) -> None:
+    assert_powershell_script(script, timeout=15)
 
 
 def test_shared_process_helpers_are_defined_once_and_dot_sourced_by_both_scripts() -> None:

@@ -1,11 +1,7 @@
 from __future__ import annotations
 
 import re
-import shutil
-import subprocess
 from pathlib import Path
-
-import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 WINDOWS_PACKAGING = ROOT / "packaging" / "windows"
@@ -18,25 +14,10 @@ def _source(path: Path, *, bom: bool = False) -> str:
     return path.read_text(encoding="utf-8-sig" if bom else "utf-8")
 
 
-def test_packaging_powershell_is_ps51_utf8_bom_and_parseable() -> None:
-    assert BUILD_SCRIPT.read_bytes().startswith(b"\xef\xbb\xbf")
-    powershell = shutil.which("powershell.exe")
-    if powershell is None:
-        pytest.skip("Windows PowerShell is unavailable")
-    command = (
-        "$errors=$null;"
-        f"[Management.Automation.Language.Parser]::ParseFile('{BUILD_SCRIPT}',"
-        "[ref]$null,[ref]$errors)|Out-Null;"
-        "if($errors.Count){$errors|%{Write-Error $_};exit 1}"
-    )
-    result = subprocess.run(
-        [powershell, "-NoLogo", "-NoProfile", "-Command", command],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=20,
-    )
-    assert result.returncode == 0, result.stderr
+def test_packaging_powershell_is_ps51_utf8_bom_and_parseable(
+    assert_powershell_script,
+) -> None:
+    assert_powershell_script(BUILD_SCRIPT)
 
 
 def test_inno_installs_direct_gui_per_user_with_bilingual_ui() -> None:

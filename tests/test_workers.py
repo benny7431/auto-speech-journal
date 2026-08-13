@@ -74,6 +74,49 @@ def test_replaceable_audio_level_drops_instead_of_blocking_full_queue() -> None:
     assert events.get_nowait() is not level
 
 
+class FakeVad:
+    is_speech_detected = False
+
+    def accept(self, samples):
+        return [SpeechAudio(samples, 0, len(samples))]
+
+    def flush(self):
+        return []
+
+    def reset(self):
+        return None
+
+
+class Vad:
+    is_speech_detected = True
+
+    def accept(self, samples):
+        return [SpeechAudio(samples, 0, len(samples))]
+
+    def flush(self):
+        return []
+
+    def reset(self):
+        return None
+
+
+class Preview:
+    def warmup(self):
+        return None
+
+    def accept(self, *_args, **_kwargs):
+        return PreviewHypothesis("預覽", False, True)
+
+    def finish(self):
+        return PreviewHypothesis("預覽", True, False)
+
+    def reset(self):
+        return None
+
+    def close(self):
+        return None
+
+
 class NoSpeechPreview:
     def warmup(self):
         return None
@@ -541,9 +584,11 @@ def test_fallback_preferred_recovery_only_updates_availability(tmp_path) -> None
     )
 
 
-def test_journal_workers_input_request_is_idempotent_and_restart_uses_latest(tmp_path) -> None:
+def test_journal_workers_input_request_is_idempotent_and_restart_uses_latest(
+    tmp_path,
+    paths,
+) -> None:
     context = FakeContext()
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     original = MicrophoneSelection(
         MicrophoneMode.FIXED,
         DeviceFingerprint(name="Input A", endpoint_id="a"),
@@ -575,7 +620,7 @@ def test_journal_workers_input_request_is_idempotent_and_restart_uses_latest(tmp
     workers.stop()
 
 
-def test_recorder_duplicate_pending_route_request_is_not_terminally_acked(tmp_path) -> None:
+def test_recorder_duplicate_pending_route_request_is_not_terminally_acked(tmp_path, paths) -> None:
     commands = queue.Queue()
     events = queue.Queue()
     selected = MicrophoneSelection(
@@ -604,7 +649,6 @@ def test_recorder_duplicate_pending_route_request_is_not_terminally_acked(tmp_pa
         def stop(self):
             self.running = False
 
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     _recorder_loop(
         AppConfig(records_root=str(paths.records_root)),
         paths,
@@ -681,7 +725,7 @@ class FakeContext:
         return process
 
 
-def test_start_rolls_back_partial_spawn_and_can_retry(tmp_path):
+def test_start_rolls_back_partial_spawn_and_can_retry(tmp_path, paths):
     class FailOnceContext(FakeContext):
         def __init__(self):
             super().__init__()
@@ -701,7 +745,6 @@ def test_start_rolls_back_partial_spawn_and_can_retry(tmp_path):
             return process
 
     context = FailOnceContext()
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     workers = JournalWorkers(
         AppConfig(records_root=str(paths.records_root)),
         paths,
@@ -731,9 +774,8 @@ def test_start_rolls_back_partial_spawn_and_can_retry(tmp_path):
     workers.stop()
 
 
-def test_input_request_retries_backpressure_and_recorder_restart_until_ack(tmp_path):
+def test_input_request_retries_backpressure_and_recorder_restart_until_ack(tmp_path, paths):
     context = FakeContext()
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     workers = JournalWorkers(
         AppConfig(
             records_root=str(paths.records_root),
@@ -785,9 +827,8 @@ def test_input_request_retries_backpressure_and_recorder_restart_until_ack(tmp_p
     workers.stop()
 
 
-def test_journal_workers_uses_bounded_finalizer_queue(tmp_path):
+def test_journal_workers_uses_bounded_finalizer_queue(tmp_path, paths):
     context = FakeContext()
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     workers = JournalWorkers(
         AppConfig(records_root=str(paths.records_root)),
         paths,
@@ -810,7 +851,7 @@ def test_journal_workers_uses_bounded_finalizer_queue(tmp_path):
     workers.stop()
 
 
-def test_finalizer_loop_emits_result_and_status(tmp_path):
+def test_finalizer_loop_emits_result_and_status(tmp_path, paths):
     segment = captured(tmp_path)
     inputs = queue.Queue()
     events = queue.Queue()
@@ -837,7 +878,6 @@ def test_finalizer_loop_emits_result_and_status(tmp_path):
             return None
 
     config = AppConfig(records_root=str(tmp_path / "records"))
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     _finalizer_loop(config, paths, inputs, events, engine_factory=FakeEngine)
     emitted = list(events.queue)
 
@@ -847,7 +887,7 @@ def test_finalizer_loop_emits_result_and_status(tmp_path):
     ] == [WorkerState.STARTING, WorkerState.READY, WorkerState.STOPPED]
 
 
-def test_finalizer_status_recovers_after_a_normal_result(tmp_path):
+def test_finalizer_status_recovers_after_a_normal_result(tmp_path, paths):
     first = captured(tmp_path, "first")
     second = captured(tmp_path, "second")
     inputs = queue.Queue()
@@ -880,7 +920,6 @@ def test_finalizer_status_recovers_after_a_normal_result(tmp_path):
             return None
 
     config = AppConfig(records_root=str(tmp_path / "records"))
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     _finalizer_loop(config, paths, inputs, events, engine_factory=RecoveringEngine)
     statuses = [event for event in events.queue if isinstance(event, WorkerStatus)]
 
@@ -890,7 +929,7 @@ def test_finalizer_status_recovers_after_a_normal_result(tmp_path):
     )
 
 
-def test_recorder_loop_spools_completed_vad_segment(tmp_path):
+def test_recorder_loop_spools_completed_vad_segment(tmp_path, paths):
     commands = queue.Queue()
     events = queue.Queue()
     commands.put(WorkerCommand(WorkerCommandKind.START))
@@ -935,18 +974,6 @@ def test_recorder_loop_spools_completed_vad_segment(tmp_path):
         def close(self):
             return None
 
-    class FakeVad:
-        is_speech_detected = False
-
-        def accept(self, samples):
-            return [SpeechAudio(samples, 0, len(samples))]
-
-        def flush(self):
-            return []
-
-        def reset(self):
-            return None
-
     class FakeSpool:
         usage_ratio = 0.81
 
@@ -955,7 +982,6 @@ def test_recorder_loop_spools_completed_vad_segment(tmp_path):
             return tmp_path / f"{segment_id}.flac"
 
     config = AppConfig(records_root=str(tmp_path / "records"))
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     clock = [0.0]
 
     def monotonic():
@@ -987,7 +1013,7 @@ def test_recorder_loop_spools_completed_vad_segment(tmp_path):
     )
 
 
-def test_recorder_stop_flushes_active_speech_to_spool(tmp_path):
+def test_recorder_stop_flushes_active_speech_to_spool(tmp_path, paths):
     commands = queue.Queue()
     events = queue.Queue()
     commands.put(WorkerCommand(WorkerCommandKind.START))
@@ -1050,7 +1076,6 @@ def test_recorder_stop_flushes_active_speech_to_spool(tmp_path):
             return tmp_path / f"{segment_id}.flac"
 
     config = AppConfig(records_root=str(tmp_path / "records"))
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     clock = [0.0]
 
     def monotonic():
@@ -1074,7 +1099,7 @@ def test_recorder_stop_flushes_active_speech_to_spool(tmp_path):
     assert segments[0].preview_text == "關機前完成"
 
 
-def test_microphone_failure_flushes_active_speech_before_reconnect(tmp_path):
+def test_microphone_failure_flushes_active_speech_before_reconnect(tmp_path, paths):
     commands = queue.Queue()
     events = queue.Queue()
     commands.put(WorkerCommand(WorkerCommandKind.START))
@@ -1158,7 +1183,6 @@ def test_microphone_failure_flushes_active_speech_before_reconnect(tmp_path):
         return now[0]
 
     config = AppConfig(records_root=str(tmp_path / "records"))
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     _recorder_loop(
         config,
         paths,
@@ -1244,7 +1268,7 @@ def test_pause_retries_failed_vad_flush_before_leaving_capture_running(tmp_path)
     )
 
 
-def test_sleep_gap_flushes_streaming_state_before_new_audio(tmp_path):
+def test_sleep_gap_flushes_streaming_state_before_new_audio(tmp_path, paths):
     commands = queue.Queue()
     events = queue.Queue()
     commands.put(WorkerCommand(WorkerCommandKind.START))
@@ -1328,7 +1352,6 @@ def test_sleep_gap_flushes_streaming_state_before_new_audio(tmp_path):
             return path
 
     config = AppConfig(records_root=str(tmp_path / "records"))
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     clock = [0.0]
 
     def monotonic():
@@ -1359,7 +1382,7 @@ def test_sleep_gap_flushes_streaming_state_before_new_audio(tmp_path):
     )
 
 
-def test_spool_hard_limit_stops_recorder_in_error(tmp_path):
+def test_spool_hard_limit_stops_recorder_in_error(tmp_path, paths):
     commands = queue.Queue()
     events = queue.Queue()
     commands.put(WorkerCommand(WorkerCommandKind.START))
@@ -1400,18 +1423,6 @@ def test_spool_hard_limit_stops_recorder_in_error(tmp_path):
         def close(self):
             return None
 
-    class FakeVad:
-        is_speech_detected = False
-
-        def accept(self, samples):
-            return [SpeechAudio(samples, 0, len(samples))]
-
-        def flush(self):
-            return []
-
-        def reset(self):
-            return None
-
     class FullSpool:
         usage_ratio = 1.0
 
@@ -1420,7 +1431,6 @@ def test_spool_hard_limit_stops_recorder_in_error(tmp_path):
 
     capture_backend = FakeCapture()
     config = AppConfig(records_root=str(tmp_path / "records"))
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     _recorder_loop(
         config,
         paths,
@@ -1441,7 +1451,7 @@ def test_spool_hard_limit_stops_recorder_in_error(tmp_path):
     assert capture_backend.running is False
 
 
-def test_recorder_status_recovers_after_clean_audio(tmp_path):
+def test_recorder_status_recovers_after_clean_audio(tmp_path, paths):
     commands = queue.Queue()
     events = queue.Queue()
     commands.put(WorkerCommand(WorkerCommandKind.START))
@@ -1502,7 +1512,6 @@ def test_recorder_status_recovers_after_clean_audio(tmp_path):
             return None
 
     config = AppConfig(records_root=str(tmp_path / "records"))
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     _recorder_loop(
         config,
         paths,
@@ -1523,7 +1532,7 @@ def test_recorder_status_recovers_after_clean_audio(tmp_path):
     )
 
 
-def test_preview_loop_emits_raw_partial_and_endpoint_result(tmp_path):
+def test_preview_loop_emits_raw_partial_and_endpoint_result(tmp_path, paths):
     started = datetime(2026, 7, 12, tzinfo=UTC)
     segment = captured(tmp_path, "preview-segment")
     inputs = queue.Queue()
@@ -1560,7 +1569,6 @@ def test_preview_loop_emits_raw_partial_and_endpoint_result(tmp_path):
             return None
 
     config = AppConfig(records_root=str(tmp_path / "records"))
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     _preview_loop(config, paths, inputs, events, engine_factory=Preview)
     emitted = list(events.queue)
     partial = next(
@@ -1578,8 +1586,7 @@ def test_preview_loop_emits_raw_partial_and_endpoint_result(tmp_path):
 
 
 def test_preview_loop_emits_first_text_immediately_and_retains_throttled_change(
-    tmp_path: Path,
-) -> None:
+    tmp_path: Path, paths) -> None:
     started = datetime(2026, 7, 12, tzinfo=UTC)
     segment = captured(tmp_path, "preview-throttle")
     inputs = queue.Queue()
@@ -1624,7 +1631,6 @@ def test_preview_loop_emits_first_text_immediately_and_retains_throttled_change(
             return None
 
     config = AppConfig(records_root=str(tmp_path / "records"))
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     _preview_loop(
         config,
         paths,
@@ -1639,7 +1645,9 @@ def test_preview_loop_emits_first_text_immediately_and_retains_throttled_change(
     assert partials[0].emitted_at_utc >= partials[0].started_at_utc
 
 
-def test_inline_preview_uses_the_same_first_and_pending_update_policy(tmp_path: Path) -> None:
+def test_inline_preview_uses_the_same_first_and_pending_update_policy(
+    tmp_path: Path, paths
+) -> None:
     commands = queue.Queue()
     events = queue.Queue()
     commands.put(WorkerCommand(WorkerCommandKind.START))
@@ -1716,7 +1724,6 @@ def test_inline_preview_uses_the_same_first_and_pending_update_policy(tmp_path: 
         def write(self, _samples, *, sample_rate, segment_id):
             return tmp_path / f"{segment_id}.flac"
 
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     _recorder_loop(
         AppConfig(records_root=str(paths.records_root)),
         paths,
@@ -1735,8 +1742,7 @@ def test_inline_preview_uses_the_same_first_and_pending_update_policy(tmp_path: 
 
 
 def test_recorder_sends_exact_preview_preroll_without_repeating_current_chunk(
-    tmp_path: Path,
-) -> None:
+    tmp_path: Path, paths) -> None:
     commands = queue.Queue()
     events = queue.Queue()
     previews = queue.Queue(maxsize=8)
@@ -1791,7 +1797,6 @@ def test_recorder_sends_exact_preview_preroll_without_repeating_current_chunk(
             assert sample_rate == 16_000
             return tmp_path / f"{segment_id}.flac"
 
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     _recorder_loop(
         AppConfig(records_root=str(paths.records_root)),
         paths,
@@ -1816,7 +1821,7 @@ def test_recorder_sends_exact_preview_preroll_without_repeating_current_chunk(
     assert levels[-1].speech_active and levels[-1].segment_id
 
 
-def test_production_recorder_enqueues_preview_without_decoding_inline(tmp_path):
+def test_production_recorder_enqueues_preview_without_decoding_inline(tmp_path, paths):
     commands = queue.Queue()
     events = queue.Queue()
     previews = queue.Queue(maxsize=4)
@@ -1842,18 +1847,6 @@ def test_production_recorder_enqueues_preview_without_decoding_inline(tmp_path):
         def stop(self):
             self.running = False
 
-    class Vad:
-        is_speech_detected = True
-
-        def accept(self, samples):
-            return [SpeechAudio(samples, 0, len(samples))]
-
-        def flush(self):
-            return []
-
-        def reset(self):
-            return None
-
     class Spool:
         usage_ratio = 0.0
 
@@ -1862,7 +1855,6 @@ def test_production_recorder_enqueues_preview_without_decoding_inline(tmp_path):
             return tmp_path / f"{segment_id}.flac"
 
     config = AppConfig(records_root=str(tmp_path / "records"))
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     _recorder_loop(
         config,
         paths,
@@ -1888,7 +1880,7 @@ def test_production_recorder_enqueues_preview_without_decoding_inline(tmp_path):
     assert not any(hasattr(event, "text") for event in events.queue)
 
 
-def test_production_recorder_stop_flushes_vad_and_preview_in_order(tmp_path):
+def test_production_recorder_stop_flushes_vad_and_preview_in_order(tmp_path, paths):
     commands = queue.Queue()
     events = queue.Queue()
     previews = queue.Queue(maxsize=4)
@@ -1931,7 +1923,6 @@ def test_production_recorder_stop_flushes_vad_and_preview_in_order(tmp_path):
             return tmp_path / f"{segment_id}.flac"
 
     config = AppConfig(records_root=str(tmp_path / "records"))
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     _recorder_loop(
         config,
         paths,
@@ -1953,7 +1944,7 @@ def test_production_recorder_stop_flushes_vad_and_preview_in_order(tmp_path):
     assert len(segments) == 1 and segments[0].preview_pending
 
 
-def test_preview_backpressure_never_drops_vad_or_flac(tmp_path):
+def test_preview_backpressure_never_drops_vad_or_flac(tmp_path, paths):
     commands = queue.Queue()
     events = queue.Queue()
     previews = queue.Queue(maxsize=1)
@@ -1981,18 +1972,6 @@ def test_preview_backpressure_never_drops_vad_or_flac(tmp_path):
         def stop(self):
             self.running = False
 
-    class Vad:
-        is_speech_detected = True
-
-        def accept(self, samples):
-            return [SpeechAudio(samples, 0, len(samples))]
-
-        def flush(self):
-            return []
-
-        def reset(self):
-            return None
-
     class Spool:
         usage_ratio = 0.0
 
@@ -2001,7 +1980,6 @@ def test_preview_backpressure_never_drops_vad_or_flac(tmp_path):
             return tmp_path / f"{segment_id}.flac"
 
     config = AppConfig(records_root=str(tmp_path / "records"))
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     _recorder_loop(
         config,
         paths,
@@ -2024,7 +2002,7 @@ def test_preview_backpressure_never_drops_vad_or_flac(tmp_path):
     )
 
 
-def test_generic_spool_failure_retries_before_publishing_capture(tmp_path):
+def test_generic_spool_failure_retries_before_publishing_capture(tmp_path, paths):
     commands = queue.Queue()
     events = queue.Queue()
     commands.put(WorkerCommand(WorkerCommandKind.START))
@@ -2068,18 +2046,6 @@ def test_generic_spool_failure_retries_before_publishing_capture(tmp_path):
         def close(self):
             return None
 
-    class Vad:
-        is_speech_detected = True
-
-        def accept(self, samples):
-            return [SpeechAudio(samples, 0, len(samples))]
-
-        def flush(self):
-            return []
-
-        def reset(self):
-            return None
-
     class BrokenSpool:
         usage_ratio = 0.0
         writes = 0
@@ -2096,7 +2062,6 @@ def test_generic_spool_failure_retries_before_publishing_capture(tmp_path):
     ticks = iter((0.0, 0.0, 3.0, 3.0, 6.0, 6.0, 9.0, 9.0))
 
     config = AppConfig(records_root=str(tmp_path / "records"))
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     _recorder_loop(
         config,
         paths,
@@ -2128,7 +2093,7 @@ def test_generic_spool_failure_retries_before_publishing_capture(tmp_path):
     )
 
 
-def test_stop_flush_drains_transient_spool_failure_before_worker_exit(tmp_path):
+def test_stop_flush_drains_transient_spool_failure_before_worker_exit(tmp_path, paths):
     commands = queue.Queue()
     events = queue.Queue()
     commands.put(WorkerCommand(WorkerCommandKind.START))
@@ -2196,7 +2161,6 @@ def test_stop_flush_drains_transient_spool_failure_before_worker_exit(tmp_path):
             path.write_bytes(b"fLaC-close-recovery")
             return path
 
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     _recorder_loop(
         AppConfig(records_root=str(paths.records_root)),
         paths,
@@ -2217,7 +2181,7 @@ def test_stop_flush_drains_transient_spool_failure_before_worker_exit(tmp_path):
     assert captured_events[0].audio_path.is_file()
 
 
-def test_retry_validates_all_recovered_partials_and_rewrites_truncated_one(tmp_path):
+def test_retry_validates_all_recovered_partials_and_rewrites_truncated_one(tmp_path, paths):
     commands = queue.Queue()
     events = queue.Queue()
     commands.put(WorkerCommand(WorkerCommandKind.START))
@@ -2240,22 +2204,6 @@ def test_retry_validates_all_recovered_partials_and_rewrites_truncated_one(tmp_p
 
         def stop(self):
             self.running = False
-
-    class Preview:
-        def warmup(self):
-            return None
-
-        def accept(self, *_args, **_kwargs):
-            return PreviewHypothesis("預覽", False, True)
-
-        def finish(self):
-            return PreviewHypothesis("預覽", True, False)
-
-        def reset(self):
-            return None
-
-        def close(self):
-            return None
 
     class Vad:
         is_speech_detected = True
@@ -2316,7 +2264,6 @@ def test_retry_validates_all_recovered_partials_and_rewrites_truncated_one(tmp_p
         clock[0] += 3.0
         return clock[0]
 
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     _recorder_loop(
         AppConfig(records_root=str(paths.records_root)),
         paths,
@@ -2344,7 +2291,7 @@ def test_retry_validates_all_recovered_partials_and_rewrites_truncated_one(tmp_p
     assert not list(paths.spool_dir.glob(".*.partial.flac"))
 
 
-def test_failed_truncated_rewrite_keeps_recoverable_prefix_for_restart(tmp_path):
+def test_failed_truncated_rewrite_keeps_recoverable_prefix_for_restart(tmp_path, paths):
     commands = queue.Queue()
     events = queue.Queue()
     commands.put(WorkerCommand(WorkerCommandKind.START))
@@ -2368,34 +2315,6 @@ def test_failed_truncated_rewrite_keeps_recoverable_prefix_for_restart(tmp_path)
         def stop(self):
             self.running = False
 
-    class Preview:
-        def warmup(self):
-            return None
-
-        def accept(self, *_args, **_kwargs):
-            return PreviewHypothesis("預覽", False, True)
-
-        def finish(self):
-            return PreviewHypothesis("預覽", True, False)
-
-        def reset(self):
-            return None
-
-        def close(self):
-            return None
-
-    class Vad:
-        is_speech_detected = True
-
-        def accept(self, samples):
-            return [SpeechAudio(samples, 0, len(samples))]
-
-        def flush(self):
-            return []
-
-        def reset(self):
-            return None
-
     class FailingRewriteSpool:
         usage_ratio = 0.0
 
@@ -2416,7 +2335,6 @@ def test_failed_truncated_rewrite_keeps_recoverable_prefix_for_restart(tmp_path)
             path.write_bytes(b"decodable-prefix")
             return [RecoveredFlac(self.segment_id, path, 16_000, 800)]
 
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     clock = [0.0]
 
     def monotonic():
@@ -2442,7 +2360,7 @@ def test_failed_truncated_rewrite_keeps_recoverable_prefix_for_restart(tmp_path)
     assert backups[0].read_bytes() == b"decodable-prefix"
 
 
-def test_permanent_spool_failure_never_publishes_missing_final_path(tmp_path):
+def test_permanent_spool_failure_never_publishes_missing_final_path(tmp_path, paths):
     commands = queue.Queue()
     events = queue.Queue()
     commands.put(WorkerCommand(WorkerCommandKind.START))
@@ -2465,34 +2383,6 @@ def test_permanent_spool_failure_never_publishes_missing_final_path(tmp_path):
         def stop(self):
             self.running = False
 
-    class Preview:
-        def warmup(self):
-            return None
-
-        def accept(self, *_args, **_kwargs):
-            return PreviewHypothesis("預覽", False, True)
-
-        def finish(self):
-            return PreviewHypothesis("預覽", True, False)
-
-        def reset(self):
-            return None
-
-        def close(self):
-            return None
-
-    class Vad:
-        is_speech_detected = True
-
-        def accept(self, samples):
-            return [SpeechAudio(samples, 0, len(samples))]
-
-        def flush(self):
-            return []
-
-        def reset(self):
-            return None
-
     class BrokenSpool:
         usage_ratio = 0.0
 
@@ -2500,7 +2390,6 @@ def test_permanent_spool_failure_never_publishes_missing_final_path(tmp_path):
             raise OSError("disk remains full")
 
     ticks = iter((0.0, 0.0, 3.0, 6.0, 9.0, 12.0, 15.0))
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     _recorder_loop(
         AppConfig(records_root=str(paths.records_root)),
         paths,
@@ -2517,7 +2406,7 @@ def test_permanent_spool_failure_never_publishes_missing_final_path(tmp_path):
     assert not any(isinstance(event, CapturedSegment) for event in events.queue)
 
 
-def test_spool_warning_status_recovers_below_threshold(tmp_path):
+def test_spool_warning_status_recovers_below_threshold(tmp_path, paths):
     commands = queue.Queue()
     events = queue.Queue()
     commands.put(WorkerCommand(WorkerCommandKind.START))
@@ -2589,7 +2478,6 @@ def test_spool_warning_status_recovers_below_threshold(tmp_path):
             return tmp_path / f"{segment_id}.flac"
 
     config = AppConfig(records_root=str(tmp_path / "records"))
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     _recorder_loop(
         config,
         paths,
@@ -2611,7 +2499,7 @@ def test_spool_warning_status_recovers_below_threshold(tmp_path):
     )
 
 
-def test_forced_split_carries_overlap_chain_metadata(tmp_path):
+def test_forced_split_carries_overlap_chain_metadata(tmp_path, paths):
     commands = queue.Queue()
     events = queue.Queue()
     commands.put(WorkerCommand(WorkerCommandKind.START))
@@ -2674,7 +2562,6 @@ def test_forced_split_carries_overlap_chain_metadata(tmp_path):
             return tmp_path / f"{segment_id}.flac"
 
     config = AppConfig(records_root=str(tmp_path / "records"))
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     _recorder_loop(
         config,
         paths,
@@ -2693,9 +2580,8 @@ def test_forced_split_carries_overlap_chain_metadata(tmp_path):
     assert segments[1].leading_overlap_ms == 25
 
 
-def test_preview_result_is_joined_into_captured_segment_before_publish(tmp_path):
+def test_preview_result_is_joined_into_captured_segment_before_publish(tmp_path, paths):
     context = FakeContext()
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     workers = JournalWorkers(
         AppConfig(records_root=str(paths.records_root)),
         paths,
@@ -2725,10 +2611,9 @@ def test_preview_result_is_joined_into_captured_segment_before_publish(tmp_path)
     workers.stop()
 
 
-def test_preview_timeout_releases_durable_capture_before_early_final(tmp_path):
+def test_preview_timeout_releases_durable_capture_before_early_final(tmp_path, paths):
     now = [10.0]
     context = FakeContext()
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     workers = JournalWorkers(
         AppConfig(records_root=str(paths.records_root)),
         paths,
@@ -2762,9 +2647,8 @@ def test_preview_timeout_releases_durable_capture_before_early_final(tmp_path):
     workers.stop()
 
 
-def test_supervisor_restarts_preview_worker(tmp_path):
+def test_supervisor_restarts_preview_worker(tmp_path, paths):
     context = FakeContext()
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     workers = JournalWorkers(
         AppConfig(records_root=str(paths.records_root)),
         paths,
@@ -2789,7 +2673,7 @@ def test_supervisor_restarts_preview_worker(tmp_path):
     workers.stop()
 
 
-def test_child_guard_covers_all_three_processes_and_closes(tmp_path):
+def test_child_guard_covers_all_three_processes_and_closes(tmp_path, paths):
     class Guard:
         def __init__(self):
             self.assigned = []
@@ -2803,7 +2687,6 @@ def test_child_guard_covers_all_three_processes_and_closes(tmp_path):
 
     guard = Guard()
     context = FakeContext()
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     workers = JournalWorkers(
         AppConfig(records_root=str(paths.records_root)),
         paths,
@@ -2841,10 +2724,9 @@ def test_windows_job_object_kills_assigned_child_on_close():
             child.wait(timeout=5)
 
 
-def test_supervisor_restarts_dead_finalizer_and_requeues_pending(tmp_path):
+def test_supervisor_restarts_dead_finalizer_and_requeues_pending(tmp_path, paths):
     context = FakeContext()
     now = [10.0]
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     workers = JournalWorkers(
         AppConfig(records_root=str(paths.records_root)),
         paths,
@@ -2878,9 +2760,8 @@ def test_supervisor_restarts_dead_finalizer_and_requeues_pending(tmp_path):
     workers.stop()
 
 
-def test_staged_shutdown_keeps_finalizer_alive_until_pending_is_drained(tmp_path):
+def test_staged_shutdown_keeps_finalizer_alive_until_pending_is_drained(tmp_path, paths):
     context = FakeContext()
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     workers = JournalWorkers(
         AppConfig(records_root=str(paths.records_root)),
         paths,
@@ -2914,9 +2795,8 @@ def test_staged_shutdown_keeps_finalizer_alive_until_pending_is_drained(tmp_path
     assert not workers._finalizer.is_alive()
 
 
-def test_stop_worker_drains_full_event_queue_without_losing_events(tmp_path):
+def test_stop_worker_drains_full_event_queue_without_losing_events(tmp_path, paths):
     context = FakeContext()
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     workers = JournalWorkers(
         AppConfig(records_root=str(paths.records_root)),
         paths,
@@ -2939,9 +2819,8 @@ def test_stop_worker_drains_full_event_queue_without_losing_events(tmp_path):
     workers.stop_finalizer()
 
 
-def test_stop_worker_retries_stop_command_after_command_backpressure(tmp_path):
+def test_stop_worker_retries_stop_command_after_command_backpressure(tmp_path, paths):
     context = FakeContext()
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     workers = JournalWorkers(
         AppConfig(records_root=str(paths.records_root)),
         paths,
@@ -2990,9 +2869,8 @@ def test_stop_worker_retries_stop_command_after_command_backpressure(tmp_path):
     workers.stop_finalizer()
 
 
-def test_recorder_shutdown_timeout_never_terminates_undurable_audio(tmp_path):
+def test_recorder_shutdown_timeout_never_terminates_undurable_audio(tmp_path, paths):
     context = FakeContext()
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     workers = JournalWorkers(
         AppConfig(records_root=str(paths.records_root)),
         paths,
@@ -3036,9 +2914,8 @@ def test_recorder_shutdown_timeout_never_terminates_undurable_audio(tmp_path):
     workers.stop_finalizer()
 
 
-def test_supervisor_continues_capped_retries_after_fatal_threshold(tmp_path):
+def test_supervisor_continues_capped_retries_after_fatal_threshold(tmp_path, paths):
     context = FakeContext()
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     workers = JournalWorkers(
         AppConfig(records_root=str(paths.records_root)),
         paths,
@@ -3113,7 +2990,7 @@ def test_realtime_model_probe_exercises_preview_vad_and_opencc(tmp_path):
     assert "opencc" in calls
 
 
-def test_recorder_registers_recovered_partial_with_controller(tmp_path):
+def test_recorder_registers_recovered_partial_with_controller(tmp_path, paths):
     commands = queue.Queue()
     events = queue.Queue()
     commands.put(WorkerCommand(WorkerCommandKind.STOP))
@@ -3138,7 +3015,6 @@ def test_recorder_registers_recovered_partial_with_controller(tmp_path):
             return None
 
     config = AppConfig(records_root=str(tmp_path / "records"))
-    paths = AppPaths(tmp_path / "runtime", tmp_path / "records")
     _recorder_loop(
         config,
         paths,
