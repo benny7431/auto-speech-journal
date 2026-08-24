@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling==1.27.0"]
+requires = ["hatchling==1.32.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -38,12 +38,12 @@ dependencies = [
   "sounddevice==0.5.5",
   "soxr==1.1.0",
   "numpy==2.4.6",
-  "sherpa-onnx==1.13.4",
+  "sherpa-onnx==1.13.5",
   "faster-whisper==1.2.1",
-  "huggingface-hub==1.23.0",
+  "huggingface-hub==1.27.0",
   "ctranslate2==4.8.1",
   "opencc==1.4.1",
-  "soundfile==0.13.1",
+  "soundfile==0.14.0",
   "tzdata>=2025.2,<2027",
 ]
 
@@ -55,12 +55,12 @@ cuda = [
 ]
 dev = [
   "pillow==12.3.0",
-  "pre-commit==4.6.1",
-  "pyinstaller==6.16.0; platform_system == 'Windows'",
+  "pre-commit==4.6.2",
+  "pyinstaller==6.22.1; platform_system == 'Windows'",
   "pytest==8.4.2",
-  "pytest-cov==7.0.0",
+  "pytest-cov==7.1.0",
   "pytest-qt==4.5.0",
-  "ruff==0.12.12",
+  "ruff==0.16.3",
 ]
 
 [project.urls]
