@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling==1.27.0"]
+requires = ["hatchling==1.32.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -34,33 +34,33 @@ classifiers = [
   "Topic :: Multimedia :: Sound/Audio :: Speech",
 ]
 dependencies = [
-  "pyside6==6.11.1",
-  "sounddevice==0.5.5",
+  "pyside6==6.11.2",
+  "sounddevice==0.5.6",
   "soxr==1.1.0",
   "numpy==2.4.6",
-  "sherpa-onnx==1.13.4",
+  "sherpa-onnx==1.13.7",
   "faster-whisper==1.2.1",
-  "huggingface-hub==1.23.0",
-  "ctranslate2==4.8.1",
-  "opencc==1.4.1",
-  "soundfile==0.13.1",
+  "huggingface-hub==1.30.0",
+  "ctranslate2==4.8.2",
+  "opencc==1.4.2",
+  "soundfile==0.14.0",
   "tzdata>=2025.2,<2027",
 ]
 
 [project.optional-dependencies]
 cuda = [
-  "nvidia-cudnn-cu12==9.24.0.43; platform_system == 'Windows'",
+  "nvidia-cudnn-cu12==9.25.1.1; platform_system == 'Windows'",
   "nvidia-cublas-cu12==12.9.2.10; platform_system == 'Windows'",
   "nvidia-cuda-nvrtc-cu12==12.9.86; platform_system == 'Windows'",
 ]
 dev = [
   "pillow==12.3.0",
-  "pre-commit==4.6.1",
-  "pyinstaller==6.16.0; platform_system == 'Windows'",
+  "pre-commit==4.6.2",
+  "pyinstaller==6.22.2; platform_system == 'Windows'",
   "pytest==8.4.2",
-  "pytest-cov==7.0.0",
+  "pytest-cov==7.1.0",
   "pytest-qt==4.5.0",
-  "ruff==0.12.12",
+  "ruff==0.16.6",
 ]
 
 [project.urls]
