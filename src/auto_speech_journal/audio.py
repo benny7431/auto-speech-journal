@@ -309,10 +309,16 @@ class WasapiMicrophone:
         self._opened_once = False
         self._queue: queue.Queue[_RawChunk] = queue.Queue(maxsize=queue_blocks)
         self._stream: Any | None = None
+        self._stream_stopped = False
         self._resampler: StreamingResampler | None = None
         self._device: InputDevice | None = None
         self._pending_dropped_frames = 0
         self._drop_lock = threading.Lock()
+        self._pending_raw: _RawChunk | None = None
+        self._drained_chunks: list[AudioChunk] = []
+        self._next_output_at: datetime | None = None
+        self._last_raw_end: datetime | None = None
+        self._pending_status = ""
 
     @property
     def device(self) -> InputDevice | None:
@@ -320,7 +326,7 @@ class WasapiMicrophone:
 
     @property
     def running(self) -> bool:
-        if self._stream is None:
+        if self._stream is None or self._stream_stopped:
             return False
         try:
             active = getattr(self._stream, "active", None)
@@ -373,6 +379,10 @@ class WasapiMicrophone:
             self.target_sample_rate,
             soxr_module=self._soxr,
         )
+        self._stream_stopped = False
+        self._next_output_at = None
+        self._last_raw_end = None
+        self._pending_status = ""
         self._stream = sd.InputStream(
             samplerate=sample_rate,
             blocksize=block_size,
@@ -418,42 +428,102 @@ class WasapiMicrophone:
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
             remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
-            try:
-                raw = self._queue.get(timeout=remaining)
-            except queue.Empty as exc:
-                if not self.running:
-                    raise AudioError("WASAPI microphone stream became inactive") from exc
-                raise
-            output = self._resampler.process(raw.samples)
-            if len(output) == 0:
+            if self._pending_raw is None:
+                try:
+                    self._pending_raw = self._queue.get(timeout=remaining)
+                except queue.Empty as exc:
+                    if not self.running:
+                        raise AudioError("WASAPI microphone stream became inactive") from exc
+                    raise
+            chunk = self._convert_raw(self._pending_raw)
+            self._pending_raw = None
+            if chunk is None:
                 if deadline is not None and time.monotonic() >= deadline:
                     raise queue.Empty
                 continue
-            with self._drop_lock:
-                dropped = self._pending_dropped_frames
-                self._pending_dropped_frames = 0
-            scaled_drops = round(dropped * self.target_sample_rate / self._resampler.input_rate)
-            return AudioChunk(
-                samples=output,
-                sample_rate=self.target_sample_rate,
-                started_at_utc=raw.started_at_utc,
-                dropped_frames=scaled_drops,
-                status=raw.status,
-            )
+            return chunk
+
+    def _convert_raw(self, raw: _RawChunk) -> AudioChunk | None:
+        assert self._resampler is not None
+        output = self._resampler.process(raw.samples)
+        duration = len(raw.samples) / self._resampler.input_rate
+        if self._next_output_at is None:
+            self._next_output_at = raw.started_at_utc
+        elif self._last_raw_end is not None:
+            gap = (raw.started_at_utc - self._last_raw_end).total_seconds()
+            if gap > max(1.0, 3 * duration):
+                # Preserve a real capture/sleep gap for the recorder's stream clock.
+                self._next_output_at += timedelta(seconds=gap)
+        self._last_raw_end = raw.started_at_utc + timedelta(seconds=duration)
+        if raw.status:
+            self._pending_status = "; ".join(filter(None, (self._pending_status, raw.status)))
+        return self._output_chunk(output)
+
+    def _output_chunk(self, samples: Any) -> AudioChunk | None:
+        if not len(samples):
+            return None
+        assert self._resampler is not None and self._next_output_at is not None
+        with self._drop_lock:
+            dropped = self._pending_dropped_frames
+            self._pending_dropped_frames = 0
+        started_at = self._next_output_at
+        self._next_output_at += timedelta(seconds=len(samples) / self.target_sample_rate)
+        status, self._pending_status = self._pending_status, ""
+        return AudioChunk(
+            samples=samples,
+            sample_rate=self.target_sample_rate,
+            started_at_utc=started_at,
+            dropped_frames=round(dropped * self.target_sample_rate / self._resampler.input_rate),
+            status=status,
+        )
+
+    def _close_stream(self) -> None:
+        if self._stream is not None:
+            if not self._stream_stopped:
+                self._stream.stop()
+                self._stream_stopped = True
+            self._stream.close()
+            # Keep the handle and buffers until both operations succeeded, for retry.
+            self._stream = None
+            self._stream_stopped = False
+
+    def stop_and_drain(self) -> list[AudioChunk]:
+        """Stop callbacks, then return all accepted audio including the resampler tail."""
+        self._close_stream()
+        if self._resampler is not None:
+            while True:
+                if self._pending_raw is None:
+                    try:
+                        self._pending_raw = self._queue.get_nowait()
+                    except queue.Empty:
+                        break
+                chunk = self._convert_raw(self._pending_raw)
+                self._pending_raw = None
+                if chunk is not None:
+                    self._drained_chunks.append(chunk)
+            tail = self._resampler.process(_numpy().empty(0, dtype="float32"), final=True)
+            chunk = self._output_chunk(tail)
+            if chunk is not None:
+                self._drained_chunks.append(chunk)
+            self._resampler = None
+        chunks, self._drained_chunks = self._drained_chunks, []
+        return chunks
 
     def stop(self) -> None:
-        stream, self._stream = self._stream, None
-        if stream is not None:
-            try:
-                stream.stop()
-            finally:
-                stream.close()
+        """Close capture and discard audio; recording consumers use stop_and_drain."""
+        self._close_stream()
         while True:
             try:
                 self._queue.get_nowait()
             except queue.Empty:
                 break
         self._resampler = None
+        self._pending_raw = None
+        self._drained_chunks.clear()
+        self._next_output_at = None
+        self._last_raw_end = None
+        self._pending_status = ""
+        self._pending_dropped_frames = 0
 
     def iter_chunks(self, timeout: float = 0.25) -> Iterator[AudioChunk]:
         while self.running:
@@ -604,14 +674,18 @@ class SherpaSileroVadSegmenter:
 
     def _history_slice(self, start: int, end: int, fallback: Any) -> Any:
         np = _numpy()
+        native = np.ascontiguousarray(fallback, dtype=np.float32).reshape(-1)
+        native_start = end - len(native)
+        # Native VAD owns the complete segment even when its start has already
+        # left our bounded history. History supplies only pre-roll/overlap.
         pieces = [
-            values[max(0, start - chunk_start) : min(chunk_end, end) - chunk_start]
+            values[max(0, start - chunk_start) : min(chunk_end, native_start) - chunk_start]
             for chunk_start, chunk_end, values in self._history
-            if chunk_end > start and chunk_start < end
+            if chunk_end > start and chunk_start < native_start
         ]
         if not pieces:
-            return np.ascontiguousarray(fallback, dtype=np.float32).reshape(-1)
-        return np.ascontiguousarray(np.concatenate(pieces), dtype=np.float32)
+            return native
+        return np.ascontiguousarray(np.concatenate([*pieces, native]), dtype=np.float32)
 
     def _drain(self) -> list[SpeechAudio]:
         np = _numpy()

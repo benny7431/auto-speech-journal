@@ -306,7 +306,7 @@ class RouteCoordinator:
         status: EmitStatus,
         capture_factory: Callable[..., Any] | None,
         route_resolver: Callable[..., InputRouteResolution] | None,
-        flush_current: Callable[[], bool],
+        stop_and_flush: Callable[[], bool],
         reset_stream_state: Callable[[], None],
         is_recording: Callable[[], bool],
         has_pending_writes: Callable[[], bool],
@@ -318,7 +318,7 @@ class RouteCoordinator:
         self._status = status
         self._capture_factory = capture_factory
         self._route_resolver = route_resolver
-        self._flush_current = flush_current
+        self._stop_and_flush = stop_and_flush
         self._reset_stream_state = reset_stream_state
         self._is_recording = is_recording
         self._has_pending_writes = has_pending_writes
@@ -531,21 +531,9 @@ class RouteCoordinator:
         old_route = state.active_route
         old_name = state.active_input_name
         old_fingerprint = state.active_fingerprint
-        if old_capture is not None and getattr(old_capture, "running", False):
-            if not self._flush_current():
-                state.next_switch_attempt = now + self._retry_delay
-                return False
-            try:
-                old_capture.stop()
-            except Exception as exc:
-                state.next_switch_attempt = now + self._retry_delay
-                state.input_route_reason = f"failed to close current microphone: {exc}"
-                self._status(
-                    WorkerState.DEGRADED,
-                    state.input_route_reason,
-                    severity=Severity.WARNING,
-                )
-                return False
+        if old_capture is not None and not self._stop_and_flush():
+            state.next_switch_attempt = now + self._retry_delay
+            return False
 
         committed, error = self._open_and_commit(resolution, request_id=request.request_id)
         if committed:

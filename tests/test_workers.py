@@ -109,7 +109,7 @@ class NoSpeechSpool:
         return True
 
 
-def test_recorder_reconfigure_persists_segment_before_stopping_old_input(tmp_path) -> None:
+def test_recorder_reconfigure_persists_old_audio_before_starting_new_input(tmp_path) -> None:
     commands = queue.Queue()
     events = queue.Queue()
     preferred_a = DeviceFingerprint(name="Input A", endpoint_id="a")
@@ -223,7 +223,7 @@ def test_recorder_reconfigure_persists_segment_before_stopping_old_input(tmp_pat
     )
 
     assert "spool" in log, log
-    assert log.index("spool") < log.index("stop:Input A") < log.index("start:Input B")
+    assert log.index("stop:Input A") < log.index("spool") < log.index("start:Input B")
     route_updates = [event for event in events.queue if isinstance(event, InputRouteUpdate)]
     assert any(
         event.request_id == "switch-to-b"
@@ -1223,7 +1223,27 @@ def test_pause_retries_failed_vad_flush_before_leaving_capture_running(tmp_path)
         def reset(self):
             return None
 
+    saved = []
+    log = []
+
+    class Spool(NoSpeechSpool):
+        def write(self, samples, *, sample_rate, segment_id):
+            assert sample_rate == 16_000
+            saved.append(samples.copy())
+            log.append("persisted")
+            path = tmp_path / f"{segment_id}.flac"
+            path.write_bytes(b"isolated test spool")
+            return path
+
+    class Events(queue.Queue):
+        def put(self, item, *args, **kwargs):
+            if isinstance(item, WorkerStatus) and item.state == WorkerState.PAUSED:
+                log.append("paused")
+            return super().put(item, *args, **kwargs)
+
+    events = Events()
     capture = Capture()
+    vad = Vad()
     _recorder_loop(
         AppConfig(records_root=str(tmp_path / "records")),
         AppPaths(tmp_path / "runtime", tmp_path / "records"),
@@ -1231,13 +1251,20 @@ def test_pause_retries_failed_vad_flush_before_leaving_capture_running(tmp_path)
         events,
         capture_factory=lambda: capture,
         preview_factory=NoSpeechPreview,
-        vad_factory=lambda: (Vad(), None),
-        spool_factory=NoSpeechSpool,
+        vad_factory=lambda: (vad, None),
+        spool_factory=Spool,
         max_iterations=4,
     )
 
     assert capture.reads == 1
     assert capture.stops == 1
+    assert vad.flushes >= 2
+    assert any(
+        isinstance(event, WorkerStatus) and "temporary VAD flush failure" in event.message
+        for event in events.queue
+    )
+    np.testing.assert_array_equal(np.concatenate(saved), np.ones(1_600, np.float32))
+    assert log == ["persisted", "paused"]
     assert any(
         isinstance(event, WorkerStatus) and event.state == WorkerState.PAUSED
         for event in events.queue
