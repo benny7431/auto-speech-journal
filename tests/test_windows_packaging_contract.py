@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -123,6 +124,55 @@ def test_windows_build_accepts_canonical_stable_and_prerelease_versions() -> Non
     for version in ("0.3.2", "0.4.0a1", "0.4.0b1", "0.4.0rc1", "0.4.0.dev1"):
         assert version_pattern.fullmatch(version)
     assert version_pattern.fullmatch("0.4.0-rc.1") is None
+
+
+@pytest.mark.parametrize("version,numeric_version", [("0.3.2", "0.3.2.0"), ("0.3.3rc1", "0.3.3.0")])
+def test_real_inno_compiles_stable_and_prerelease_setup(tmp_path, version, numeric_version):
+    compiler = shutil.which("ISCC.exe")
+    if compiler is None:
+        for variable, suffix in (
+            ("LOCALAPPDATA", "Programs/Inno Setup 6/ISCC.exe"),
+            ("ProgramFiles", "Inno Setup 6/ISCC.exe"),
+            ("ProgramFiles(x86)", "Inno Setup 6/ISCC.exe"),
+        ):
+            root = os.environ.get(variable)
+            if root and (candidate := Path(root) / suffix).is_file():
+                compiler = str(candidate)
+                break
+    if compiler is None:
+        pytest.skip("Inno Setup compiler is unavailable")
+
+    from PIL import Image
+
+    payload = tmp_path / "payload"
+    payload.mkdir()
+    for name in ("AutoSpeechJournal.exe", "AutoSpeechJournal.CLI.exe"):
+        (payload / name).write_bytes(b"compile-only placeholder; never execute")
+    icon = tmp_path / "test.ico"
+    Image.new("RGBA", (32, 32), (40, 80, 120, 255)).save(icon, format="ICO")
+    output = tmp_path / "setup"
+    result = subprocess.run(
+        [
+            compiler,
+            "/Qp",
+            f"/DAppVersion={version}",
+            f"/DAppNumericVersion={numeric_version}",
+            f"/DAppPayloadRoot={payload}",
+            f"/DOutputDir={output}",
+            f"/DAppIcon={icon}",
+            str(INNO_SCRIPT),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=90,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    setup = output / f"AutoSpeechJournal-Setup-{version}-x64.exe"
+    assert setup.is_file()
+    assert setup.stat().st_size > 0
 
 
 def test_windows_package_e2e_installs_and_uninstalls_the_direct_gui() -> None:

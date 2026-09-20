@@ -8,6 +8,7 @@ import queue
 import threading
 import time
 import uuid
+from collections import deque
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, replace
@@ -98,6 +99,7 @@ class _LoopState:
     stop_capture_pending: bool = False
     stream_flush_pending: bool = False
     deferred_gap_chunk: AudioChunk | None = None
+    vad_recovery_pending: bool = False
     capture_degraded: bool = False
 
 
@@ -112,6 +114,8 @@ class _SegmentState:
 
     stream_origin: datetime | None = None
     last_chunk_end_utc: datetime | None = None
+    sample_cursor: int = 0
+    spooled_until_sample: int = 0
     current_id: str | None = None
     current_started_at: datetime | None = None
     current_preview: str = ""
@@ -124,6 +128,8 @@ class _SegmentState:
     def clear_stream_clock(self) -> None:
         self.stream_origin = None
         self.last_chunk_end_utc = None
+        self.sample_cursor = 0
+        self.spooled_until_sample = 0
 
 
 class WorkerBackpressure(RuntimeError):
@@ -523,8 +529,22 @@ def _preview_loop(
                 if item.kind == WorkerCommandKind.STOP:
                     break
                 if item.kind == WorkerCommandKind.UPDATE_HOTWORDS:
-                    applied = bool(engine.update_hotwords(list(item.payload or [])))
-                    if item.payload and not applied:
+                    try:
+                        changed = bool(engine.update_hotwords(list(item.payload or [])))
+                    except Exception as exc:
+                        degraded_active = True
+                        _status(
+                            event_queue,
+                            WorkerKind.PREVIEW,
+                            WorkerState.DEGRADED,
+                            f"preview hotword update failed; current stream retained: {exc}",
+                            severity=Severity.WARNING,
+                        )
+                        continue
+                    if changed:
+                        raw_prefix = last_raw
+                        normalized_prefix = last_normalized
+                    if item.payload and not getattr(engine, "hotwords_applied", changed):
                         _status(
                             event_queue,
                             WorkerKind.PREVIEW,
@@ -718,6 +738,15 @@ def _recorder_loop(
     segment_state = _SegmentState()
     preview_state = PreviewState()
     spool_state = SpoolState()
+    pending_capture_chunks: deque[AudioChunk] = deque()
+    # ponytail: active audio grows until VAD emits; use a durable continuous spool
+    # if a genuinely hung VAD makes this buffer grow in production.
+    unspooled_vad_audio: deque[SpeechAudio] = deque()
+    idle_history_samples = round(
+        (config.max_segment_ms + config.endpoint_silence_ms
+         + max(config.pre_roll_ms, config.segment_overlap_ms))
+        * config.audio_sample_rate / 1000
+    )
     retry_delay = 2.0
     reserve_bytes = round(config.max_segment_ms * config.audio_sample_rate / 1000) * 2
 
@@ -748,6 +777,47 @@ def _recorder_loop(
         if preview_queue is not None and previews.offer(PreviewFinalize(persisted)):
             persisted = replace(persisted, preview_pending=True)
         _emit(event_queue, persisted)
+
+    def discard_vad_audio_before(sample: int) -> None:
+        while unspooled_vad_audio and unspooled_vad_audio[0].end_sample <= sample:
+            unspooled_vad_audio.popleft()
+        if unspooled_vad_audio and unspooled_vad_audio[0].start_sample < sample:
+            first = unspooled_vad_audio[0]
+            unspooled_vad_audio[0] = SpeechAudio(
+                first.samples[sample - first.start_sample:].copy(), sample, first.end_sample
+            )
+
+    def recover_unspooled_audio(segments: list[SpeechAudio]) -> list[SpeechAudio]:
+        """Union VAD's surviving output with PCM it may have consumed before raising."""
+        np = importlib.import_module("numpy")
+        recovered: list[SpeechAudio] = []
+        pieces: list[Any] = []
+        cursor = segment_state.spooled_until_sample
+        start = cursor
+        count = 0
+        max_samples = round(config.max_segment_ms * config.audio_sample_rate / 1000)
+        for speech in sorted(
+            [*segments, *unspooled_vad_audio], key=lambda item: item.start_sample
+        ):
+            left = max(cursor, speech.start_sample)
+            while left < speech.end_sample:
+                if pieces and (left != cursor or count == max_samples):
+                    recovered.append(SpeechAudio(
+                        np.concatenate(pieces), start, cursor, count == max_samples
+                    ))
+                    pieces = []
+                    count = 0
+                if not pieces:
+                    start = left
+                right = min(speech.end_sample, left + max_samples - count)
+                pieces.append(
+                    speech.samples[left - speech.start_sample:right - speech.start_sample]
+                )
+                count += right - left
+                cursor = left = right
+        if pieces:
+            recovered.append(SpeechAudio(np.concatenate(pieces), start, cursor))
+        return recovered
 
     def emit_speech_segment(
         speech: SpeechAudio,
@@ -802,6 +872,13 @@ def _recorder_loop(
                 on_capture_stop=stop_capture_after_spool_failure,
             )
         finally:
+            if stored:
+                # write_segment returns True only after durable storage or ownership
+                # transfer to its retry queue; both let us release these PCM frames.
+                segment_state.spooled_until_sample = max(
+                    segment_state.spooled_until_sample, speech.end_sample
+                )
+                discard_vad_audio_before(segment_state.spooled_until_sample)
             if stored and speech.forced_endpoint:
                 segment_state.previous_forced_segment_id = identifier
                 segment_state.previous_forced_end_sample = speech.end_sample
@@ -818,6 +895,7 @@ def _recorder_loop(
         try:
             segments = vad.flush()
         except Exception as exc:
+            loop_state.vad_recovery_pending = True
             _status(
                 event_queue,
                 WorkerKind.RECORDER,
@@ -826,24 +904,34 @@ def _recorder_loop(
                 severity=Severity.ERROR,
             )
             return False
+        if loop_state.vad_recovery_pending:
+            segments = recover_unspooled_audio(segments)
         for speech in segments:
             emit_speech_segment(speech, flushed, flushed_raw)
             flushed = ""
             flushed_raw = ""
         vad.reset()
+        loop_state.vad_recovery_pending = False
+        # A successful flush transfers VAD-selected audio; remaining PCM was rejected by VAD.
+        unspooled_vad_audio.clear()
         if inline_preview is not None:
             inline_preview.reset()
         reset_segment_state()
         previews.clear_preroll()
         segment_state.previous_forced_segment_id = None
         segment_state.previous_forced_end_sample = None
+        segment_state.clear_stream_clock()
         return not spool_state.pending_writes
 
-    def stop_capture(*, paused: bool) -> bool:
-        flushed = flush_current()
-        if route_state.capture is not None and getattr(route_state.capture, "running", False):
+    def quiesce_capture() -> bool:
+        """Stop callbacks, retaining their last chunks until storage can accept them."""
+        if route_state.capture is not None:
             try:
-                route_state.capture.stop()
+                drain = getattr(route_state.capture, "stop_and_drain", None)
+                if callable(drain):
+                    pending_capture_chunks.extend(drain())
+                elif getattr(route_state.capture, "running", False):
+                    route_state.capture.stop()
             except Exception as exc:
                 _status(
                     event_queue,
@@ -853,7 +941,26 @@ def _recorder_loop(
                     severity=Severity.WARNING,
                 )
                 return False
-        if not flushed:
+        return True
+
+    def drain_and_flush_capture() -> bool:
+        if not quiesce_capture() or spool_state.pending_writes:
+            return False
+        if loop_state.vad_recovery_pending and not flush_current():
+            return False
+        if loop_state.deferred_gap_chunk is not None:
+            if not flush_current():
+                return False
+            pending_capture_chunks.appendleft(loop_state.deferred_gap_chunk)
+            loop_state.deferred_gap_chunk = None
+        while pending_capture_chunks:
+            chunk = pending_capture_chunks.popleft()
+            if not ingest_chunk(chunk) or spool_state.pending_writes:
+                return False
+        return flush_current()
+
+    def stop_capture(*, paused: bool) -> bool:
+        if not drain_and_flush_capture():
             return False
         route_state.capture = None
         segment_state.clear_stream_clock()
@@ -867,6 +974,7 @@ def _recorder_loop(
 
     def reset_stream_state() -> None:
         vad.reset()
+        unspooled_vad_audio.clear()
         if inline_preview is not None:
             inline_preview.reset()
         segment_state.clear_stream_clock()
@@ -876,22 +984,12 @@ def _recorder_loop(
 
     def stop_capture_after_spool_failure() -> None:
         """Stop taking audio we cannot store, without tearing down the route."""
-        if route_state.capture is not None:
-            with suppress(Exception):
-                route_state.capture.stop()
+        quiesce_capture()
 
     def reset_stream_after_drain() -> None:
-        """Restart the stream once the write backlog clears.
-
-        Deliberately narrower than `reset_stream_state`: the capture never stopped
-        being the active device, so neither the degraded flag nor the preview pre-roll
-        is cleared here.
-        """
-        vad.reset()
-        if inline_preview is not None:
-            inline_preview.reset()
-        segment_state.clear_stream_clock()
-        reset_segment_state()
+        # The write backlog can clear while VAD and the stopped capture still own
+        # audio. Finish both before resetting or reopening the input.
+        loop_state.stream_flush_pending = True
 
     spool_writer = SpoolCoordinator(
         spool_state,
@@ -921,7 +1019,7 @@ def _recorder_loop(
         ),
         capture_factory=capture_factory,
         route_resolver=route_resolver,
-        flush_current=flush_current,
+        stop_and_flush=drain_and_flush_capture,
         reset_stream_state=reset_stream_state,
         is_recording=lambda: loop_state.desired_recording,
         has_pending_writes=lambda: bool(spool_state.pending_writes),
@@ -945,12 +1043,33 @@ def _recorder_loop(
                 loop_state.stop_capture_pending = not stop_capture(paused=True)
             elif command.kind == WorkerCommandKind.UPDATE_HOTWORDS:
                 hotwords = list(command.payload or [])
-                applied = (
-                    bool(inline_preview.update_hotwords(hotwords))
-                    if inline_preview is not None
-                    else True
-                )
-                if hotwords and inline_preview is not None and not applied:
+                try:
+                    changed = (
+                        bool(inline_preview.update_hotwords(hotwords))
+                        if inline_preview is not None
+                        else False
+                    )
+                except Exception as exc:
+                    _status(
+                        event_queue,
+                        WorkerKind.PREVIEW,
+                        (
+                            WorkerState.RECORDING
+                            if loop_state.desired_recording
+                            else WorkerState.READY
+                        ),
+                        f"preview hotword update failed; current stream retained: {exc}",
+                        severity=Severity.WARNING,
+                    )
+                    continue
+                if changed:
+                    preview_state.prefix = preview_state.current_text
+                    preview_state.raw_prefix = preview_state.current_raw_text
+                if (
+                    hotwords
+                    and inline_preview is not None
+                    and not getattr(inline_preview, "hotwords_applied", changed)
+                ):
                     _status(
                         event_queue,
                         WorkerKind.PREVIEW,
@@ -1010,11 +1129,12 @@ def _recorder_loop(
                 time.sleep(0.05)
                 return True
         if loop_state.stream_flush_pending:
-            if not flush_current():
+            if not drain_and_flush_capture():
                 time.sleep(0.05)
                 return True
             loop_state.stream_flush_pending = False
             segment_state.clear_stream_clock()
+            return True
         return False
 
     def poll_device_watchdog(now: float) -> bool:
@@ -1073,8 +1193,8 @@ def _recorder_loop(
         if now < route_state.next_start_attempt:
             time.sleep(min(0.05, route_state.next_start_attempt - now))
             return True
-        if segment_state.stream_origin is not None:
-            if not flush_current():
+        if route_state.capture is not None or segment_state.stream_origin is not None:
+            if not drain_and_flush_capture():
                 route_state.next_start_attempt = now + retry_delay
                 return True
             segment_state.clear_stream_clock()
@@ -1118,9 +1238,7 @@ def _recorder_loop(
         """
         if not (segment_state.current_id is None and not spool_writer.has_headroom()):
             return False
-        with suppress(Exception):
-            route_state.capture.stop()
-        segment_state.clear_stream_clock()
+        loop_state.stream_flush_pending = not drain_and_flush_capture()
         spool_writer.report_hard_limit(
             "audio spool lacks headroom for the next segment; recording stopped"
         )
@@ -1138,9 +1256,7 @@ def _recorder_loop(
         except queue.Empty:
             return None
         except Exception as exc:
-            loop_state.stream_flush_pending = not flush_current()
-            with suppress(Exception):
-                route_state.capture.stop()
+            loop_state.stream_flush_pending = not drain_and_flush_capture()
             if not loop_state.stream_flush_pending:
                 segment_state.clear_stream_clock()
             route_state.next_start_attempt = monotonic() + retry_delay
@@ -1166,8 +1282,7 @@ def _recorder_loop(
                 if not flush_current():
                     loop_state.stream_flush_pending = True
                     loop_state.deferred_gap_chunk = chunk
-                    with suppress(Exception):
-                        route_state.capture.stop()
+                    quiesce_capture()
                     route_state.next_start_attempt = monotonic() + retry_delay
                     _status(
                         event_queue,
@@ -1218,6 +1333,12 @@ def _recorder_loop(
 
     def accept_into_vad(chunk: AudioChunk) -> tuple[list[SpeechAudio], bool] | None:
         """Run VAD over the chunk. None means the pipeline failed and we auto-paused."""
+        start = segment_state.sample_cursor
+        segment_state.sample_cursor += len(chunk.samples)
+        unspooled_vad_audio.append(SpeechAudio(
+            chunk.samples.copy(), start, segment_state.sample_cursor
+        ))
+        completed: list[SpeechAudio] = []
         try:
             was_speech_active = bool(getattr(vad, "is_speech_detected", False))
             if segment_state.current_id is None and not was_speech_active:
@@ -1225,6 +1346,7 @@ def _recorder_loop(
             completed = vad.accept(chunk.samples)
             return completed, bool(getattr(vad, "is_speech_detected", False))
         except Exception as exc:
+            loop_state.vad_recovery_pending = True
             _status(
                 event_queue,
                 WorkerKind.RECORDER,
@@ -1233,8 +1355,11 @@ def _recorder_loop(
                 severity=Severity.ERROR,
             )
             loop_state.desired_recording = False
-            loop_state.stop_capture_pending = not stop_capture(paused=True)
-            return None
+            loop_state.stop_capture_pending = True
+            quiesce_capture()
+            # The post-accept state query can fail after returning complete segments.
+            # Keep those outputs; the ledger protects earlier audio if accept itself failed.
+            return (completed, False) if completed else None
 
     def open_segment_if_speech_started(
         chunk: AudioChunk,
@@ -1253,6 +1378,57 @@ def _recorder_loop(
         else:
             speech_started_at = chunk.started_at_utc
         ensure_segment(speech_started_at)
+        return True
+
+    def ingest_chunk(chunk: AudioChunk) -> bool:
+        if track_stream_clock(chunk):
+            return False
+        report_capture_health(chunk)
+
+        accepted = accept_into_vad(chunk)
+        if accepted is None:
+            return False
+        completed, speech_active = accepted
+        starting_segment = open_segment_if_speech_started(chunk, completed, speech_active)
+
+        rms_dbfs, peak_dbfs = _audio_levels_dbfs(chunk.samples)
+        _emit(
+            event_queue,
+            AudioLevelUpdate(
+                rms_dbfs=rms_dbfs,
+                peak_dbfs=peak_dbfs,
+                speech_active=speech_active,
+                segment_id=segment_state.current_id,
+                measured_at_utc=segment_state.last_chunk_end_utc or chunk.started_at_utc,
+            ),
+            replaceable=True,
+        )
+
+        if segment_state.current_id is not None and segment_state.current_started_at is not None:
+            # A starting segment replays its pre-roll so the preview begins at the
+            # first word; otherwise only the chunk just read is previewed.
+            previews.feed(
+                previews.take_preroll()
+                if starting_segment and preview_state.preroll
+                else [as_preview_chunk(chunk)],
+                segment_id=segment_state.current_id,
+                segment_started_at=segment_state.current_started_at,
+                monotonic=monotonic,
+            )
+
+        for index, speech in enumerate(completed):
+            flushed, flushed_raw = previews.finish_for_segment()
+            if inline_preview is None and index:
+                # Out-of-process preview cannot be split across several segments
+                # completing in one chunk, so drop the preview for the extras.
+                preview_state.dropped = True
+            emit_speech_segment(speech, flushed, flushed_raw)
+
+        if (not speech_active and segment_state.current_id is None
+                and not loop_state.vad_recovery_pending):
+            # Continuous silence has no speech to persist; retain only the same
+            # bounded history window used to recover delayed starts and pre-roll.
+            discard_vad_audio_before(segment_state.sample_cursor - idle_history_samples)
         return True
 
     router.publish_route()
@@ -1294,53 +1470,11 @@ def _recorder_loop(
         chunk = read_chunk()
         if chunk is None:
             continue
-        if track_stream_clock(chunk):
-            continue
-        report_capture_health(chunk)
-
-        accepted = accept_into_vad(chunk)
-        if accepted is None:
-            continue
-        completed, speech_active = accepted
-        starting_segment = open_segment_if_speech_started(chunk, completed, speech_active)
-
-        rms_dbfs, peak_dbfs = _audio_levels_dbfs(chunk.samples)
-        _emit(
-            event_queue,
-            AudioLevelUpdate(
-                rms_dbfs=rms_dbfs,
-                peak_dbfs=peak_dbfs,
-                speech_active=speech_active,
-                segment_id=segment_state.current_id,
-                measured_at_utc=segment_state.last_chunk_end_utc or chunk.started_at_utc,
-            ),
-            replaceable=True,
-        )
-
-        if segment_state.current_id is not None and segment_state.current_started_at is not None:
-            # A starting segment replays its pre-roll so the preview begins at the
-            # first word; otherwise only the chunk just read is previewed.
-            previews.feed(
-                previews.take_preroll()
-                if starting_segment and preview_state.preroll
-                else [as_preview_chunk(chunk)],
-                segment_id=segment_state.current_id,
-                segment_started_at=segment_state.current_started_at,
-                monotonic=monotonic,
-            )
-
-        for index, speech in enumerate(completed):
-            flushed, flushed_raw = previews.finish_for_segment()
-            if inline_preview is None and index:
-                # Out-of-process preview cannot be split across several segments
-                # completing in one chunk, so drop the preview for the extras.
-                preview_state.dropped = True
-            emit_speech_segment(speech, flushed, flushed_raw)
+        ingest_chunk(chunk)
 
     try:
-        if getattr(route_state.capture, "running", False):
-            flush_current()
-            route_state.capture.stop()
+        if route_state.capture is not None:
+            drain_and_flush_capture()
     finally:
         if inline_preview is not None:
             with suppress(Exception):

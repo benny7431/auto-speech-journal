@@ -54,10 +54,13 @@ Tag workflow 只需要：
 1. 驗證版本與 changelog。
 2. 等待 CI 與 CodeQL。
 3. 建置並驗證 wheel、sdist 與 unsigned Setup。
-4. 在 Windows runner 執行安裝、首次啟動與解除安裝 E2E。
+4. 確認同一 commit 的 Windows package workflow 已通過安裝、首次啟動與解除安裝 E2E。
 5. 產生 `SHA256SUMS.txt` 與繁體中文 Release Notes。
 6. 依版本建立 Stable／Latest 或 Pre-release，Release Notes 先列下載與變更，最後保留一行
    未簽章提示。
+
+Release workflow 會從相同 commit 重新建置 Setup；目前不會對這份發布資產再次執行
+安裝 E2E，因此不能將前述驗證說成「已安裝測試下載到的 Release 檔案」。
 
 ## Verify a downloaded Setup
 

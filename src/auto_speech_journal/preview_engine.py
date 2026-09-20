@@ -222,15 +222,36 @@ class SherpaPreviewEngine:
         self._stream = self._new_stream()
 
     def update_hotwords(self, hotwords: Sequence[str]) -> bool:
+        """Return whether the active stream changed, not whether hotwords are supported.
+
+        Callers retain the previous hypothesis as a prefix when this returns True.
+        Failed updates leave the old stream and its hotwords intact.
+        """
         normalized = tuple(
             dict.fromkeys(self._normalize_text(word.strip()) for word in hotwords if word.strip())
         )
+        if normalized == self._hotwords:
+            return False
+        previous_hotwords = self._hotwords
+        previous_applied = self._hotwords_applied
         self._hotwords = normalized
-        if self._recognizer is not None:
-            self._stream = self._new_stream()
-            self._last_text = ""
-            self._last_raw_text = ""
-        return self._hotwords_applied
+        if not self.supports_hotwords:
+            self._hotwords_applied = not normalized
+            return False
+        if self._recognizer is None:
+            return False
+        try:
+            stream = self._new_stream()
+            if not self._hotwords_applied:
+                raise PreviewEngineError("preview recognizer did not apply hotwords")
+        except Exception:
+            self._hotwords = previous_hotwords
+            self._hotwords_applied = previous_applied
+            raise
+        self._stream = stream
+        self._last_text = ""
+        self._last_raw_text = ""
+        return True
 
     def close(self) -> None:
         self._stream = None
