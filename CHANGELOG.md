@@ -16,6 +16,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   寫檔失敗時保留待處理音訊供重試。
 - 不支援熱詞或詞表未變時，保留預覽串流及前文；熱詞換流失敗會警告並繼續辨識。
 - 安裝器分開保存數字版本與顯示版本，修正含 `rc` 後綴的測試版無法編譯的問題。
+- 打包時優先解析 Windows 系統 DLL，避免其他工具的 ICU 混入後讓 Qt 無法啟動。
 
 ### 新增
 

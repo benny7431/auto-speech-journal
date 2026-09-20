@@ -11,6 +11,11 @@ from PyInstaller.utils.hooks import (
     copy_metadata,
 )
 
+# Match Windows system-DLL lookup before inherited third-party PATH entries (for example ICU).
+os.environ["PATH"] = str(Path(os.environ["SystemRoot"]) / "System32") + os.pathsep + os.environ.get(
+    "PATH", ""
+)
+
 ROOT = Path(SPECPATH).parents[1]
 SOURCE_ROOT = ROOT / "src"
 HOOK_ROOT = Path(SPECPATH) / "hooks"
